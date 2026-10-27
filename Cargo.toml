@@ -1,0 +1,45 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/desktop", "tests"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+repository = "https://github.com/HalfdanIsaksen/rusting"
+
+[workspace.dependencies]
+# Internal crates
+animation_core = { path = "crates/animation_core" }
+timeline = { path = "crates/timeline" }
+drawing = { path = "crates/drawing" }
+scene = { path = "crates/scene" }
+document = { path = "crates/document" }
+file_format = { path = "crates/file_format" }
+editor = { path = "crates/editor" }
+renderer = { path = "crates/renderer" }
+ui = { path = "crates/ui" }
+
+# External crates. egui/egui-wgpu/egui-winit must share one release, and wgpu/winit
+# must match the versions egui-wgpu/egui-winit require (see ADR-002).
+glam = { version = "0.34", features = ["serde"] }
+uuid = { version = "1.18", features = ["v4", "serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+wgpu = "30"
+winit = "0.30.13"
+pollster = "1"
+egui = "0.37"
+egui-wgpu = "0.37"
+egui-winit = "0.37"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"

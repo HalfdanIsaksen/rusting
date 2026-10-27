@@ -1,0 +1,25 @@
+[package]
+name = "desktop"
+description = "Rusting desktop application."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "rusting"
+path = "src/main.rs"
+
+[dependencies]
+document.workspace = true
+editor.workspace = true
+renderer.workspace = true
+ui.workspace = true
+winit.workspace = true
+pollster.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

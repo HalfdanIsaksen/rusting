@@ -1,0 +1,18 @@
+[package]
+name = "integration_tests"
+description = "Cross-crate integration tests for Rusting."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+document.workspace = true
+editor.workspace = true
+file_format.workspace = true
+
+[lints]
+workspace = true

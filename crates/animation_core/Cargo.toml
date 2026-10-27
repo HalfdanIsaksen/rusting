@@ -1,0 +1,16 @@
+[package]
+name = "animation_core"
+description = "Shared animation primitives: frames, frame rates, IDs, colors, interpolation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+glam.workspace = true
+uuid.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

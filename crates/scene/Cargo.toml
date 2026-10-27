@@ -1,0 +1,15 @@
+[package]
+name = "scene"
+description = "Scene composition: layers, ordering, visibility, transforms."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+animation_core.workspace = true
+serde.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,14 @@
+[package]
+name = "ui"
+description = "Editor UI panels (egui shell for the MVP)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+editor.workspace = true
+
+[lints]
+workspace = true

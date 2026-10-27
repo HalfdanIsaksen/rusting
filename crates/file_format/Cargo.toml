@@ -1,0 +1,22 @@
+[package]
+name = "file_format"
+description = "Native project persistence: versioned save/load, validation, migration."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+document.workspace = true
+animation_core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+drawing.workspace = true
+timeline.workspace = true
