@@ -52,16 +52,15 @@ impl Gpu {
         let mut config = surface
             .get_default_config(&adapter, width.max(1), height.max(1))
             .ok_or(RendererError::UnsupportedSurface)?;
-        // Prefer an sRGB surface so colors are blended in linear space.
+        // Prefer a non-sRGB (gamma-space) surface: egui-wgpu blends in gamma
+        // space and warns on sRGB surfaces. The canvas itself is blended in
+        // linear space in its own offscreen target (see `CanvasTarget`).
         let caps = surface.get_capabilities(&adapter);
-        if let Some(format) = caps
-            .formats
-            .iter()
-            .copied()
-            .find(wgpu::TextureFormat::is_srgb)
-        {
+        if let Some(format) = caps.formats.iter().copied().find(|f| !f.is_srgb()) {
             config.format = format;
         }
+        // Lowest-latency vsync'd mode that never tears.
+        config.present_mode = wgpu::PresentMode::AutoVsync;
         surface.configure(&device, &config);
         tracing::info!(adapter = ?adapter.get_info().name, format = ?config.format, "GPU initialised");
         Ok(Self {
@@ -95,6 +94,42 @@ impl Gpu {
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
+    }
+
+    /// Surface size in physical pixels.
+    pub fn surface_size(&self) -> (u32, u32) {
+        (self.config.width, self.config.height)
+    }
+
+    /// Acquires the next surface texture, lets `record` fill an encoder that
+    /// targets it, then submits and presents. `record` returns any extra
+    /// command buffers (for example from egui-wgpu) to submit first.
+    /// Returns false if no frame was available (minimised, occluded, lost).
+    pub fn render_frame(
+        &mut self,
+        record: impl FnOnce(
+            &wgpu::Device,
+            &wgpu::Queue,
+            &mut wgpu::CommandEncoder,
+            &wgpu::TextureView,
+        ) -> Vec<wgpu::CommandBuffer>,
+    ) -> bool {
+        let Some(frame) = self.acquire_frame() else {
+            return false;
+        };
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("frame"),
+            });
+        let mut buffers = record(&self.device, &self.queue, &mut encoder, &view);
+        buffers.push(encoder.finish());
+        self.queue.submit(buffers);
+        self.queue.present(frame);
+        true
     }
 
     /// Clears the window to `color` and presents it.
