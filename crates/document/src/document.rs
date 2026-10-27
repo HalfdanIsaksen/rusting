@@ -4,7 +4,7 @@ use animation_core::{DocumentId, DrawingId, Fps, FrameIndex, LayerId, Rgba};
 use drawing::DrawingContent;
 use scene::{Layer, LayerStack};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use timeline::Track;
 
 /// Canvas size in document units (1 unit = 1 pixel at 100% zoom).
@@ -148,6 +148,64 @@ impl Document {
         &self.drawings
     }
 
+    /// Stores drawing content under a known ID, replacing and returning any
+    /// previous content with that ID. Commands use this so redo reuses the ID
+    /// chosen when the command was built.
+    pub fn insert_drawing(
+        &mut self,
+        id: DrawingId,
+        content: DrawingContent,
+    ) -> Option<DrawingContent> {
+        self.drawings.insert(id, content)
+    }
+
+    /// Removes a drawing from the pool. Keyframes that still refer to it are
+    /// left alone; callers (undo of a command that created it) must have
+    /// removed those first.
+    pub fn remove_drawing(&mut self, id: DrawingId) -> Option<DrawingContent> {
+        self.drawings.remove(&id)
+    }
+
+    /// The drawing exposed on `layer` at `frame`: the drawing of the last key at
+    /// or before `frame`, or `None` if that key is empty, there is no key, or
+    /// the layer does not exist.
+    pub fn drawing_at(&self, layer: LayerId, frame: FrameIndex) -> Option<DrawingId> {
+        self.track(layer)?.drawing_at(frame)
+    }
+
+    /// Every drawing that some track's keyframe refers to.
+    pub fn referenced_drawings(&self) -> BTreeSet<DrawingId> {
+        self.tracks
+            .values()
+            .flat_map(|track| track.keys().filter_map(|(_, key)| key.drawing()))
+            .collect()
+    }
+
+    /// Whether the pool holds drawings that no keyframe refers to.
+    pub fn has_unreferenced_drawings(&self) -> bool {
+        let referenced = self.referenced_drawings();
+        self.drawings.keys().any(|id| !referenced.contains(id))
+    }
+
+    /// Drops every drawing that no track refers to and returns their IDs.
+    ///
+    /// Only call this on a copy that is about to be saved, or when the undo
+    /// history is cleared: undo of a removed layer or keyframe needs the
+    /// drawing to still be in the pool. `file_format` does this for you.
+    pub fn garbage_collect_drawings(&mut self) -> Vec<DrawingId> {
+        let referenced = self.referenced_drawings();
+        let unused: Vec<DrawingId> = self
+            .drawings
+            .keys()
+            .filter(|id| !referenced.contains(id))
+            .copied()
+            .collect();
+        for id in &unused {
+            self.drawings.remove(id);
+        }
+        unused
+    }
+
     /// The last frame of the animation, if it has any frames.
     pub fn last_frame(&self) -> Option<FrameIndex> {
         self.frame_count.checked_sub(1).map(FrameIndex)
@@ -196,6 +254,47 @@ mod tests {
 
         d.restore_layer(removed);
         assert_eq!(d, before);
+    }
+
+    #[test]
+    fn drawing_at_follows_exposure() {
+        let mut d = doc();
+        let l = d.add_layer("L");
+        let a = d.add_drawing(DrawingContent::default());
+        assert_eq!(d.drawing_at(l, FrameIndex(0)), None);
+        d.track_mut(l)
+            .unwrap()
+            .set_key(FrameIndex(2), Keyframe::Drawing(a));
+        assert_eq!(d.drawing_at(l, FrameIndex(1)), None);
+        assert_eq!(d.drawing_at(l, FrameIndex(7)), Some(a));
+        assert_eq!(d.drawing_at(LayerId::new(), FrameIndex(7)), None);
+    }
+
+    #[test]
+    fn garbage_collect_keeps_only_referenced_drawings() {
+        let mut d = doc();
+        let l = d.add_layer("L");
+        let used = d.add_drawing(DrawingContent::default());
+        let unused = d.add_drawing(DrawingContent::default());
+        d.track_mut(l)
+            .unwrap()
+            .set_key(FrameIndex(0), Keyframe::Drawing(used));
+        assert!(d.has_unreferenced_drawings());
+        assert_eq!(d.garbage_collect_drawings(), [unused]);
+        assert!(d.drawing(used).is_some());
+        assert!(d.drawing(unused).is_none());
+        assert!(!d.has_unreferenced_drawings());
+        assert!(d.garbage_collect_drawings().is_empty());
+    }
+
+    #[test]
+    fn insert_and_remove_drawing_with_known_id() {
+        let mut d = doc();
+        let id = DrawingId::new();
+        assert!(d.insert_drawing(id, DrawingContent::default()).is_none());
+        assert!(d.drawing(id).is_some());
+        assert!(d.remove_drawing(id).is_some());
+        assert!(d.drawing(id).is_none());
     }
 
     #[test]

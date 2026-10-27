@@ -3,11 +3,29 @@
 //! A file is a JSON envelope `{ "format_version": N, "document": { ... } }`.
 //! Loading checks the version, migrates older versions, and validates that
 //! every reference in the document points at something that exists.
+//!
+//! # Saving
+//! Drawings that no keyframe refers to are kept in memory (undo may need
+//! them) but are left out of the file. [`save`] writes to a temporary file in
+//! the same directory and renames it over the target, so a crash or full disk
+//! never leaves a half-written project behind.
+//!
+//! # Unknown fields
+//! Within a supported version, fields this build does not know are **ignored**
+//! by [`from_str`] and [`load`]; the document still loads. A writer that adds
+//! data older builds cannot keep must bump [`FORMAT_VERSION`], which older
+//! builds reject with [`FileFormatError::UnsupportedVersion`]. Unknown fields
+//! can therefore only come from hand edits or other tools. To avoid dropping
+//! them silently, [`from_str_with_report`] and [`load_with_report`] list them
+//! in a [`LoadReport`] so the app can warn before overwriting the file.
 
-use animation_core::{DrawingId, FrameIndex, LayerId};
+use animation_core::{DrawingId, FrameIndex, LayerId, StrokeId};
 use document::Document;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::borrow::Cow;
+use std::collections::BTreeSet;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 /// The format version written by this build.
 pub const FORMAT_VERSION: u32 = 1;
@@ -22,10 +40,17 @@ pub enum FileFormatError {
     #[error("could not access project file: {0}")]
     Io(#[from] std::io::Error),
     /// The file is not valid JSON or does not match the expected structure.
+    /// The message includes the line and column where parsing stopped.
     #[error("project file is malformed: {0}")]
     Malformed(#[from] serde_json::Error),
+    /// The file is JSON but has no `format_version`, so it is not a project file.
+    #[error("not a Rusting project file: the \"format_version\" field is missing")]
+    NotAProject,
     /// The file was written by a newer version of the application.
-    #[error("project file version {found} is newer than supported version {FORMAT_VERSION}")]
+    #[error(
+        "project file version {found} is newer than this app supports (version {FORMAT_VERSION}); \
+         open it with a newer version of Rusting"
+    )]
     UnsupportedVersion {
         /// Version found in the file.
         found: u32,
@@ -36,24 +61,92 @@ pub enum FileFormatError {
 }
 
 /// A consistency problem in a loaded document.
+///
+/// Frames in messages are shown one-based, as in the timeline.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ValidationError {
     /// A keyframe refers to a drawing that does not exist.
-    #[error("layer {layer} frame {frame} refers to missing drawing {drawing}")]
+    #[error(
+        "layer \"{layer_name}\" ({layer}) has a keyframe at frame {frame} showing drawing \
+         {drawing}, which is not in the file"
+    )]
     MissingDrawing {
         /// Layer holding the keyframe.
         layer: LayerId,
+        /// Name of that layer.
+        layer_name: String,
         /// Frame of the keyframe.
         frame: FrameIndex,
         /// The missing drawing.
         drawing: DrawingId,
     },
     /// A track exists for a layer that does not exist.
-    #[error("track belongs to missing layer {0}")]
+    #[error("the timeline has a track for layer {0}, but there is no such layer")]
     OrphanTrack(LayerId),
     /// A layer has no track.
-    #[error("layer {0} has no track")]
-    MissingTrack(LayerId),
+    #[error("layer \"{name}\" ({id}) has no timeline track")]
+    MissingTrack {
+        /// The layer.
+        id: LayerId,
+        /// Its name.
+        name: String,
+    },
+    /// Two layers share an ID.
+    #[error("layer ID {0} is used by more than one layer")]
+    DuplicateLayer(LayerId),
+    /// Two strokes share an ID.
+    #[error("stroke ID {stroke} is used more than once (found again in drawing {drawing})")]
+    DuplicateStroke {
+        /// The repeated stroke ID.
+        stroke: StrokeId,
+        /// Drawing holding the second copy.
+        drawing: DrawingId,
+    },
+    /// The frame rate has a zero numerator or denominator.
+    #[error("frame rate {numerator}/{denominator} is not valid; both parts must be above zero")]
+    InvalidFps {
+        /// Numerator in the file.
+        numerator: u32,
+        /// Denominator in the file.
+        denominator: u32,
+    },
+    /// The animation has no frames.
+    #[error("the animation must have at least one frame")]
+    ZeroFrameCount,
+    /// The canvas has no area.
+    #[error("canvas size {width}x{height} is not valid; both sides must be above zero")]
+    InvalidCanvas {
+        /// Width in the file.
+        width: u32,
+        /// Height in the file.
+        height: u32,
+    },
+    /// A number that must be finite and inside a range is not.
+    #[error("{what} is {value}, expected a value in {expected}")]
+    OutOfRange {
+        /// Which value, e.g. `layer "Ink" opacity`.
+        what: String,
+        /// The value found (may be NaN or infinite).
+        value: f32,
+        /// The allowed range, for the message.
+        expected: &'static str,
+    },
+}
+
+/// Things a load accepted but could not keep. See the crate docs on unknown
+/// fields.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LoadReport {
+    /// JSON paths (e.g. `document.layers.layers[0].blend_mode`) of fields this
+    /// build ignored. Saving the document drops them.
+    pub unknown_fields: Vec<String>,
+}
+
+impl LoadReport {
+    /// Whether nothing was dropped.
+    pub fn is_clean(&self) -> bool {
+        self.unknown_fields.is_empty()
+    }
 }
 
 #[derive(Serialize)]
@@ -62,43 +155,147 @@ struct EnvelopeOut<'a> {
     document: &'a Document,
 }
 
+/// Only the version, read first so we know how to parse the rest.
 #[derive(Deserialize)]
-struct EnvelopeIn {
-    format_version: u32,
+struct VersionProbe {
+    format_version: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct EnvelopeCurrent {
+    document: Document,
+}
+
+#[derive(Deserialize)]
+struct EnvelopeOld {
     document: serde_json::Value,
 }
 
-/// Serializes a document to a JSON string.
+/// Serializes a document to a JSON string. Drawings no keyframe refers to are
+/// left out; the document passed in is not changed.
 pub fn to_string(doc: &Document) -> Result<String, FileFormatError> {
+    let doc: Cow<'_, Document> = if doc.has_unreferenced_drawings() {
+        let mut copy = doc.clone();
+        copy.garbage_collect_drawings();
+        Cow::Owned(copy)
+    } else {
+        Cow::Borrowed(doc)
+    };
     Ok(serde_json::to_string_pretty(&EnvelopeOut {
         format_version: FORMAT_VERSION,
-        document: doc,
+        document: &doc,
     })?)
 }
 
-/// Parses, migrates and validates a document from a JSON string.
+/// Parses, migrates and validates a document from a JSON string. Unknown
+/// fields are ignored; use [`from_str_with_report`] to find out about them.
 pub fn from_str(text: &str) -> Result<Document, FileFormatError> {
-    let envelope: EnvelopeIn = serde_json::from_str(text)?;
-    if envelope.format_version > FORMAT_VERSION {
-        return Err(FileFormatError::UnsupportedVersion {
-            found: envelope.format_version,
-        });
-    }
-    let migrated = migrate(envelope.format_version, envelope.document);
-    let doc: Document = serde_json::from_value(migrated)?;
+    let version = read_version(text)?;
+    let doc = if version == FORMAT_VERSION {
+        // Parsing straight from text keeps line/column info in error messages.
+        serde_json::from_str::<EnvelopeCurrent>(text)?.document
+    } else {
+        let envelope: EnvelopeOld = serde_json::from_str(text)?;
+        serde_json::from_value(migrate(version, envelope.document))?
+    };
     validate(&doc)?;
     Ok(doc)
 }
 
-/// Saves a document to `path`.
+/// Like [`from_str`], but also reports fields that were ignored.
+pub fn from_str_with_report(text: &str) -> Result<(Document, LoadReport), FileFormatError> {
+    let doc = from_str(text)?;
+    let mut input: serde_json::Value = serde_json::from_str(text)?;
+    if let Some(obj) = input.as_object_mut() {
+        obj.remove("format_version");
+    }
+    let known = serde_json::to_value(EnvelopeOut {
+        format_version: FORMAT_VERSION,
+        document: &doc,
+    })?;
+    let mut report = LoadReport::default();
+    unknown_fields(&input, &known, String::new(), &mut report.unknown_fields);
+    Ok((doc, report))
+}
+
+fn read_version(text: &str) -> Result<u32, FileFormatError> {
+    let probe: VersionProbe = serde_json::from_str(text)?;
+    let version = probe.format_version.ok_or(FileFormatError::NotAProject)?;
+    if version > FORMAT_VERSION {
+        return Err(FileFormatError::UnsupportedVersion { found: version });
+    }
+    Ok(version)
+}
+
+/// Collects paths of object keys present in `input` but not in `known`.
+fn unknown_fields(
+    input: &serde_json::Value,
+    known: &serde_json::Value,
+    path: String,
+    out: &mut Vec<String>,
+) {
+    use serde_json::Value;
+    let join = |key: &str| {
+        if path.is_empty() {
+            key.to_owned()
+        } else {
+            format!("{path}.{key}")
+        }
+    };
+    match (input, known) {
+        (Value::Object(input), Value::Object(known)) => {
+            for (key, value) in input {
+                match known.get(key) {
+                    Some(k) => unknown_fields(value, k, join(key), out),
+                    None => out.push(join(key)),
+                }
+            }
+        }
+        (Value::Array(input), Value::Array(known)) => {
+            for (i, (value, k)) in input.iter().zip(known).enumerate() {
+                unknown_fields(value, k, format!("{path}[{i}]"), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Saves a document to `path` atomically: the data goes to a temporary file
+/// next to `path`, is flushed to disk, and then renamed over `path`. If any
+/// step fails the old file is untouched and the temporary file is removed.
 pub fn save(doc: &Document, path: &Path) -> Result<(), FileFormatError> {
-    std::fs::write(path, to_string(doc)?)?;
-    Ok(())
+    let text = to_string(doc)?;
+    let tmp = temp_path(path);
+    let result = write_and_sync(&tmp, text.as_bytes()).and_then(|()| std::fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    Ok(result?)
+}
+
+fn write_and_sync(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+/// `dir/.name.tmp-<pid>`: same directory (so rename stays on one file
+/// system), hidden, and unique per process.
+fn temp_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .map_or_else(|| "project".into(), |n| n.to_string_lossy());
+    path.with_file_name(format!(".{name}.tmp-{}", std::process::id()))
 }
 
 /// Loads a document from `path`.
 pub fn load(path: &Path) -> Result<Document, FileFormatError> {
     from_str(&std::fs::read_to_string(path)?)
+}
+
+/// Loads a document from `path` and reports fields that were ignored.
+pub fn load_with_report(path: &Path) -> Result<(Document, LoadReport), FileFormatError> {
+    from_str_with_report(&std::fs::read_to_string(path)?)
 }
 
 /// Upgrades raw document JSON from `version` to [`FORMAT_VERSION`].
@@ -107,26 +304,155 @@ fn migrate(_version: u32, document: serde_json::Value) -> serde_json::Value {
     document
 }
 
-/// Checks that every reference in `doc` resolves.
+fn check_range(
+    what: impl FnOnce() -> String,
+    value: f32,
+    ok: bool,
+    expected: &'static str,
+) -> Result<(), ValidationError> {
+    if ok {
+        Ok(())
+    } else {
+        Err(ValidationError::OutOfRange {
+            what: what(),
+            value,
+            expected,
+        })
+    }
+}
+
+fn unit(v: f32) -> bool {
+    (0.0..=1.0).contains(&v)
+}
+
+/// Checks that every reference in `doc` resolves and every value is usable.
+/// Keyframes past `frame_count` are allowed: shortening the animation keeps
+/// them so it can be lengthened again.
 pub fn validate(doc: &Document) -> Result<(), ValidationError> {
-    for layer in doc.layers().iter() {
-        if doc.track(layer.id).is_none() {
-            return Err(ValidationError::MissingTrack(layer.id));
+    if doc.fps.numerator() == 0 || doc.fps.denominator() == 0 {
+        return Err(ValidationError::InvalidFps {
+            numerator: doc.fps.numerator(),
+            denominator: doc.fps.denominator(),
+        });
+    }
+    if doc.frame_count == 0 {
+        return Err(ValidationError::ZeroFrameCount);
+    }
+    if doc.canvas.width == 0 || doc.canvas.height == 0 {
+        return Err(ValidationError::InvalidCanvas {
+            width: doc.canvas.width,
+            height: doc.canvas.height,
+        });
+    }
+    if let Some(bg) = doc.background {
+        for (channel, v) in [
+            ("red", bg.r),
+            ("green", bg.g),
+            ("blue", bg.b),
+            ("alpha", bg.a),
+        ] {
+            check_range(|| format!("background {channel}"), v, unit(v), "0..=1")?;
         }
     }
-    for (&layer, track) in doc.tracks() {
-        if doc.layers().get(layer).is_none() {
-            return Err(ValidationError::OrphanTrack(layer));
+
+    let mut seen_layers = BTreeSet::new();
+    for layer in doc.layers().iter() {
+        if !seen_layers.insert(layer.id) {
+            return Err(ValidationError::DuplicateLayer(layer.id));
         }
+        if doc.track(layer.id).is_none() {
+            return Err(ValidationError::MissingTrack {
+                id: layer.id,
+                name: layer.name.clone(),
+            });
+        }
+        check_range(
+            || format!("layer \"{}\" opacity", layer.name),
+            layer.opacity,
+            unit(layer.opacity),
+            "0..=1",
+        )?;
+        let t = &layer.transform;
+        for (part, v) in [
+            ("x position", t.translation.x),
+            ("y position", t.translation.y),
+            ("rotation", t.rotation),
+            ("x scale", t.scale.x),
+            ("y scale", t.scale.y),
+        ] {
+            check_range(
+                || format!("layer \"{}\" {part}", layer.name),
+                v,
+                v.is_finite(),
+                "finite numbers",
+            )?;
+        }
+    }
+
+    for (&layer, track) in doc.tracks() {
+        let Some(layer_info) = doc.layers().get(layer) else {
+            return Err(ValidationError::OrphanTrack(layer));
+        };
         for (frame, key) in track.keys() {
             if let Some(drawing) = key.drawing()
                 && doc.drawing(drawing).is_none()
             {
                 return Err(ValidationError::MissingDrawing {
                     layer,
+                    layer_name: layer_info.name.clone(),
                     frame,
                     drawing,
                 });
+            }
+        }
+    }
+
+    let mut seen_strokes = BTreeSet::new();
+    for (&drawing, content) in doc.drawings() {
+        let Some(vector) = content.as_vector() else {
+            continue;
+        };
+        for stroke in vector.strokes() {
+            if !seen_strokes.insert(stroke.id) {
+                return Err(ValidationError::DuplicateStroke {
+                    stroke: stroke.id,
+                    drawing,
+                });
+            }
+            let what = |field: &str| format!("stroke {} {field}", stroke.id);
+            let st = &stroke.style;
+            check_range(
+                || what("width"),
+                st.width,
+                st.width.is_finite() && st.width >= 0.0,
+                "0 or more",
+            )?;
+            check_range(|| what("opacity"), st.opacity, unit(st.opacity), "0..=1")?;
+            for (channel, v) in [
+                ("red", st.color.r),
+                ("green", st.color.g),
+                ("blue", st.color.b),
+                ("alpha", st.color.a),
+            ] {
+                check_range(|| what(channel), v, unit(v), "0..=1")?;
+            }
+            for (i, p) in stroke.points.iter().enumerate() {
+                check_range(
+                    || what(&format!("point {i} position")),
+                    if p.pos.x.is_finite() {
+                        p.pos.y
+                    } else {
+                        p.pos.x
+                    },
+                    p.pos.is_finite(),
+                    "finite numbers",
+                )?;
+                check_range(
+                    || what(&format!("point {i} pressure")),
+                    p.pressure,
+                    unit(p.pressure),
+                    "0..=1",
+                )?;
             }
         }
     }
@@ -136,7 +462,7 @@ pub fn validate(doc: &Document) -> Result<(), ValidationError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use animation_core::{Rgba, Vec2};
+    use animation_core::{DocumentId as DocumentIdForTest, Rgba, Vec2};
     use document::CanvasSize;
     use drawing::{BrushStyle, DrawingContent, Stroke, StrokePoint, VectorDrawing};
     use timeline::Keyframe;
@@ -234,6 +560,247 @@ mod tests {
         assert!(matches!(
             from_str(&to_string(&doc).unwrap()),
             Err(FileFormatError::Invalid(_))
+        ));
+    }
+
+    fn edit_json(doc: &Document, f: impl FnOnce(&mut serde_json::Value)) -> String {
+        let mut v: serde_json::Value = serde_json::from_str(&to_string(doc).unwrap()).unwrap();
+        f(&mut v);
+        v.to_string()
+    }
+
+    fn invalid(text: &str) -> ValidationError {
+        match from_str(text) {
+            Err(FileFormatError::Invalid(e)) => e,
+            other => panic!("expected a validation error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn newer_version_message_says_what_to_do() {
+        let text = edit_json(&sample(), |v| v["format_version"] = 2.into());
+        let err = from_str(&text).unwrap_err();
+        assert!(matches!(
+            err,
+            FileFormatError::UnsupportedVersion { found: 2 }
+        ));
+        let msg = err.to_string();
+        assert!(msg.contains("version 2") && msg.contains("newer"), "{msg}");
+    }
+
+    #[test]
+    fn json_without_version_is_not_a_project() {
+        assert!(matches!(
+            from_str("{\"document\":{}}"),
+            Err(FileFormatError::NotAProject)
+        ));
+        assert!(matches!(from_str("{}"), Err(FileFormatError::NotAProject)));
+        assert!(matches!(from_str(""), Err(FileFormatError::Malformed(_))));
+        assert!(matches!(
+            from_str("[1]"),
+            Err(FileFormatError::Malformed(_))
+        ));
+        assert!(matches!(
+            from_str("{\"format_version\":\"one\"}"),
+            Err(FileFormatError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn malformed_messages_point_at_the_line() {
+        let text = to_string(&sample()).unwrap().replacen(
+            "\"pressure\": 0.5",
+            "\"pressure\": \"high\"",
+            1,
+        );
+        let msg = from_str(&text).unwrap_err().to_string();
+        assert!(msg.contains("line"), "{msg}");
+    }
+
+    #[test]
+    fn every_truncation_is_an_error_not_a_panic() {
+        let text = to_string(&sample()).unwrap();
+        for end in (0..text.len()).filter(|&i| text.is_char_boundary(i)) {
+            assert!(
+                from_str(&text[..end]).is_err(),
+                "prefix of {end} bytes loaded"
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_utf8_file_is_an_io_error() {
+        let path =
+            std::env::temp_dir().join(format!("rusting-bad-{}.rusting", DocumentIdForTest::new()));
+        std::fs::write(&path, [0xff, 0xfe, 0x00, 0x7b]).unwrap();
+        let result = load(&path);
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(result, Err(FileFormatError::Io(_))));
+    }
+
+    #[test]
+    fn missing_drawing_message_names_layer_and_display_frame() {
+        let mut doc = sample();
+        let layer = doc.layers().iter().next().unwrap().id;
+        doc.track_mut(layer)
+            .unwrap()
+            .set_key(FrameIndex(3), Keyframe::Drawing(DrawingId::new()));
+        let msg = validate(&doc).unwrap_err().to_string();
+        assert!(msg.contains("\"Ink\"") && msg.contains("frame 4"), "{msg}");
+    }
+
+    type JsonEdit = Box<dyn FnOnce(&mut serde_json::Value)>;
+
+    #[test]
+    fn corrupt_values_are_reported() {
+        let doc = sample();
+        let cases: Vec<(&str, JsonEdit)> = vec![
+            (
+                "fps",
+                Box::new(|v| v["document"]["fps"]["denominator"] = 0.into()),
+            ),
+            (
+                "frames",
+                Box::new(|v| v["document"]["frame_count"] = 0.into()),
+            ),
+            (
+                "canvas",
+                Box::new(|v| v["document"]["canvas"]["width"] = 0.into()),
+            ),
+            (
+                "opacity",
+                Box::new(|v| v["document"]["layers"]["layers"][0]["opacity"] = 5.0.into()),
+            ),
+            (
+                "orphan track",
+                Box::new(|v| {
+                    let layers = v["document"]["layers"]["layers"].as_array_mut().unwrap();
+                    layers.remove(1);
+                }),
+            ),
+            (
+                "missing track",
+                Box::new(|v| {
+                    let id = v["document"]["layers"]["layers"][1]["id"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned();
+                    v["document"]["tracks"].as_object_mut().unwrap().remove(&id);
+                }),
+            ),
+            (
+                "duplicate layer",
+                Box::new(|v| {
+                    let layers = v["document"]["layers"]["layers"].as_array_mut().unwrap();
+                    let copy = layers[0].clone();
+                    layers.push(copy);
+                }),
+            ),
+            (
+                "pressure",
+                Box::new(|v| {
+                    let drawings = v["document"]["drawings"].as_object_mut().unwrap();
+                    let d = drawings.values_mut().next().unwrap();
+                    d["Vector"]["strokes"][0]["points"][0]["pressure"] = 2.0.into();
+                }),
+            ),
+            (
+                "duplicate stroke",
+                Box::new(|v| {
+                    let drawings = v["document"]["drawings"].as_object_mut().unwrap();
+                    let d = drawings.values_mut().next().unwrap();
+                    let strokes = d["Vector"]["strokes"].as_array_mut().unwrap();
+                    let copy = strokes[0].clone();
+                    strokes.push(copy);
+                }),
+            ),
+        ];
+        for (name, edit) in cases {
+            let err = invalid(&edit_json(&doc, edit));
+            let expected = match name {
+                "fps" => matches!(err, ValidationError::InvalidFps { .. }),
+                "frames" => err == ValidationError::ZeroFrameCount,
+                "canvas" => matches!(err, ValidationError::InvalidCanvas { .. }),
+                "opacity" | "pressure" => matches!(err, ValidationError::OutOfRange { .. }),
+                "orphan track" => matches!(err, ValidationError::OrphanTrack(_)),
+                "missing track" => matches!(err, ValidationError::MissingTrack { .. }),
+                "duplicate layer" => matches!(err, ValidationError::DuplicateLayer(_)),
+                "duplicate stroke" => matches!(err, ValidationError::DuplicateStroke { .. }),
+                _ => false,
+            };
+            assert!(expected, "{name}: got {err:?} ({err})");
+        }
+    }
+
+    #[test]
+    fn unknown_fields_are_ignored_but_reported() {
+        let doc = sample();
+        let text = edit_json(&doc, |v| {
+            v["extra"] = true.into();
+            v["document"]["layers"]["layers"][0]["blend_mode"] = "multiply".into();
+        });
+        assert_eq!(from_str(&text).unwrap(), doc);
+        let (loaded, report) = from_str_with_report(&text).unwrap();
+        assert_eq!(loaded, doc);
+        assert_eq!(
+            report.unknown_fields,
+            ["document.layers.layers[0].blend_mode", "extra"]
+        );
+        let (_, clean) = from_str_with_report(&to_string(&doc).unwrap()).unwrap();
+        assert!(clean.is_clean(), "{clean:?}");
+    }
+
+    #[test]
+    fn saving_drops_unreferenced_drawings_without_touching_the_document() {
+        let mut doc = sample();
+        let orphan = doc.add_drawing(DrawingContent::default());
+        let loaded = from_str(&to_string(&doc).unwrap()).unwrap();
+        assert!(doc.drawing(orphan).is_some());
+        assert!(loaded.drawing(orphan).is_none());
+        doc.garbage_collect_drawings();
+        assert_eq!(loaded, doc);
+    }
+
+    #[test]
+    fn atomic_save_replaces_file_and_leaves_no_temp() {
+        let dir = std::env::temp_dir().join(format!("rusting-save-{}", DocumentIdForTest::new()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("project.rusting");
+        std::fs::write(&path, "old contents").unwrap();
+        let doc = sample();
+        save(&doc, &path).unwrap();
+        let entries: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        let loaded = load(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(entries, ["project.rusting"]);
+        assert_eq!(loaded.unwrap(), doc);
+    }
+
+    #[test]
+    fn failed_save_leaves_old_file_alone() {
+        let dir = std::env::temp_dir().join(format!("rusting-fail-{}", DocumentIdForTest::new()));
+        std::fs::create_dir(&dir).unwrap();
+        // The target is a non-empty directory, so the final rename fails.
+        let path = dir.join("busy.rusting");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("keep"), "x").unwrap();
+        let result = save(&sample(), &path);
+        let mut entries: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        entries.sort();
+        let kept = std::fs::read_to_string(path.join("keep"));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(matches!(result, Err(FileFormatError::Io(_))));
+        assert_eq!(entries, ["busy.rusting"]);
+        assert_eq!(kept.unwrap(), "x");
+        assert!(matches!(
+            save(&sample(), Path::new("/definitely/not/a/dir/x.rusting")),
+            Err(FileFormatError::Io(_))
         ));
     }
 }
