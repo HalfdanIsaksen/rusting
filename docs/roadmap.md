@@ -5,10 +5,10 @@ Each phase lists its acceptance criteria. Phases run in parallel where their cra
 | Phase | Branch | Owns | Status |
 |---|---|---|---|
 | 0 Workspace and architecture | `phase-0/workspace` | everything | ✅ done |
-| 1 Window and canvas | `feat/renderer-canvas` | `renderer`, `apps/desktop`, `assets/shaders` | planned |
-| 2 Vector drawing engine | `feat/vector-drawing` | `drawing` | planned |
-| 4/5 Timeline engine and playback | `feat/timeline-engine` | `timeline`, `animation_core` | planned |
-| 6 Document ops, undo, persistence | `feat/document-persistence` | `document`, `scene`, `editor`, `file_format` | planned |
+| 1 Window and canvas | `feat/renderer-canvas` | `renderer`, `apps/desktop`, `assets/shaders` | ✅ merged |
+| 2 Vector drawing engine | `feat/vector-drawing` | `drawing` | ✅ merged |
+| 4/5 Timeline engine and playback | `feat/timeline-engine` | `timeline`, `animation_core` | ✅ merged |
+| 6 Document ops, undo, persistence | `feat/document-persistence` | `document`, `scene`, `editor`, `file_format` | ✅ merged |
 | 3–5 UI integration (layers, timeline, toolbar, onion skin) | `feat/ui-integration` | `ui`, `apps/desktop` | after 1 + 2 + 4 + 6 merge |
 | 7 Refinement | — | — | after MVP |
 
