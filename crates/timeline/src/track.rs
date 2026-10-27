@@ -1,8 +1,9 @@
 //! Per-layer drawing tracks.
 
-use animation_core::{DrawingId, FrameIndex};
+use animation_core::{DrawingId, FrameIndex, FrameRange};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::ops::Bound;
 
 /// A keyframe on a drawing track.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,7 +27,7 @@ impl Keyframe {
 /// An ordered set of drawing keyframes for one layer.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Track {
-    keys: BTreeMap<FrameIndex, Keyframe>,
+    pub(crate) keys: BTreeMap<FrameIndex, Keyframe>,
 }
 
 impl Track {
@@ -55,6 +56,37 @@ impl Track {
         self.keys.range(..=frame).next_back().map(|(f, k)| (*f, k))
     }
 
+    /// The first keyframe strictly after `frame`.
+    pub fn next_key_after(&self, frame: FrameIndex) -> Option<(FrameIndex, &Keyframe)> {
+        self.keys
+            .range((Bound::Excluded(frame), Bound::Unbounded))
+            .next()
+            .map(|(f, k)| (*f, k))
+    }
+
+    /// The last keyframe strictly before `frame`.
+    pub fn prev_key_before(&self, frame: FrameIndex) -> Option<(FrameIndex, &Keyframe)> {
+        self.keys.range(..frame).next_back().map(|(f, k)| (*f, k))
+    }
+
+    /// The span of frames covered by the key exposed at `frame`.
+    ///
+    /// The span starts at that key and ends at the next key, or at
+    /// `frame_count` (the document length), whichever comes first. Returns
+    /// `None` if `frame` is past the document end or no key covers it. An
+    /// [`Keyframe::Empty`] key also has an exposure range; check
+    /// [`Track::exposed_key`] if only drawings matter.
+    pub fn exposure_range(&self, frame: FrameIndex, frame_count: u32) -> Option<FrameRange> {
+        if frame.0 >= frame_count {
+            return None;
+        }
+        let (start, _) = self.exposed_key(frame)?;
+        let end = self
+            .next_key_after(start)
+            .map_or(frame_count, |(f, _)| f.0.min(frame_count));
+        Some(FrameRange::new(start, FrameIndex(end)))
+    }
+
     /// The drawing visible at `frame`, if any.
     pub fn drawing_at(&self, frame: FrameIndex) -> Option<DrawingId> {
         self.exposed_key(frame).and_then(|(_, k)| k.drawing())
@@ -79,6 +111,58 @@ impl Track {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample() -> (Track, DrawingId, DrawingId) {
+        let (a, b) = (DrawingId::new(), DrawingId::new());
+        let mut t = Track::new();
+        t.set_key(FrameIndex(2), Keyframe::Drawing(a));
+        t.set_key(FrameIndex(5), Keyframe::Empty);
+        t.set_key(FrameIndex(9), Keyframe::Drawing(b));
+        (t, a, b)
+    }
+
+    #[test]
+    fn next_and_prev_key_are_strict() {
+        let (t, ..) = sample();
+        assert_eq!(
+            t.next_key_after(FrameIndex(0)).map(|k| k.0),
+            Some(FrameIndex(2))
+        );
+        assert_eq!(
+            t.next_key_after(FrameIndex(2)).map(|k| k.0),
+            Some(FrameIndex(5))
+        );
+        assert_eq!(
+            t.next_key_after(FrameIndex(6)).map(|k| k.0),
+            Some(FrameIndex(9))
+        );
+        assert_eq!(t.next_key_after(FrameIndex(9)), None);
+        assert_eq!(
+            t.prev_key_before(FrameIndex(9)).map(|k| k.0),
+            Some(FrameIndex(5))
+        );
+        assert_eq!(
+            t.prev_key_before(FrameIndex(4)).map(|k| k.0),
+            Some(FrameIndex(2))
+        );
+        assert_eq!(t.prev_key_before(FrameIndex(2)), None);
+        assert_eq!(Track::new().next_key_after(FrameIndex(0)), None);
+    }
+
+    #[test]
+    fn exposure_range_ends_at_next_key_or_document_end() {
+        let (t, ..) = sample();
+        let r = |s, e| Some(FrameRange::new(FrameIndex(s), FrameIndex(e)));
+        assert_eq!(t.exposure_range(FrameIndex(0), 24), None);
+        assert_eq!(t.exposure_range(FrameIndex(2), 24), r(2, 5));
+        assert_eq!(t.exposure_range(FrameIndex(4), 24), r(2, 5));
+        assert_eq!(t.exposure_range(FrameIndex(7), 24), r(5, 9));
+        assert_eq!(t.exposure_range(FrameIndex(20), 24), r(9, 24));
+        // Document shorter than the next key clips the exposure.
+        assert_eq!(t.exposure_range(FrameIndex(3), 4), r(2, 4));
+        // Past the document end.
+        assert_eq!(t.exposure_range(FrameIndex(24), 24), None);
+    }
 
     #[test]
     fn stepped_exposure_holds_until_next_key() {
