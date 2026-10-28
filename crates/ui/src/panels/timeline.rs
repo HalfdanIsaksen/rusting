@@ -116,7 +116,10 @@ fn keys_and_onion(ui: &mut egui::Ui, session: &mut Session) {
             .and_then(|id| session.document.track(id))
             .and_then(|t| t.key_at(frame))
             .is_some();
-        let free = layer.is_some() && !key_here;
+        // Off while playing: the key-at-frame state changes every frame.
+        let editable = layer.is_some() && !session.playback.is_playing();
+        let free = editable && !key_here;
+        let key_here = editable && key_here;
 
         if ui
             .add_enabled(free, egui::Button::new("+ Drawing key"))
