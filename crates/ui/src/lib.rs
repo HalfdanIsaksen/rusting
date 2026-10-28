@@ -20,4 +20,4 @@ pub use onion::{OnionDrawing, OnionSkin};
 pub use panels::show;
 pub use playback::Playback;
 pub use session::{DiscardAction, Request, Session};
-pub use tools::ToolController;
+pub use tools::{EraserMode, ToolController};

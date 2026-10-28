@@ -11,12 +11,16 @@
 //!   [`BrushStyle`]; see [`Mesh`] for how the renderer should blend.
 //! - [`Stroke::hit_test`] and [`VectorDrawing::strokes_hit`] support the
 //!   whole-stroke eraser.
+//! - [`Stroke::erase`] cuts away the part of a stroke an eraser passes over
+//!   (the partial eraser); see [`erase`] for the approximation used.
 
 pub mod builder;
+pub mod erase;
 mod hit;
 pub mod stroke;
 pub mod tessellate;
 
 pub use builder::StrokeBuilder;
+pub use erase::EraseResult;
 pub use stroke::{BrushStyle, DrawingContent, Stroke, StrokePoint, VectorDrawing};
 pub use tessellate::{Mesh, TessellationOptions, tessellate, tessellate_with};
