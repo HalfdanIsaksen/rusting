@@ -572,6 +572,67 @@ impl Command for SetFrameCount {
     }
 }
 
+/// Several commands run as one undo step: applied in order, undone in
+/// reverse. If one fails, the ones before it are rolled back, so the document
+/// is left unchanged.
+#[derive(Debug)]
+pub struct Batch {
+    label: String,
+    commands: Vec<Box<dyn Command>>,
+}
+
+impl Batch {
+    /// Groups `commands` under one undo label.
+    pub fn new(label: impl Into<String>, commands: Vec<Box<dyn Command>>) -> Self {
+        Self {
+            label: label.into(),
+            commands,
+        }
+    }
+
+    /// Whether the batch holds no commands.
+    pub fn is_empty(&self) -> bool {
+        self.commands.is_empty()
+    }
+
+    /// Number of grouped commands.
+    pub fn len(&self) -> usize {
+        self.commands.len()
+    }
+}
+
+impl Command for Batch {
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        for i in 0..self.commands.len() {
+            if let Err(err) = self.commands[i].apply(doc) {
+                for done in self.commands[..i].iter_mut().rev() {
+                    // Best effort: these just applied, so undo should succeed.
+                    let _ = done.undo(doc);
+                }
+                return Err(err);
+            }
+        }
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        let count = self.commands.len();
+        for i in (0..count).rev() {
+            if let Err(err) = self.commands[i].undo(doc) {
+                for done in &mut self.commands[i + 1..] {
+                    let _ = done.apply(doc);
+                }
+                return Err(err);
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -773,5 +834,53 @@ mod tests {
         assert_eq!(d.drawing_at(l, FrameIndex(0)), None);
         h.undo(&mut d).unwrap();
         assert_eq!(d, before);
+    }
+
+    #[test]
+    fn batch_is_one_step_and_rolls_back_on_failure() {
+        let mut d = doc();
+        let l = d.add_layer("L");
+        let a = Stroke::new(
+            vec![
+                document::drawing::StrokePoint::new(animation_core::Vec2::ZERO),
+                document::drawing::StrokePoint::new(animation_core::Vec2::ONE),
+            ],
+            document::drawing::BrushStyle::default(),
+        );
+        let b = Stroke::new(a.points.clone(), a.style);
+        let (ia, ib) = (a.id, b.id);
+        let mut h = History::new();
+        h.execute(&mut d, Box::new(AddStroke::new(l, FrameIndex(0), a)))
+            .unwrap();
+        h.execute(&mut d, Box::new(AddStroke::new(l, FrameIndex(0), b)))
+            .unwrap();
+        let before = d.clone();
+
+        let erase = Batch::new(
+            "Erase",
+            vec![
+                Box::new(RemoveStroke::new(l, FrameIndex(0), ia)),
+                Box::new(RemoveStroke::new(l, FrameIndex(0), ib)),
+            ],
+        );
+        assert_eq!(erase.len(), 2);
+        h.execute(&mut d, Box::new(erase)).unwrap();
+        assert_eq!(h.undo_label(), Some("Erase"));
+        let drawing = d.drawing_at(l, FrameIndex(0)).unwrap();
+        assert!(d.drawing(drawing).unwrap().as_vector().unwrap().is_empty());
+        h.undo(&mut d).unwrap();
+        assert_eq!(d, before);
+
+        // The second removal fails, so the first is rolled back.
+        let failing = Batch::new(
+            "Erase",
+            vec![
+                Box::new(RemoveStroke::new(l, FrameIndex(0), ia)),
+                Box::new(RemoveStroke::new(l, FrameIndex(0), StrokeId::new())),
+            ],
+        );
+        assert!(h.execute(&mut d, Box::new(failing)).is_err());
+        assert_eq!(d, before);
+        assert!(Batch::new("Nothing", Vec::new()).is_empty());
     }
 }

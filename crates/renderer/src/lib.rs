@@ -15,7 +15,8 @@ pub mod viewport;
 
 pub use canvas::{CanvasFrame, CanvasRenderer, CanvasStyle, StrokeDraw, transform_matrix};
 pub use canvas_target::{
-    CANVAS_DISPLAY_FORMAT, CANVAS_RENDER_FORMAT, CANVAS_SAMPLE_COUNT, CanvasTarget,
+    CANVAS_DEPTH_FORMAT, CANVAS_DISPLAY_FORMAT, CANVAS_RENDER_FORMAT, CANVAS_SAMPLE_COUNT,
+    CanvasTarget,
 };
 pub use gpu::{Gpu, RendererError};
 pub use mesh::{Mesh, MeshRef, MeshSource};

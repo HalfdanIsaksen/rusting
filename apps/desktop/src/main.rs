@@ -6,11 +6,14 @@
 
 mod shell;
 
+use document::animation_core::Rgba;
 use document::animation_core::glam::Mat4;
-use document::animation_core::{FrameIndex, Rgba};
-use document::{CanvasSize, Document};
-use renderer::{CanvasFrame, CanvasRenderer, Gpu, Mesh, StrokeDraw, StrokeKey, Viewport};
+use document::drawing::{Stroke, tessellate};
+use renderer::{
+    CanvasFrame, CanvasRenderer, Gpu, Mesh, StrokeDraw, StrokeKey, Viewport, transform_matrix,
+};
 use shell::Shell;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
@@ -47,26 +50,27 @@ struct App {
     shell: Shell,
     /// When egui asked to be repainted next (for animations, tooltips, ...).
     next_repaint: Option<Instant>,
+    /// The window title last set, to avoid redundant updates.
+    title: String,
     /// Set when startup fails, so `main` can report it after the loop exits.
     fatal: Option<String>,
 }
 
 impl App {
-    fn new() -> Self {
-        let document = Document::new(
-            "Untitled",
-            CanvasSize {
-                width: 1920,
-                height: 1080,
-            },
-        );
+    /// The app with a new document, or the project at `open` if given.
+    fn new(open: Option<&Path>) -> Self {
+        let mut session = ui::Session::new();
+        if let Some(path) = open {
+            session.open_path(path);
+        }
         Self {
             window: None,
             graphics: None,
             egui_ctx: egui::Context::default(),
             egui_state: None,
-            shell: Shell::new(document),
+            shell: Shell::new(session),
             next_repaint: None,
+            title: String::new(),
             fatal: None,
         }
     }
@@ -112,7 +116,7 @@ impl App {
         Ok(())
     }
 
-    fn redraw(&mut self) {
+    fn redraw(&mut self, event_loop: &ActiveEventLoop) {
         let (Some(window), Some(graphics), Some(egui_state)) =
             (&self.window, &mut self.graphics, &mut self.egui_state)
         else {
@@ -125,6 +129,11 @@ impl App {
         let texture = graphics.canvas_texture;
         let output = self.egui_ctx.run_ui(raw_input, |ui| shell.ui(ui, texture));
         egui_state.handle_platform_output(window, output.platform_output);
+        let title = shell.session.title();
+        if title != self.title {
+            window.set_title(&title);
+            self.title = title;
+        }
 
         let Graphics {
             gpu,
@@ -211,7 +220,14 @@ impl App {
             egui_renderer.free_texture(&id);
         }
 
-        // 4. Schedule the next frame only if egui wants one.
+        // 4. Native dialogs and quitting, requested by the UI.
+        let window = window.clone();
+        for request in self.shell.session.take_requests() {
+            handle_request(&mut self.shell.session, request, event_loop);
+            window.request_redraw();
+        }
+
+        // 5. Schedule the next frame only if egui wants one.
         let delay = output
             .viewport_output
             .get(&egui::ViewportId::ROOT)
@@ -224,22 +240,73 @@ impl App {
     }
 }
 
-/// Strokes to draw this frame: the document at frame 0, plus the debug triangle.
+/// Strokes to draw this frame, bottom to top: onion skins, the document at
+/// the current frame (minus strokes being erased), the stroke being drawn,
+/// and the debug triangle. Meshes are tessellated once and cached by id.
 fn collect_draws(
     device: &wgpu::Device,
     canvas: &mut CanvasRenderer,
     shell: &Shell,
 ) -> Vec<StrokeDraw> {
-    let list = shell.document.evaluate(FrameIndex(0));
-    // TODO(drawing): pass the drawing crate's tessellator here once it lands,
-    // e.g. `|stroke| Some(drawing::tessellate(stroke))`.
-    let mut draws = canvas.prepare_render_list(device, &list, |_stroke| None::<Mesh>);
+    let session = &shell.session;
+    let doc = &session.document;
+    let frame = session.current_frame();
+    let cache = canvas.stroke_cache_mut();
+    let mut draws = Vec::new();
+    let mut push = |stroke: &Stroke, color: Rgba, transform: Mat4| {
+        cache.ensure(device, stroke.id, StrokeKey::of(stroke), || {
+            Some(tessellate(stroke))
+        });
+        draws.push(StrokeDraw {
+            id: stroke.id,
+            color,
+            transform,
+        });
+    };
+
+    for skin in session.onion.collect(doc, frame) {
+        let transform = transform_matrix(&skin.transform);
+        for stroke in skin.drawing.strokes() {
+            push(
+                stroke,
+                skin.color.with_opacity(stroke.style.opacity),
+                transform,
+            );
+        }
+    }
+
+    let erasing = session.tools.erasing();
+    let mut preview = session.tools.preview();
+    let style_color = |stroke: &Stroke, layer_opacity: f32| {
+        stroke
+            .style
+            .color
+            .with_opacity(stroke.style.opacity * layer_opacity)
+    };
+    for layer in &doc.evaluate(frame).layers {
+        let transform = transform_matrix(&layer.transform);
+        for stroke in layer.drawing.strokes() {
+            if !erasing.contains(&stroke.id) {
+                push(stroke, style_color(stroke, layer.opacity), transform);
+            }
+        }
+        if let Some((_, stroke)) = preview.take_if(|(id, _)| *id == layer.layer_id) {
+            push(&stroke, style_color(&stroke, layer.opacity), transform);
+        }
+    }
+    // The active layer shows nothing yet at this frame: draw the preview on top.
+    if let Some((layer_id, stroke)) = preview {
+        let layer = doc.layers().get(layer_id);
+        let transform = layer.map_or(Mat4::IDENTITY, |l| transform_matrix(&l.transform));
+        let opacity = layer.map_or(1.0, |l| l.opacity);
+        push(&stroke, style_color(&stroke, opacity), transform);
+    }
 
     if shell.debug.test_triangle {
         let id = shell.debug_triangle_id;
-        let canvas_size = &shell.document.canvas;
+        let canvas_size = &doc.canvas;
         let (w, h) = (canvas_size.width as f32, canvas_size.height as f32);
-        canvas.stroke_cache_mut().ensure(
+        cache.ensure(
             device,
             id,
             StrokeKey::from_raw(u64::from(canvas_size.width) << 32 | u64::from(canvas_size.height)),
@@ -257,6 +324,49 @@ fn collect_draws(
         });
     }
     draws
+}
+
+/// Native file dialogs (via `rfd`) and quitting, on behalf of the UI.
+fn handle_request(session: &mut ui::Session, request: ui::Request, event_loop: &ActiveEventLoop) {
+    let dialog = || {
+        let dialog =
+            rfd::FileDialog::new().add_filter("Rusting project", &[ui::session::PROJECT_EXTENSION]);
+        match session.path.as_deref().and_then(Path::parent) {
+            Some(dir) => dialog.set_directory(dir),
+            None => dialog,
+        }
+    };
+    match request {
+        ui::Request::OpenDialog => {
+            if let Some(path) = dialog().set_title("Open Project").pick_file() {
+                session.open_path(&path);
+            }
+        }
+        ui::Request::SaveAsDialog => {
+            let name = session
+                .path
+                .as_deref()
+                .and_then(Path::file_name)
+                .map_or_else(
+                    || {
+                        format!(
+                            "{}.{}",
+                            session.document.name,
+                            ui::session::PROJECT_EXTENSION
+                        )
+                    },
+                    |n| n.to_string_lossy().into_owned(),
+                );
+            if let Some(path) = dialog()
+                .set_title("Save Project")
+                .set_file_name(name)
+                .save_file()
+            {
+                session.save_to(&path);
+            }
+        }
+        ui::Request::Quit => event_loop.exit(),
+    }
 }
 
 impl ApplicationHandler for App {
@@ -284,7 +394,11 @@ impl ApplicationHandler for App {
             window.request_redraw();
         }
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                // Asks first if there are unsaved changes; quits via a request.
+                self.shell.session.request(ui::DiscardAction::Quit);
+                window.request_redraw();
+            }
             WindowEvent::Resized(size) => {
                 if let Some(graphics) = &mut self.graphics {
                     graphics.gpu.resize(size.width, size.height);
@@ -292,7 +406,7 @@ impl ApplicationHandler for App {
                 window.request_redraw();
             }
             WindowEvent::ScaleFactorChanged { .. } => window.request_redraw(),
-            WindowEvent::RedrawRequested => self.redraw(),
+            WindowEvent::RedrawRequested => self.redraw(event_loop),
             _ => {}
         }
     }
@@ -327,7 +441,9 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    let mut app = App::new();
+    // `rusting path/to/file.rusting` opens that project.
+    let open = std::env::args_os().nth(1).map(PathBuf::from);
+    let mut app = App::new(open.as_deref());
     if let Err(err) = event_loop.run_app(&mut app) {
         tracing::error!(%err, "event loop error");
         return std::process::ExitCode::FAILURE;

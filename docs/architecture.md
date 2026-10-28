@@ -18,6 +18,7 @@ Arrows point from a dependency to its dependents. Rules:
 - No cycles. Core crates (`animation_core`, `timeline`, `drawing`, `scene`, `document`, `file_format`, `editor`) never depend on `renderer`, `ui`, `winit`, or `egui`.
 - `document` re-exports `animation_core`, `drawing`, `scene`, and `timeline`, so downstream crates see one version of each type.
 - Only `ui` and `apps/desktop` may depend on egui. Only `apps/desktop` depends on winit.
+- `ui` also depends on `file_format` (its `Session` opens and saves projects). Native file dialogs (`rfd`) live in `apps/desktop`.
 - `renderer` takes anything wgpu can turn into a surface. It does not know about winit.
 
 ## Shared types (owned by `animation_core`)

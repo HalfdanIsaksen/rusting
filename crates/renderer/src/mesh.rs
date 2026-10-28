@@ -32,6 +32,17 @@ impl MeshSource for Mesh {
     }
 }
 
+/// The `drawing` crate's tessellator output can be uploaded directly.
+impl MeshSource for drawing::Mesh {
+    fn vertices(&self) -> &[[f32; 2]] {
+        &self.vertices
+    }
+
+    fn indices(&self) -> &[u32] {
+        &self.indices
+    }
+}
+
 /// A borrowed triangle mesh.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MeshRef<'a> {

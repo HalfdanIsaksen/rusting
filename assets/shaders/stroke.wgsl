@@ -9,6 +9,9 @@ struct Draw {
     model: mat4x4<f32>,
     // Straight-alpha linear colour.
     color: vec4<f32>,
+    // Depth in 0..1; later strokes are nearer. Each stroke covers a pixel
+    // once, so overlapping triangles of a translucent stroke don't darken.
+    depth: f32,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -16,7 +19,9 @@ struct Draw {
 
 @vertex
 fn vs_main(@location(0) position: vec2<f32>) -> @builtin(position) vec4<f32> {
-    return globals.view_proj * draw.model * vec4<f32>(position, 0.0, 1.0);
+    var clip = globals.view_proj * draw.model * vec4<f32>(position, 0.0, 1.0);
+    clip.z = draw.depth * clip.w;
+    return clip;
 }
 
 @fragment

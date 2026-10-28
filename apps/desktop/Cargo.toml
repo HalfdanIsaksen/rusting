@@ -17,12 +17,14 @@ editor.workspace = true
 renderer.workspace = true
 ui.workspace = true
 winit.workspace = true
-# egui 0.37 has no default features; bundle its fonts so text renders.
-egui = { workspace = true, features = ["default_fonts"] }
+# egui 0.37 has no default features; bundle its fonts (and the emoji/icon fonts
+# the panels use for tool and playback symbols) so text renders.
+egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
 egui-wgpu.workspace = true
 egui-winit.workspace = true
 wgpu.workspace = true
 pollster.workspace = true
+rfd = "0.17"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

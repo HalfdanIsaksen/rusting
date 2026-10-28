@@ -8,12 +8,17 @@ pub const CANVAS_RENDER_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8
 pub const CANVAS_DISPLAY_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// MSAA sample count of the canvas.
 pub const CANVAS_SAMPLE_COUNT: u32 = 4;
+/// Depth format of the canvas. Strokes use depth so each stroke covers a
+/// pixel only once, even where its own triangles overlap.
+pub const CANVAS_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// A 4x MSAA colour buffer and the single-sample texture it resolves into.
+/// A 4x MSAA colour buffer (plus depth) and the single-sample texture it
+/// resolves into.
 #[derive(Debug)]
 pub struct CanvasTarget {
     size: (u32, u32),
     msaa_view: wgpu::TextureView,
+    depth_view: wgpu::TextureView,
     resolved: wgpu::Texture,
     resolve_view: wgpu::TextureView,
     display_view: wgpu::TextureView,
@@ -50,7 +55,18 @@ impl CanvasTarget {
                 | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[CANVAS_RENDER_FORMAT],
         });
+        let depth = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("canvas-depth"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: CANVAS_SAMPLE_COUNT,
+            dimension: wgpu::TextureDimension::D2,
+            format: CANVAS_DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
         let msaa_view = msaa.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
         let resolve_view = resolved.create_view(&wgpu::TextureViewDescriptor {
             label: Some("canvas-resolve-srgb"),
             format: Some(CANVAS_RENDER_FORMAT),
@@ -64,6 +80,7 @@ impl CanvasTarget {
         Self {
             size,
             msaa_view,
+            depth_view,
             resolved,
             resolve_view,
             display_view,
@@ -99,6 +116,10 @@ impl CanvasTarget {
 
     pub(crate) fn msaa_view(&self) -> &wgpu::TextureView {
         &self.msaa_view
+    }
+
+    pub(crate) fn depth_view(&self) -> &wgpu::TextureView {
+        &self.depth_view
     }
 
     pub(crate) fn resolve_view(&self) -> &wgpu::TextureView {
