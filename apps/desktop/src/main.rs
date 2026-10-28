@@ -8,7 +8,7 @@ mod shell;
 
 use document::animation_core::Rgba;
 use document::animation_core::glam::Mat4;
-use document::drawing::{Stroke, tessellate};
+use document::drawing::{Fill, Stroke, tessellate, tessellate_fill};
 use renderer::{
     CanvasFrame, CanvasRenderer, Gpu, Mesh, StrokeDraw, StrokeKey, Viewport, transform_matrix,
 };
@@ -240,9 +240,17 @@ impl App {
     }
 }
 
-/// Strokes to draw this frame, bottom to top: onion skins, the document at
-/// the current frame (minus strokes being erased), the stroke being drawn,
-/// and the debug triangle. Meshes are tessellated once and cached by id.
+/// Something with a cached mesh: a stroke or a fill.
+#[derive(Clone, Copy)]
+enum Item<'a> {
+    Stroke(&'a Stroke),
+    Fill(&'a Fill),
+}
+
+/// Meshes to draw this frame, bottom to top: onion skins, the document at
+/// the current frame (each drawing's fills under its strokes, minus strokes
+/// being erased), the stroke being drawn, and the debug triangle. Meshes are
+/// tessellated once and cached by id.
 fn collect_draws(
     device: &wgpu::Device,
     canvas: &mut CanvasRenderer,
@@ -253,12 +261,23 @@ fn collect_draws(
     let frame = session.current_frame();
     let cache = canvas.stroke_cache_mut();
     let mut draws = Vec::new();
-    let mut push = |stroke: &Stroke, color: Rgba, transform: Mat4| {
-        cache.ensure(device, stroke.id, StrokeKey::of(stroke), || {
-            Some(tessellate(stroke))
-        });
+    let mut push = |item: Item<'_>, color: Rgba, transform: Mat4| {
+        let id = match item {
+            Item::Stroke(stroke) => {
+                cache.ensure(device, stroke.id, StrokeKey::of(stroke), || {
+                    Some(tessellate(stroke))
+                });
+                stroke.id.into()
+            }
+            Item::Fill(fill) => {
+                cache.ensure(device, fill.id, StrokeKey::of_fill(fill), || {
+                    Some(tessellate_fill(fill))
+                });
+                fill.id.into()
+            }
+        };
         draws.push(StrokeDraw {
-            id: stroke.id,
+            id,
             color,
             transform,
         });
@@ -266,9 +285,16 @@ fn collect_draws(
 
     for skin in session.onion.collect(doc, frame) {
         let transform = transform_matrix(&skin.transform);
+        for fill in skin.drawing.fills() {
+            push(
+                Item::Fill(fill),
+                skin.color.with_opacity(fill.opacity),
+                transform,
+            );
+        }
         for stroke in skin.drawing.strokes() {
             push(
-                stroke,
+                Item::Stroke(stroke),
                 skin.color.with_opacity(stroke.style.opacity),
                 transform,
             );
@@ -285,13 +311,25 @@ fn collect_draws(
     };
     for layer in &doc.evaluate(frame).layers {
         let transform = transform_matrix(&layer.transform);
+        for fill in layer.drawing.fills() {
+            let color = fill.color.with_opacity(fill.opacity * layer.opacity);
+            push(Item::Fill(fill), color, transform);
+        }
         for stroke in layer.drawing.strokes() {
             if !erasing.contains(&stroke.id) {
-                push(stroke, style_color(stroke, layer.opacity), transform);
+                push(
+                    Item::Stroke(stroke),
+                    style_color(stroke, layer.opacity),
+                    transform,
+                );
             }
         }
         if let Some((_, stroke)) = preview.take_if(|(id, _)| *id == layer.layer_id) {
-            push(&stroke, style_color(&stroke, layer.opacity), transform);
+            push(
+                Item::Stroke(&stroke),
+                style_color(&stroke, layer.opacity),
+                transform,
+            );
         }
     }
     // The active layer shows nothing yet at this frame: draw the preview on top.
@@ -299,7 +337,11 @@ fn collect_draws(
         let layer = doc.layers().get(layer_id);
         let transform = layer.map_or(Mat4::IDENTITY, |l| transform_matrix(&l.transform));
         let opacity = layer.map_or(1.0, |l| l.opacity);
-        push(&stroke, style_color(&stroke, opacity), transform);
+        push(
+            Item::Stroke(&stroke),
+            style_color(&stroke, opacity),
+            transform,
+        );
     }
 
     if shell.debug.test_triangle {
@@ -318,7 +360,7 @@ fn collect_draws(
             },
         );
         draws.push(StrokeDraw {
-            id,
+            id: id.into(),
             color: Rgba::new(0.8, 0.05, 0.1, 0.85),
             transform: Mat4::IDENTITY,
         });

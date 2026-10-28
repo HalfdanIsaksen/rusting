@@ -20,5 +20,5 @@ pub use canvas_target::{
 };
 pub use gpu::{Gpu, RendererError};
 pub use mesh::{Mesh, MeshRef, MeshSource};
-pub use stroke_cache::{StrokeCache, StrokeKey};
+pub use stroke_cache::{MeshId, StrokeCache, StrokeKey};
 pub use viewport::{MAX_ZOOM, MIN_ZOOM, Viewport};

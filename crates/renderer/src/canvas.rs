@@ -4,13 +4,13 @@ use crate::canvas_target::{
     CANVAS_DEPTH_FORMAT, CANVAS_RENDER_FORMAT, CANVAS_SAMPLE_COUNT, CanvasTarget,
 };
 use crate::mesh::MeshSource;
-use crate::stroke_cache::{DEFAULT_MAX_UNUSED_RENDERS, StrokeCache, StrokeKey};
+use crate::stroke_cache::{DEFAULT_MAX_UNUSED_RENDERS, MeshId, StrokeCache, StrokeKey};
 use crate::viewport::Viewport;
+use animation_core::Rgba;
 use animation_core::glam::{Mat4, Quat, Vec2};
-use animation_core::{Rgba, StrokeId};
 use document::RenderList;
 use document::scene::Transform2D;
-use drawing::Stroke;
+use drawing::{Fill, Stroke};
 
 const BACKGROUND_WGSL: &str = include_str!("../../../assets/shaders/background.wgsl");
 const FRAME_WGSL: &str = include_str!("../../../assets/shaders/canvas_frame.wgsl");
@@ -62,11 +62,12 @@ impl Default for CanvasStyle {
     }
 }
 
-/// One stroke to draw: which cached mesh, its colour and layer transform.
+/// One stroke or fill to draw: which cached mesh, its colour and layer transform.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StrokeDraw {
-    /// The stroke whose cached mesh is drawn. Strokes with no cached mesh are skipped.
-    pub id: StrokeId,
+    /// The stroke or fill whose cached mesh is drawn. Entries with no cached
+    /// mesh are skipped.
+    pub id: MeshId,
     /// Straight-alpha linear colour (opacity already applied).
     pub color: Rgba,
     /// Layer-to-document transform.
@@ -235,25 +236,38 @@ impl CanvasRenderer {
         &mut self.strokes
     }
 
-    /// Makes sure every stroke in `list` has a cached mesh (calling
-    /// `tessellate` for new or changed strokes) and returns the draw list,
-    /// bottom to top. Stroke colour gets the brush and layer opacity applied.
-    pub fn prepare_render_list<M: MeshSource>(
+    /// Makes sure every stroke and fill in `list` has a cached mesh (calling
+    /// `tessellate` / `tessellate_fill` for new or changed ones) and returns
+    /// the draw list, bottom to top: per layer, its fills, then its strokes.
+    /// Colours get the brush/fill and layer opacity applied.
+    pub fn prepare_render_list<M: MeshSource, F: MeshSource>(
         &mut self,
         device: &wgpu::Device,
         list: &RenderList<'_>,
         mut tessellate: impl FnMut(&Stroke) -> Option<M>,
+        mut tessellate_fill: impl FnMut(&Fill) -> Option<F>,
     ) -> Vec<StrokeDraw> {
         let mut draws = Vec::new();
         for layer in &list.layers {
             let transform = transform_matrix(&layer.transform);
+            for fill in layer.drawing.fills() {
+                self.strokes
+                    .ensure(device, fill.id, StrokeKey::of_fill(fill), || {
+                        tessellate_fill(fill)
+                    });
+                draws.push(StrokeDraw {
+                    id: fill.id.into(),
+                    color: fill.color.with_opacity(fill.opacity * layer.opacity),
+                    transform,
+                });
+            }
             for stroke in layer.drawing.strokes() {
                 self.strokes
                     .ensure(device, stroke.id, StrokeKey::of(stroke), || {
                         tessellate(stroke)
                     });
                 draws.push(StrokeDraw {
-                    id: stroke.id,
+                    id: stroke.id.into(),
                     color: stroke
                         .style
                         .color

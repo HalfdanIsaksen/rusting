@@ -70,7 +70,7 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
     }
 
     let gesture = session.tools.is_active();
-    let (brush, eraser, left, right, up, down, space_down, space_up) = ctx.input_mut(|i| {
+    let (brush, eraser, fill, left, right, up, down, space_down, space_up) = ctx.input_mut(|i| {
         let plain = i.modifiers.is_none();
         let space = |want_pressed: bool| {
             i.events.iter().any(|e| {
@@ -84,6 +84,7 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
         let result = (
             plain && i.key_pressed(Key::B),
             plain && i.key_pressed(Key::E),
+            plain && i.key_pressed(Key::K),
             i.num_presses(Key::ArrowLeft),
             i.num_presses(Key::ArrowRight),
             i.key_pressed(Key::ArrowUp),
@@ -109,6 +110,9 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
         }
         if eraser {
             session.state.tool = Tool::Eraser;
+        }
+        if fill {
+            session.state.tool = Tool::Fill;
         }
     }
     let steps = right as i64 - left as i64;

@@ -13,3 +13,4 @@ Run with `cargo run -p desktop`. Items marked *(MVP)* need features that aren't 
 9. *(MVP)* Onion skin shows neighbouring drawings and doesn't change them.
 10. *(MVP)* Undo and redo a stroke, a layer add or remove, and a keyframe add.
 11. *(MVP)* Save, quit, and reopen. Everything above is preserved. Opening a corrupt file shows an error, not a crash.
+12. Fill bucket (`K`): draw a closed shape and click inside it with Fill; it fills with the brush colour, under the lines, with no white edge. Draw a shape with a small gap: "No gaps" says "Area not closed — try a larger gap setting"; "Small gaps" fills it. Clicking a fill with another colour recolours it. Undo/redo, save and reopen keep fills.

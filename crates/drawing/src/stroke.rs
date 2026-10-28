@@ -1,7 +1,9 @@
 //! Strokes, brush styles and vector drawings.
 
-use animation_core::{Rgba, StrokeId, Vec2};
+use animation_core::{FillId, Rgba, StrokeId, Vec2};
 use serde::{Deserialize, Serialize};
+
+use crate::fill::Fill;
 
 /// One sampled input point of a stroke, in document coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -74,10 +76,13 @@ impl Stroke {
     }
 }
 
-/// A vector drawing: strokes painted bottom-to-top.
+/// A vector drawing: fills painted bottom-to-top, then strokes painted
+/// bottom-to-top on top of every fill.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct VectorDrawing {
     strokes: Vec<Stroke>,
+    /// Filled regions, drawn under all strokes (file format v2+).
+    fills: Vec<Fill>,
 }
 
 impl VectorDrawing {
@@ -113,9 +118,45 @@ impl VectorDrawing {
         &self.strokes
     }
 
-    /// Whether the drawing has no strokes.
+    /// Whether the drawing has no strokes and no fills.
     pub fn is_empty(&self) -> bool {
-        self.strokes.is_empty()
+        self.strokes.is_empty() && self.fills.is_empty()
+    }
+
+    /// Appends a fill on top of the other fills (still under every stroke).
+    pub fn push_fill(&mut self, fill: Fill) {
+        self.fills.push(fill);
+    }
+
+    /// Inserts a fill at `index` (clamped), used to undo a removal.
+    pub fn insert_fill(&mut self, index: usize, fill: Fill) {
+        let index = index.min(self.fills.len());
+        self.fills.insert(index, fill);
+    }
+
+    /// Removes a fill by ID, returning its former index and the fill.
+    pub fn remove_fill(&mut self, id: FillId) -> Option<(usize, Fill)> {
+        let index = self.fills.iter().position(|f| f.id == id)?;
+        Some((index, self.fills.remove(index)))
+    }
+
+    /// Looks up a fill by ID.
+    pub fn fill(&self, id: FillId) -> Option<&Fill> {
+        self.fills.iter().find(|f| f.id == id)
+    }
+
+    /// All fills, bottom-to-top.
+    pub fn fills(&self) -> &[Fill] {
+        &self.fills
+    }
+
+    /// The topmost fill covering `point`, if any.
+    pub fn fill_at(&self, point: Vec2) -> Option<FillId> {
+        self.fills
+            .iter()
+            .rev()
+            .find(|f| f.contains(point))
+            .map(|f| f.id)
     }
 }
 

@@ -11,12 +11,19 @@
 //!   [`BrushStyle`]; see [`Mesh`] for how the renderer should blend.
 //! - [`Stroke::hit_test`] and [`VectorDrawing::strokes_hit`] support the
 //!   whole-stroke eraser.
+//! - [`fill_region`] finds the area enclosed by strokes around a point (the
+//!   fill bucket), optionally closing small gaps, and returns it as vector
+//!   contours; [`tessellate_fill`] turns a [`Fill`] into a [`Mesh`].
 
 pub mod builder;
+pub mod fill;
+mod fill_tessellate;
 mod hit;
 pub mod stroke;
 pub mod tessellate;
 
 pub use builder::StrokeBuilder;
+pub use fill::{Fill, FillError, FillShape, GapClosing, fill_region};
+pub use fill_tessellate::tessellate_fill;
 pub use stroke::{BrushStyle, DrawingContent, Stroke, StrokePoint, VectorDrawing};
 pub use tessellate::{Mesh, TessellationOptions, tessellate, tessellate_with};

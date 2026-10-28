@@ -1,5 +1,8 @@
 //! Concrete document commands.
 
+mod fill;
+pub use fill::{AddFill, RemoveFill};
+
 use crate::{Command, CommandError};
 use animation_core::{DrawingId, Fps, FrameIndex, LayerId, StrokeId};
 use document::drawing::{DrawingContent, Stroke, VectorDrawing};
