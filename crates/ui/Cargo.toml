@@ -8,7 +8,11 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+document.workspace = true
 editor.workspace = true
+file_format.workspace = true
+egui.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true

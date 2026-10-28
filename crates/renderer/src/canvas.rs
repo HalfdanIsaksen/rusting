@@ -1,6 +1,8 @@
 //! Drawing the canvas: workspace, drop shadow and outline, background, strokes.
 
-use crate::canvas_target::{CANVAS_RENDER_FORMAT, CANVAS_SAMPLE_COUNT, CanvasTarget};
+use crate::canvas_target::{
+    CANVAS_DEPTH_FORMAT, CANVAS_RENDER_FORMAT, CANVAS_SAMPLE_COUNT, CanvasTarget,
+};
 use crate::mesh::MeshSource;
 use crate::stroke_cache::{DEFAULT_MAX_UNUSED_RENDERS, StrokeCache, StrokeKey};
 use crate::viewport::Viewport;
@@ -21,7 +23,7 @@ const FRAME_UNIFORM_SIZE: u64 = 80;
 /// Byte size of `Globals` in `stroke.wgsl`.
 const STROKE_GLOBALS_SIZE: u64 = 64;
 /// Byte size of `Draw` in `stroke.wgsl`.
-const STROKE_DRAW_SIZE: u64 = 80;
+const STROKE_DRAW_SIZE: u64 = 96;
 
 /// Colours and sizes of the canvas chrome. Colours are linear RGBA; sizes are
 /// logical points (scaled by the DPI factor when drawn).
@@ -148,6 +150,7 @@ impl CanvasRenderer {
                 &[layout],
                 &[],
                 wgpu::PrimitiveTopology::TriangleStrip,
+                false,
             )
         };
         let background_pipeline = quad("canvas-background", BACKGROUND_WGSL, &background_layout);
@@ -163,6 +166,7 @@ impl CanvasRenderer {
                 attributes: &wgpu::vertex_attr_array![0 => Float32x2],
             })],
             wgpu::PrimitiveTopology::TriangleList,
+            true,
         );
 
         let alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment).max(1);
@@ -345,6 +349,14 @@ impl CanvasRenderer {
                     store: wgpu::StoreOp::Discard,
                 },
             })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: self.target.depth_view(),
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Discard,
+                }),
+                stencil_ops: None,
+            }),
             ..Default::default()
         });
 
@@ -400,15 +412,26 @@ impl CanvasRenderer {
         }
         let stride = usize::try_from(self.draw_stride).unwrap_or(256);
         let mut bytes = vec![0u8; stride * draws.len()];
-        for (chunk, draw) in bytes.chunks_exact_mut(stride).zip(draws) {
+        let count = draws.len() as f32;
+        for (i, (chunk, draw)) in bytes.chunks_exact_mut(stride).zip(draws).enumerate() {
             let mut u = Std140::default();
             u.floats(&draw.transform.to_cols_array());
             u.color(draw.color);
+            // Later strokes are nearer, so they pass the depth test over
+            // earlier ones; a stroke's own overlapping triangles don't.
+            u.float(stroke_depth(i, count));
+            u.floats(&[0.0; 3]);
             let data = u.finish(STROKE_DRAW_SIZE);
             chunk[..data.len()].copy_from_slice(&data);
         }
         queue.write_buffer(&self.draw_buffer, 0, &bytes);
     }
+}
+
+/// Depth of the `index`-th of `count` strokes: from just under 1 (first,
+/// furthest) down towards 0 (last, nearest).
+fn stroke_depth(index: usize, count: f32) -> f32 {
+    1.0 - (index as f32 + 1.0) / (count + 1.0)
 }
 
 /// Integer scissor rectangle covering `min..max`, clipped to the target.
@@ -435,6 +458,7 @@ fn create_pipeline(
     layouts: &[&wgpu::BindGroupLayout],
     buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
     topology: wgpu::PrimitiveTopology,
+    depth_test: bool,
 ) -> wgpu::RenderPipeline {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
@@ -459,7 +483,18 @@ fn create_pipeline(
             topology,
             ..Default::default()
         },
-        depth_stencil: None,
+        // Strokes test and write depth; the quads ignore it.
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: CANVAS_DEPTH_FORMAT,
+            depth_write_enabled: Some(depth_test),
+            depth_compare: Some(if depth_test {
+                wgpu::CompareFunction::Less
+            } else {
+                wgpu::CompareFunction::Always
+            }),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
         multisample: wgpu::MultisampleState {
             count: CANVAS_SAMPLE_COUNT,
             ..Default::default()

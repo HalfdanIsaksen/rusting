@@ -157,3 +157,84 @@ fn transparent_background_draws_checkerboard() {
     assert_eq!(a, at(74, 42), "diagonal cells match");
     assert!(a[0] > 150 && b[0] > 100, "light greys: {a:?} {b:?}");
 }
+
+#[test]
+fn translucent_stroke_covers_each_pixel_once() {
+    let Some((device, queue)) = device() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut canvas = CanvasRenderer::new(&device);
+    let viewport = Viewport::new(Vec2::new(100.0, 50.0), Vec2::new(200.0, 100.0), 1.0);
+    canvas.resize(&device, 200, 100);
+
+    // One stroke made of two overlapping quads (x 0..30 and x 20..50), like
+    // the overlapping segments of a tessellated stroke.
+    let quad = |x0: f32, x1: f32, base: u32| {
+        (
+            vec![[x0, 0.0], [x1, 0.0], [x0, 50.0], [x1, 50.0]],
+            vec![base, base + 1, base + 2, base + 1, base + 3, base + 2],
+        )
+    };
+    let (mut vertices, mut indices) = quad(0.0, 30.0, 0);
+    let (v2, i2) = quad(20.0, 50.0, 4);
+    vertices.extend(v2);
+    indices.extend(i2);
+    let overlapping = StrokeId::new();
+    let on_top = StrokeId::new();
+    let cache = canvas.stroke_cache_mut();
+    cache.ensure(&device, overlapping, StrokeKey::from_raw(1), || {
+        Some(Mesh { vertices, indices })
+    });
+    cache.ensure(&device, on_top, StrokeKey::from_raw(2), || {
+        let (vertices, indices) = quad(40.0, 50.0, 0);
+        Some(Mesh { vertices, indices })
+    });
+    let half_blue = Rgba::new(0.0, 0.0, 1.0, 0.5);
+    let draws = [
+        StrokeDraw {
+            id: overlapping,
+            color: half_blue,
+            transform: Mat4::IDENTITY,
+        },
+        StrokeDraw {
+            id: on_top,
+            color: half_blue,
+            transform: Mat4::IDENTITY,
+        },
+    ];
+    let mut encoder = device.create_command_encoder(&Default::default());
+    canvas.render(
+        &device,
+        &queue,
+        &mut encoder,
+        &viewport,
+        &CanvasFrame {
+            background: Some(Rgba::WHITE),
+            strokes: &draws,
+        },
+    );
+    queue.submit([encoder.finish()]);
+
+    // The viewport fits 100x50 into 200x100 with a margin; map canvas x to screen.
+    let pixels = read_pixels(&device, &queue, &canvas);
+    let (min, max) = viewport.canvas_screen_rect();
+    let scale = (max.x - min.x) / 100.0;
+    let at = |cx: f32| {
+        let x = (min.x + cx * scale) as usize;
+        let y = (min.y + 25.0 * scale) as usize;
+        pixels[y * 200 + x]
+    };
+    let single = at(10.0);
+    let overlap = at(25.0);
+    let second = at(45.0);
+    assert!(single[0] < 250, "stroke drawn: {single:?}");
+    assert!(
+        close(single, overlap),
+        "overlap drawn once: {single:?} vs {overlap:?}"
+    );
+    assert!(
+        second[0] + 20 < single[0],
+        "a later stroke still blends on top: {second:?} vs {single:?}"
+    );
+}
