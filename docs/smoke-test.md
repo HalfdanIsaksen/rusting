@@ -8,7 +8,7 @@ Run with `cargo run -p desktop`. Items marked *(MVP)* need features that aren't 
 4. *(MVP)* Drawing with the brush leaves strokes that survive zoom, pan, and resize.
 5. *(MVP)* Add three layers. Drawing on one doesn't change the others. Hiding a layer hides its strokes. Reordering changes the stacking.
 6. *(MVP)* A locked layer refuses new strokes.
-7. *(MVP)* Add keyframes at frames 1, 5, and 9 with different drawings. Scrubbing shows the right drawing on each frame.
+7. *(MVP)* Add keyframes at frames 1, 5, and 9 with different drawings. Scrubbing shows the right drawing on each frame. Dragging a key in the timeline moves it; dropping on another key is refused.
 8. *(MVP)* Play at 12 and 24 fps. Timing looks right and playback loops.
 9. *(MVP)* Onion skin shows neighbouring drawings and doesn't change them.
 10. *(MVP)* Undo and redo a stroke, a layer add or remove, and a keyframe add.

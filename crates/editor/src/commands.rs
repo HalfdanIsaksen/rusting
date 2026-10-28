@@ -509,6 +509,52 @@ impl Command for RemoveKeyframe {
     }
 }
 
+/// Moves the keyframe at one frame to another on the same layer.
+///
+/// Fails with [`CommandError::KeyframeExists`] if the target frame already
+/// has a key, so a move never silently replaces a drawing.
+#[derive(Debug)]
+pub struct MoveKeyframe {
+    layer: LayerId,
+    from: FrameIndex,
+    to: FrameIndex,
+}
+
+impl MoveKeyframe {
+    /// Creates the command.
+    pub fn new(layer: LayerId, from: FrameIndex, to: FrameIndex) -> Self {
+        Self { layer, from, to }
+    }
+}
+
+impl Command for MoveKeyframe {
+    fn label(&self) -> &str {
+        "Move Keyframe"
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        frame_in_range(doc, self.to)?;
+        let track = doc
+            .track_mut(self.layer)
+            .ok_or(CommandError::LayerNotFound)?;
+        if track.key_at(self.to).is_some() {
+            return Err(CommandError::KeyframeExists(self.to));
+        }
+        track
+            .move_key(self.from, self.to)
+            .map_err(|_| CommandError::KeyframeNotFound(self.from))?;
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        doc.track_mut(self.layer)
+            .ok_or(CommandError::LayerNotFound)?
+            .move_key(self.to, self.from)
+            .map_err(|_| CommandError::KeyframeNotFound(self.to))?;
+        Ok(())
+    }
+}
+
 /// Changes the playback frame rate.
 #[derive(Debug)]
 pub struct SetFps {
@@ -833,6 +879,49 @@ mod tests {
         assert!(d.drawing(drawing).is_some());
         assert_eq!(d.drawing_at(l, FrameIndex(0)), None);
         h.undo(&mut d).unwrap();
+        assert_eq!(d, before);
+    }
+
+    #[test]
+    fn move_keyframe_undo_and_rejects_occupied_target() {
+        let mut d = doc();
+        d.frame_count = 10;
+        let l = d.add_layer("L");
+        let mut h = History::new();
+        let add = AddKeyframe::new(l, FrameIndex(2), KeyframeKind::Drawing);
+        let drawing = add.keyframe().drawing().unwrap();
+        h.execute(&mut d, Box::new(add)).unwrap();
+        h.execute(
+            &mut d,
+            Box::new(AddKeyframe::new(l, FrameIndex(6), KeyframeKind::Empty)),
+        )
+        .unwrap();
+        let before = d.clone();
+
+        h.execute(
+            &mut d,
+            Box::new(MoveKeyframe::new(l, FrameIndex(2), FrameIndex(4))),
+        )
+        .unwrap();
+        assert_eq!(d.drawing_at(l, FrameIndex(4)), Some(drawing));
+        assert!(d.track(l).unwrap().key_at(FrameIndex(2)).is_none());
+        h.undo(&mut d).unwrap();
+        assert_eq!(d, before);
+
+        assert_eq!(
+            h.execute(
+                &mut d,
+                Box::new(MoveKeyframe::new(l, FrameIndex(2), FrameIndex(6)))
+            ),
+            Err(CommandError::KeyframeExists(FrameIndex(6)))
+        );
+        assert!(matches!(
+            h.execute(
+                &mut d,
+                Box::new(MoveKeyframe::new(l, FrameIndex(2), FrameIndex(10)))
+            ),
+            Err(CommandError::FrameOutOfRange { .. })
+        ));
         assert_eq!(d, before);
     }
 

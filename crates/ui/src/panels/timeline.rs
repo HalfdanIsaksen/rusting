@@ -7,7 +7,9 @@ use crate::session::{Session, TimelineView};
 use document::Document;
 use document::animation_core::{Fps, FrameIndex, LayerId};
 use document::timeline::Keyframe;
-use editor::commands::{AddKeyframe, KeyframeKind, RemoveKeyframe, SetFps, SetFrameCount};
+use editor::commands::{
+    AddKeyframe, KeyframeKind, MoveKeyframe, RemoveKeyframe, SetFps, SetFrameCount,
+};
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, vec2};
 
 const NAME_WIDTH: f32 = 120.0;
@@ -296,13 +298,63 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
         }
     }
 
+    let frame_at = |x: f32| {
+        FrameIndex(
+            ((x - rect.left()) / cell)
+                .floor()
+                .clamp(0.0, (count - 1) as f32) as u32,
+        )
+    };
+    // The key under `pos`, if its layer can be edited.
+    let movable_key = |pos: Pos2| {
+        let layer = row_at(rows, pos.y - rect.top())?;
+        let frame = frame_at(pos.x);
+        let unlocked = session
+            .document
+            .layers()
+            .get(layer)
+            .is_some_and(|l| !l.locked);
+        let keyed = session.document.track(layer)?.key_at(frame).is_some();
+        (unlocked && keyed).then_some((layer, frame))
+    };
+
+    // Drag a key to move it; the drop happens on release.
+    let drag_id = ui.scope_id().with("key_drag");
+    if response.drag_started()
+        && let Some(origin) = ui.input(|i| i.pointer.press_origin())
+        && let Some(key) = movable_key(origin)
+    {
+        ui.data_mut(|d| d.insert_temp(drag_id, key));
+    }
+    let dragged_key: Option<(LayerId, FrameIndex)> = ui.data(|d| d.get_temp(drag_id));
+    let drop_target = ui
+        .input(|i| i.pointer.latest_pos())
+        .map(|pos| frame_at(pos.x));
+    if dragged_key.is_some() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    } else if response.hover_pos().and_then(movable_key).is_some() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    }
+    if response.drag_stopped()
+        && let Some((layer, from)) = dragged_key
+    {
+        ui.data_mut(|d| d.remove::<(LayerId, FrameIndex)>(drag_id));
+        if let Some(to) = drop_target
+            && to != from
+            && session
+                .execute(Box::new(MoveKeyframe::new(layer, from, to)))
+                .is_ok()
+        {
+            session.set_frame(to);
+        }
+    }
+
     // Scrub: press or drag anywhere; pressing on a row also selects its layer.
-    if response.is_pointer_button_down_on()
+    if dragged_key.is_none()
+        && response.is_pointer_button_down_on()
         && let Some(pos) = response.interact_pointer_pos()
     {
-        let frame = ((pos.x - rect.left()) / cell)
-            .floor()
-            .clamp(0.0, (count - 1) as f32) as u32;
+        let frame = frame_at(pos.x).0;
         if session.playback.is_playing() {
             session.playback.pause();
         }
@@ -317,6 +369,12 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
     }
 
     paint_frames(ui, session, rows, rect, cell, count);
+    if response.dragged()
+        && let Some((layer, from)) = dragged_key
+        && let Some(to) = drop_target
+    {
+        paint_key_drop(ui, session, rows, rect, cell, (layer, from), to);
+    }
 
     // Keep the playhead in view when it moves (playback, stepping).
     let current = session.current_frame();
@@ -332,6 +390,39 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
             Some(egui::Align::Center),
         );
     }
+}
+
+/// Outlines where a dragged key will land: accent if free, red if taken.
+fn paint_key_drop(
+    ui: &egui::Ui,
+    session: &Session,
+    rows: &[Row],
+    rect: Rect,
+    cell: f32,
+    (layer, from): (LayerId, FrameIndex),
+    to: FrameIndex,
+) {
+    let Some(i) = rows.iter().position(|r| r.id == layer) else {
+        return;
+    };
+    let taken = to != from
+        && session
+            .document
+            .track(layer)
+            .is_some_and(|t| t.key_at(to).is_some());
+    let color = if taken {
+        Color32::from_rgb(230, 70, 60)
+    } else {
+        ui.visuals().selection.stroke.color
+    };
+    let top = rect.top() + RULER_HEIGHT + i as f32 * ROW_HEIGHT;
+    let x = rect.left() + to.0 as f32 * cell;
+    ui.painter_at(rect).rect_stroke(
+        Rect::from_x_y_ranges(x..=x + cell, top..=top + ROW_HEIGHT),
+        2.0,
+        Stroke::new(2.0, color),
+        StrokeKind::Inside,
+    );
 }
 
 fn paint_frames(ui: &egui::Ui, session: &Session, rows: &[Row], rect: Rect, cell: f32, count: u32) {
