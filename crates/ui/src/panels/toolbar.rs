@@ -1,6 +1,7 @@
 //! The tool panel: brush/eraser, size, colour and opacity.
 
 use crate::session::Session;
+use crate::tools::EraserMode;
 use document::animation_core::Rgba;
 use editor::Tool;
 
@@ -27,7 +28,7 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
             ui.selectable_value(tool, Tool::Brush, "✏ Brush")
                 .on_hover_text("B");
             ui.selectable_value(tool, Tool::Eraser, "Eraser")
-                .on_hover_text("E — removes whole strokes");
+                .on_hover_text("E");
         });
     });
     ui.separator();
@@ -87,7 +88,24 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
             {
                 session.tools.eraser_radius = diameter * 0.5;
             }
-            ui.weak("Removes every stroke it touches on the active layer and frame.");
+            ui.add_space(4.0);
+            ui.add_enabled_ui(!busy, |ui| {
+                ui.horizontal(|ui| {
+                    let mode = &mut session.tools.eraser_mode;
+                    ui.selectable_value(mode, EraserMode::Partial, "Partial eraser")
+                        .on_hover_text("Cuts away only what the eraser passes over");
+                    ui.selectable_value(mode, EraserMode::Stroke, "Stroke eraser")
+                        .on_hover_text("Removes every stroke it touches");
+                });
+            });
+            ui.weak(match session.tools.eraser_mode {
+                EraserMode::Partial => {
+                    "Cuts away the part of each stroke it passes over on the active layer and frame."
+                }
+                EraserMode::Stroke => {
+                    "Removes every stroke it touches on the active layer and frame."
+                }
+            });
         }
     }
 

@@ -286,6 +286,84 @@ impl Command for RemoveStroke {
     }
 }
 
+/// Replaces one stroke with others at the same place in the stacking order,
+/// e.g. the pieces left after a partial erase. An empty replacement list
+/// removes the stroke.
+///
+/// Undo removes the replacements and puts back the exact original stroke,
+/// with its ID, at its old index.
+#[derive(Debug)]
+pub struct ReplaceStroke {
+    layer: LayerId,
+    frame: FrameIndex,
+    original: StrokeId,
+    replacements: Vec<Stroke>,
+    removed: Option<(DrawingId, usize, Stroke)>,
+}
+
+impl ReplaceStroke {
+    /// Creates the command. The replacements keep their IDs, so redo
+    /// recreates the same strokes.
+    pub fn new(
+        layer: LayerId,
+        frame: FrameIndex,
+        original: StrokeId,
+        replacements: Vec<Stroke>,
+    ) -> Self {
+        Self {
+            layer,
+            frame,
+            original,
+            replacements,
+            removed: None,
+        }
+    }
+
+    /// ID of the stroke this command replaces.
+    pub fn original_id(&self) -> StrokeId {
+        self.original
+    }
+
+    /// The strokes that take the original's place, bottom to top.
+    pub fn replacements(&self) -> &[Stroke] {
+        &self.replacements
+    }
+}
+
+impl Command for ReplaceStroke {
+    fn label(&self) -> &str {
+        "Replace Stroke"
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        editable_layer(doc, self.layer)?;
+        let drawing = doc
+            .drawing_at(self.layer, self.frame)
+            .ok_or(CommandError::DrawingNotFound)?;
+        let vector = vector_mut(doc, drawing)?;
+        let (index, stroke) = vector
+            .remove_stroke(self.original)
+            .ok_or(CommandError::DrawingNotFound)?;
+        for (offset, piece) in self.replacements.iter().enumerate() {
+            vector.insert_stroke(index + offset, piece.clone());
+        }
+        self.removed = Some((drawing, index, stroke));
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        let (drawing, index, stroke) = self.removed.take().ok_or(CommandError::DrawingNotFound)?;
+        let vector = vector_mut(doc, drawing)?;
+        for piece in &self.replacements {
+            vector
+                .remove_stroke(piece.id)
+                .ok_or(CommandError::DrawingNotFound)?;
+        }
+        vector.insert_stroke(index, stroke);
+        Ok(())
+    }
+}
+
 /// Moves a layer to a new position in the stack (0 = bottom).
 #[derive(Debug)]
 pub struct MoveLayer {
@@ -826,6 +904,120 @@ mod tests {
         h.undo(&mut d).unwrap();
         h.execute(&mut d, Box::new(RemoveStroke::new(l, FrameIndex(0), sid)))
             .unwrap();
+    }
+
+    /// A layer with strokes a, b, c at frame 0. Returns (layer, [a, b, c]).
+    fn three_strokes(d: &mut Document) -> (LayerId, [StrokeId; 3]) {
+        let l = d.add_layer("L");
+        let mut h = History::new();
+        let ids = [(); 3].map(|_| {
+            let add = AddStroke::new(l, FrameIndex(0), stroke());
+            let id = add.stroke_id();
+            h.execute(d, Box::new(add)).unwrap();
+            id
+        });
+        (l, ids)
+    }
+
+    fn order(d: &Document, l: LayerId) -> Vec<StrokeId> {
+        let drawing = d.drawing_at(l, FrameIndex(0)).unwrap();
+        d.drawing(drawing)
+            .unwrap()
+            .as_vector()
+            .unwrap()
+            .strokes()
+            .iter()
+            .map(|s| s.id)
+            .collect()
+    }
+
+    #[test]
+    fn replace_stroke_keeps_z_order_and_round_trips() {
+        let mut d = doc();
+        let (l, [a, b, c]) = three_strokes(&mut d);
+        let before = d.clone();
+        let (p, q) = (stroke(), stroke());
+        let (ip, iq) = (p.id, q.id);
+        let mut h = History::new();
+        h.execute(
+            &mut d,
+            Box::new(ReplaceStroke::new(l, FrameIndex(0), b, vec![p, q])),
+        )
+        .unwrap();
+        assert_eq!(order(&d, l), [a, ip, iq, c]);
+        let after = d.clone();
+
+        h.undo(&mut d).unwrap();
+        assert_eq!(d, before, "undo restores the exact original stroke");
+        h.redo(&mut d).unwrap();
+        assert_eq!(d, after, "redo recreates the same pieces");
+        h.undo(&mut d).unwrap();
+        assert_eq!(d, before);
+    }
+
+    #[test]
+    fn replace_with_nothing_removes_and_rejects_locked_or_missing() {
+        let mut d = doc();
+        let (l, [a, b, c]) = three_strokes(&mut d);
+        let before = d.clone();
+        let mut h = History::new();
+        h.execute(
+            &mut d,
+            Box::new(ReplaceStroke::new(l, FrameIndex(0), a, Vec::new())),
+        )
+        .unwrap();
+        assert_eq!(order(&d, l), [b, c]);
+        h.undo(&mut d).unwrap();
+        assert_eq!(d, before);
+
+        assert_eq!(
+            h.execute(
+                &mut d,
+                Box::new(ReplaceStroke::new(
+                    l,
+                    FrameIndex(0),
+                    StrokeId::new(),
+                    vec![stroke()]
+                ))
+            ),
+            Err(CommandError::DrawingNotFound)
+        );
+        h.execute(&mut d, Box::new(SetLayerLocked::new(l, true)))
+            .unwrap();
+        let locked = d.clone();
+        assert_eq!(
+            h.execute(
+                &mut d,
+                Box::new(ReplaceStroke::new(l, FrameIndex(0), b, vec![stroke()]))
+            ),
+            Err(CommandError::LayerLocked)
+        );
+        assert_eq!(d, locked);
+    }
+
+    #[test]
+    fn erase_batch_of_replacements_is_one_step() {
+        let mut d = doc();
+        let (l, [a, b, c]) = three_strokes(&mut d);
+        let before = d.clone();
+        let mut h = History::new();
+        let p = stroke();
+        let ip = p.id;
+        h.execute(
+            &mut d,
+            Box::new(Batch::new(
+                "Erase",
+                vec![
+                    Box::new(ReplaceStroke::new(l, FrameIndex(0), a, vec![p])),
+                    Box::new(ReplaceStroke::new(l, FrameIndex(0), c, Vec::new())),
+                ],
+            )),
+        )
+        .unwrap();
+        assert_eq!(order(&d, l), [ip, b]);
+        assert_eq!(h.undo_len(), 1);
+        h.undo(&mut d).unwrap();
+        assert_eq!(d, before);
     }
 
     #[test]

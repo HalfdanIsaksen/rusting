@@ -241,7 +241,8 @@ impl App {
 }
 
 /// Strokes to draw this frame, bottom to top: onion skins, the document at
-/// the current frame (minus strokes being erased), the stroke being drawn,
+/// the current frame (strokes being erased replaced by what is left of them),
+/// the stroke being drawn,
 /// and the debug triangle. Meshes are tessellated once and cached by id.
 fn collect_draws(
     device: &wgpu::Device,
@@ -288,6 +289,10 @@ fn collect_draws(
         for stroke in layer.drawing.strokes() {
             if !erasing.contains(&stroke.id) {
                 push(stroke, style_color(stroke, layer.opacity), transform);
+            } else {
+                for piece in session.tools.erase_preview(stroke.id) {
+                    push(piece, style_color(piece, layer.opacity), transform);
+                }
             }
         }
         if let Some((_, stroke)) = preview.take_if(|(id, _)| *id == layer.layer_id) {

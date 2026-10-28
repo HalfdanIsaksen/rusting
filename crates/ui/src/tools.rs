@@ -4,14 +4,17 @@
 //! `renderer::Viewport::screen_to_canvas`) and calls
 //! [`Session::pointer_down`], [`Session::pointer_move`] and
 //! [`Session::pointer_up`]. A brush gesture builds a stroke and commits it as
-//! one `AddStroke`; an eraser gesture collects hit strokes and removes them as
-//! one undo step. The document is not touched until the gesture ends.
+//! one `AddStroke`. An eraser gesture either cuts away the part of each
+//! stroke it passes over ([`EraserMode::Partial`], with a live preview of the
+//! pieces) or collects whole strokes ([`EraserMode::Stroke`]); either way the
+//! result is committed as one undo step on release. The document is not
+//! touched until the gesture ends.
 
 use crate::session::Session;
 use document::animation_core::{FrameIndex, LayerId, StrokeId, Vec2};
 use document::drawing::{BrushStyle, Stroke, StrokeBuilder, StrokePoint};
 use editor::Tool;
-use editor::commands::{AddStroke, Batch, RemoveStroke};
+use editor::commands::{AddStroke, Batch, RemoveStroke, ReplaceStroke};
 
 /// Smallest distance between recorded brush points, in screen points.
 const MIN_POINT_SPACING_SCREEN: f32 = 0.75;
@@ -29,9 +32,24 @@ enum Gesture {
     Erase {
         layer: LayerId,
         frame: FrameIndex,
+        mode: EraserMode,
         last: Vec2,
+        /// Touched strokes, in drawing order of first touch.
         hits: Vec<StrokeId>,
+        /// Partial mode: what each touched stroke is cut down to so far,
+        /// parallel to `hits`.
+        pieces: Vec<Vec<Stroke>>,
     },
+}
+
+/// How the eraser treats a stroke it touches.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EraserMode {
+    /// Cut away only the part the eraser passes over.
+    #[default]
+    Partial,
+    /// Remove every stroke the eraser touches.
+    Stroke,
 }
 
 /// Tool settings and the gesture in progress.
@@ -39,6 +57,8 @@ enum Gesture {
 pub struct ToolController {
     /// Eraser radius in document units.
     pub eraser_radius: f32,
+    /// Partial or whole-stroke erasing.
+    pub eraser_mode: EraserMode,
     gesture: Option<Gesture>,
 }
 
@@ -46,6 +66,7 @@ impl Default for ToolController {
     fn default() -> Self {
         Self {
             eraser_radius: 12.0,
+            eraser_mode: EraserMode::default(),
             gesture: None,
         }
     }
@@ -82,10 +103,25 @@ impl ToolController {
         }
     }
 
-    /// Strokes the eraser gesture will remove; hide them while erasing.
+    /// Strokes the eraser gesture will remove or cut; hide them while
+    /// erasing and draw [`ToolController::erase_preview`] in their place.
     pub fn erasing(&self) -> &[StrokeId] {
         match &self.gesture {
             Some(Gesture::Erase { hits, .. }) => hits,
+            _ => &[],
+        }
+    }
+
+    /// The pieces that will replace stroke `id` when the partial eraser
+    /// gesture ends, bottom to top. Empty if the stroke is erased entirely or
+    /// is not being erased.
+    pub fn erase_preview(&self, id: StrokeId) -> &[Stroke] {
+        match &self.gesture {
+            Some(Gesture::Erase { hits, pieces, .. }) => hits
+                .iter()
+                .position(|h| *h == id)
+                .and_then(|i| pieces.get(i))
+                .map_or(&[], Vec::as_slice),
             _ => &[],
         }
     }
@@ -145,8 +181,10 @@ impl Session {
             Tool::Eraser => Gesture::Erase {
                 layer,
                 frame,
+                mode: self.tools.eraser_mode,
                 last: pos,
                 hits: Vec::new(),
+                pieces: Vec::new(),
             },
         });
         self.pointer_move(pos);
@@ -163,8 +201,10 @@ impl Session {
             Some(Gesture::Erase {
                 layer,
                 frame,
+                mode,
                 last,
                 hits,
+                pieces,
             }) => {
                 let Some(drawing) = self
                     .document
@@ -175,6 +215,35 @@ impl Session {
                     *last = pos;
                     return;
                 };
+                if *mode == EraserMode::Partial {
+                    // The swept segment is one capsule, so fast moves can't
+                    // skip anything.
+                    let path = [*last, pos];
+                    for stroke in drawing.strokes() {
+                        match hits.iter().position(|h| *h == stroke.id) {
+                            Some(i) => {
+                                let cut: Vec<Stroke> = pieces[i]
+                                    .iter()
+                                    .flat_map(|piece| {
+                                        piece
+                                            .erase(&path, radius)
+                                            .into_replacements()
+                                            .unwrap_or_else(|| vec![piece.clone()])
+                                    })
+                                    .collect();
+                                pieces[i] = cut;
+                            }
+                            None => {
+                                if let Some(cut) = stroke.erase(&path, radius).into_replacements() {
+                                    hits.push(stroke.id);
+                                    pieces.push(cut);
+                                }
+                            }
+                        }
+                    }
+                    *last = pos;
+                    return;
+                }
                 // Sample the segment so fast moves don't skip strokes.
                 let step = (radius * 0.5).max(0.5);
                 let samples = ((pos - *last).length() / step).ceil().clamp(1.0, 1000.0) as u32;
@@ -204,6 +273,24 @@ impl Session {
                 if let Some(stroke) = builder.finish() {
                     let _ = self.execute(Box::new(AddStroke::new(layer, frame, stroke)));
                 }
+            }
+            Some(Gesture::Erase {
+                layer,
+                frame,
+                mode: EraserMode::Partial,
+                hits,
+                pieces,
+                ..
+            }) => {
+                if hits.is_empty() {
+                    return;
+                }
+                let commands = hits
+                    .into_iter()
+                    .zip(pieces)
+                    .map(|(id, cut)| Box::new(ReplaceStroke::new(layer, frame, id, cut)) as _)
+                    .collect();
+                let _ = self.execute(Box::new(Batch::new("Erase", commands)));
             }
             Some(Gesture::Erase {
                 layer, frame, hits, ..
@@ -304,6 +391,7 @@ mod tests {
         assert_eq!(strokes_at(&s, 0), 3);
 
         s.state.tool = Tool::Eraser;
+        s.tools.eraser_mode = EraserMode::Stroke;
         s.tools.eraser_radius = 5.0;
         // A fast vertical swipe across the first two strokes only.
         assert!(s.pointer_down(Vec2::new(50.0, -20.0), 1.0));
@@ -314,6 +402,91 @@ mod tests {
         assert_eq!(strokes_at(&s, 0), 1);
         s.undo();
         assert_eq!(strokes_at(&s, 0), 3);
+    }
+
+    fn strokes(s: &Session) -> Vec<Stroke> {
+        let layer = s.state.active_layer.unwrap();
+        s.document
+            .drawing_at(layer, FrameIndex(0))
+            .and_then(|id| s.document.drawing(id))
+            .and_then(|d| d.as_vector())
+            .map_or_else(Vec::new, |d| d.strokes().to_vec())
+    }
+
+    #[test]
+    fn partial_eraser_splits_with_preview_and_one_undo_step() {
+        let mut s = Session::new();
+        draw(&mut s, Vec2::new(0.0, 0.0), Vec2::new(200.0, 0.0));
+        draw(&mut s, Vec2::new(0.0, 100.0), Vec2::new(200.0, 100.0));
+        let original = strokes(&s);
+        let undo_len = s.history.undo_len();
+
+        s.state.tool = Tool::Eraser;
+        assert_eq!(s.tools.eraser_mode, EraserMode::Partial);
+        s.tools.eraser_radius = 5.0;
+        // Several moves across the first line only.
+        assert!(s.pointer_down(Vec2::new(100.0, -30.0), 1.0));
+        for y in [-10.0, 0.0, 10.0, 30.0] {
+            s.pointer_move(Vec2::new(100.0, y));
+        }
+        assert_eq!(s.tools.erasing(), [original[0].id]);
+        let preview = s.tools.erase_preview(original[0].id).to_vec();
+        assert_eq!(preview.len(), 2);
+        assert!(s.tools.erase_preview(original[1].id).is_empty());
+        assert_eq!(strokes(&s), original, "document untouched while erasing");
+        assert_eq!(s.history.undo_len(), undo_len);
+
+        s.pointer_up();
+        assert!(s.tools.erasing().is_empty());
+        let after = strokes(&s);
+        assert_eq!(after.len(), 3);
+        assert_eq!(after[..2], preview[..], "commits what the preview showed");
+        assert_eq!(after[2], original[1], "z-order kept");
+        assert_eq!(s.history.undo_len(), undo_len + 1);
+        s.undo();
+        assert_eq!(strokes(&s), original);
+        s.redo();
+        assert_eq!(strokes(&s), after);
+    }
+
+    #[test]
+    fn split_pieces_survive_save_and_reload() {
+        let mut s = Session::new();
+        draw(&mut s, Vec2::new(0.0, 0.0), Vec2::new(200.0, 0.0));
+        s.state.tool = Tool::Eraser;
+        assert!(s.pointer_down(Vec2::new(100.0, -20.0), 1.0));
+        s.pointer_move(Vec2::new(100.0, 20.0));
+        s.pointer_up();
+        let pieces = strokes(&s);
+        assert_eq!(pieces.len(), 2);
+
+        let path = std::env::temp_dir().join(format!(
+            "rusting-erase-{}.{}",
+            std::process::id(),
+            crate::session::PROJECT_EXTENSION
+        ));
+        assert!(s.save_to(&path));
+        let mut reopened = Session::new();
+        assert!(reopened.open_path(&path));
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(strokes(&reopened), pieces);
+    }
+
+    #[test]
+    fn partial_eraser_cuts_pieces_again_in_the_same_drag() {
+        let mut s = Session::new();
+        draw(&mut s, Vec2::new(0.0, 0.0), Vec2::new(200.0, 0.0));
+        let id = strokes(&s)[0].id;
+        s.state.tool = Tool::Eraser;
+        s.tools.eraser_radius = 3.0;
+        assert!(s.pointer_down(Vec2::new(50.0, -20.0), 1.0));
+        s.pointer_move(Vec2::new(50.0, 20.0));
+        s.pointer_move(Vec2::new(150.0, 20.0));
+        s.pointer_move(Vec2::new(150.0, -20.0));
+        assert_eq!(s.tools.erase_preview(id).len(), 3);
+        s.pointer_up();
+        assert_eq!(strokes(&s).len(), 3);
+        assert_eq!(s.history.undo_label(), Some("Erase"));
     }
 
     #[test]
