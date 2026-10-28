@@ -11,6 +11,8 @@ pub enum Tool {
     Brush,
     /// Remove strokes.
     Eraser,
+    /// Fill the area enclosed by strokes (fill bucket).
+    Fill,
 }
 
 /// Session state of the editor: active tool, layer and frame.

@@ -1,12 +1,12 @@
-//! GPU vertex/index buffers for stroke meshes, cached by [`StrokeId`].
+//! GPU vertex/index buffers for stroke and fill meshes, cached by [`MeshId`].
 //!
 //! A stroke is tessellated and uploaded once, then reused every frame until
 //! its [`StrokeKey`] changes or it is invalidated. Entries that are not drawn
 //! for a while are evicted.
 
 use crate::mesh::{MeshSource, valid_index_count};
-use animation_core::StrokeId;
-use drawing::Stroke;
+use animation_core::{FillId, StrokeId};
+use drawing::{Fill, Stroke};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use wgpu::util::DeviceExt;
@@ -40,13 +40,50 @@ impl StrokeKey {
         Self(hasher.finish())
     }
 
+    /// Fingerprint of `fill`'s geometry: point counts and the first and last
+    /// point of every contour. Fills are not edited in place (recolouring
+    /// replaces the fill), so this is enough.
+    pub fn of_fill(fill: &Fill) -> Self {
+        let mut hasher = DefaultHasher::new();
+        fill.contours.len().hash(&mut hasher);
+        for contour in &fill.contours {
+            contour.len().hash(&mut hasher);
+            for p in [contour.first(), contour.last()].into_iter().flatten() {
+                p.x.to_bits().hash(&mut hasher);
+                p.y.to_bits().hash(&mut hasher);
+            }
+        }
+        Self(hasher.finish())
+    }
+
     /// A key from a caller-chosen value (for meshes that are not strokes).
     pub const fn from_raw(value: u64) -> Self {
         Self(value)
     }
 }
 
-/// Uploaded geometry of one stroke.
+/// What a cached mesh belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MeshId {
+    /// A stroke's mesh.
+    Stroke(StrokeId),
+    /// A fill's mesh.
+    Fill(FillId),
+}
+
+impl From<StrokeId> for MeshId {
+    fn from(id: StrokeId) -> Self {
+        Self::Stroke(id)
+    }
+}
+
+impl From<FillId> for MeshId {
+    fn from(id: FillId) -> Self {
+        Self::Fill(id)
+    }
+}
+
+/// Uploaded geometry of one stroke or fill.
 #[derive(Debug)]
 pub(crate) struct GpuMesh {
     /// `None` for empty meshes.
@@ -64,7 +101,7 @@ struct Entry<T> {
 /// Key/age bookkeeping, separate from wgpu so it can be unit-tested.
 #[derive(Debug)]
 struct Cache<T> {
-    entries: HashMap<StrokeId, Entry<T>>,
+    entries: HashMap<MeshId, Entry<T>>,
     /// Incremented once per render.
     clock: u64,
 }
@@ -80,7 +117,7 @@ impl<T> Default for Cache<T> {
 
 impl<T> Cache<T> {
     /// Returns true if `id` has an entry with this `key`, marking it used.
-    fn touch(&mut self, id: StrokeId, key: StrokeKey) -> bool {
+    fn touch(&mut self, id: MeshId, key: StrokeKey) -> bool {
         match self.entries.get_mut(&id) {
             Some(entry) if entry.key == key => {
                 entry.last_used = self.clock;
@@ -90,7 +127,7 @@ impl<T> Cache<T> {
         }
     }
 
-    fn insert(&mut self, id: StrokeId, key: StrokeKey, value: T) {
+    fn insert(&mut self, id: MeshId, key: StrokeKey, value: T) {
         self.entries.insert(
             id,
             Entry {
@@ -101,7 +138,7 @@ impl<T> Cache<T> {
         );
     }
 
-    fn get(&mut self, id: StrokeId) -> Option<&T> {
+    fn get(&mut self, id: MeshId) -> Option<&T> {
         let entry = self.entries.get_mut(&id)?;
         entry.last_used = self.clock;
         Some(&entry.value)
@@ -120,7 +157,8 @@ impl<T> Cache<T> {
     }
 }
 
-/// Stroke meshes uploaded to the GPU, keyed by [`StrokeId`].
+/// Stroke and fill meshes uploaded to the GPU, keyed by [`MeshId`]
+/// (a [`StrokeId`] or [`FillId`] converts into one).
 #[derive(Debug, Default)]
 pub struct StrokeCache {
     cache: Cache<GpuMesh>,
@@ -141,10 +179,11 @@ impl StrokeCache {
     pub fn ensure<M: MeshSource>(
         &mut self,
         device: &wgpu::Device,
-        id: StrokeId,
+        id: impl Into<MeshId>,
         key: StrokeKey,
         build: impl FnOnce() -> Option<M>,
     ) -> bool {
+        let id = id.into();
         if self.cache.touch(id, key) {
             return false;
         }
@@ -158,8 +197,8 @@ impl StrokeCache {
     }
 
     /// Marks `id` dirty so its mesh is rebuilt on the next [`Self::ensure`].
-    pub fn invalidate(&mut self, id: StrokeId) {
-        self.cache.entries.remove(&id);
+    pub fn invalidate(&mut self, id: impl Into<MeshId>) {
+        self.cache.entries.remove(&id.into());
         self.generation += 1;
     }
 
@@ -177,8 +216,8 @@ impl StrokeCache {
     }
 
     /// Whether `id` has a cached mesh.
-    pub fn contains(&self, id: StrokeId) -> bool {
-        self.cache.entries.contains_key(&id)
+    pub fn contains(&self, id: impl Into<MeshId>) -> bool {
+        self.cache.entries.contains_key(&id.into())
     }
 
     /// Number of cached meshes.
@@ -201,7 +240,7 @@ impl StrokeCache {
         self.cache.tick();
     }
 
-    pub(crate) fn get(&mut self, id: StrokeId) -> Option<&GpuMesh> {
+    pub(crate) fn get(&mut self, id: MeshId) -> Option<&GpuMesh> {
         self.cache.get(id)
     }
 }
@@ -278,7 +317,7 @@ mod tests {
     #[test]
     fn touch_insert_and_dirty_key() {
         let mut cache = Cache::<u32>::default();
-        let id = StrokeId::new();
+        let id = MeshId::from(StrokeId::new());
         let k1 = StrokeKey::from_raw(1);
         assert!(!cache.touch(id, k1));
         cache.insert(id, k1, 7);
@@ -290,7 +329,7 @@ mod tests {
     #[test]
     fn eviction_drops_only_stale_entries() {
         let mut cache = Cache::<u32>::default();
-        let (old, fresh) = (StrokeId::new(), StrokeId::new());
+        let (old, fresh) = (MeshId::from(StrokeId::new()), MeshId::from(FillId::new()));
         let key = StrokeKey::from_raw(0);
         cache.insert(old, key, 1);
         cache.insert(fresh, key, 2);

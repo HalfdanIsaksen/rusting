@@ -87,7 +87,7 @@ fn renders_workspace_background_and_strokes() {
             })
         });
     let draws = [StrokeDraw {
-        id,
+        id: id.into(),
         color: Rgba::rgb(0.0, 0.0, 1.0),
         transform: Mat4::IDENTITY,
     }];
@@ -193,12 +193,12 @@ fn translucent_stroke_covers_each_pixel_once() {
     let half_blue = Rgba::new(0.0, 0.0, 1.0, 0.5);
     let draws = [
         StrokeDraw {
-            id: overlapping,
+            id: overlapping.into(),
             color: half_blue,
             transform: Mat4::IDENTITY,
         },
         StrokeDraw {
-            id: on_top,
+            id: on_top.into(),
             color: half_blue,
             transform: Mat4::IDENTITY,
         },

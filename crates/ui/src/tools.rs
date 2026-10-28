@@ -12,9 +12,9 @@
 
 use crate::session::Session;
 use document::animation_core::{FrameIndex, LayerId, StrokeId, Vec2};
-use document::drawing::{BrushStyle, Stroke, StrokeBuilder, StrokePoint};
+use document::drawing::{BrushStyle, Fill, GapClosing, Stroke, StrokeBuilder, StrokePoint};
 use editor::Tool;
-use editor::commands::{AddStroke, Batch, RemoveStroke, ReplaceStroke};
+use editor::commands::{AddFill, AddStroke, Batch, RemoveFill, RemoveStroke, ReplaceStroke};
 
 /// Smallest distance between recorded brush points, in screen points.
 const MIN_POINT_SPACING_SCREEN: f32 = 0.75;
@@ -59,6 +59,8 @@ pub struct ToolController {
     pub eraser_radius: f32,
     /// Partial or whole-stroke erasing.
     pub eraser_mode: EraserMode,
+    /// How hard the fill bucket closes gaps in the line art.
+    pub fill_gap: GapClosing,
     gesture: Option<Gesture>,
 }
 
@@ -67,6 +69,7 @@ impl Default for ToolController {
         Self {
             eraser_radius: 12.0,
             eraser_mode: EraserMode::default(),
+            fill_gap: GapClosing::default(),
             gesture: None,
         }
     }
@@ -163,6 +166,11 @@ impl Session {
         }
         let frame = self.current_frame();
         self.tools.gesture = Some(match self.state.tool {
+            // A click, not a drag: fill right away, no gesture.
+            Tool::Fill => {
+                self.fill_at(layer, frame, pos);
+                return true;
+            }
             Tool::Brush => {
                 let style = BrushStyle {
                     width: self.state.brush.width.max(0.1),
@@ -258,6 +266,51 @@ impl Session {
                 *last = pos;
             }
             None => {}
+        }
+    }
+
+    /// Fill bucket click at `pos` (document coordinates) on `layer` at
+    /// `frame`, with the brush colour and opacity. Clicking an existing fill
+    /// recolours it (one undo step). Explains in the status bar when nothing
+    /// can be filled.
+    pub fn fill_at(&mut self, layer: LayerId, frame: FrameIndex, pos: Vec2) {
+        let doc = &self.document;
+        let canvas = Vec2::new(doc.canvas.width as f32, doc.canvas.height as f32);
+        let drawing = doc
+            .drawing_at(layer, frame)
+            .and_then(|id| doc.drawing(id))
+            .and_then(|d| d.as_vector());
+        let color = self.state.brush.color;
+        let opacity = self.state.brush.opacity;
+        if let Some(existing) = drawing
+            .and_then(|d| d.fill_at(pos))
+            .and_then(|id| drawing.and_then(|d| d.fill(id)).cloned())
+        {
+            if existing.color == color && existing.opacity == opacity {
+                return;
+            }
+            let recoloured = Fill::new(existing.shape(), color, opacity);
+            let commands: Vec<Box<dyn editor::Command>> = vec![
+                Box::new(RemoveFill::new(layer, frame, existing.id)),
+                Box::new(AddFill::new(layer, frame, recoloured)),
+            ];
+            let _ = self.execute(Box::new(Batch::new("Recolour Fill", commands)));
+            return;
+        }
+        let empty = Default::default();
+        let drawing = drawing.unwrap_or(&empty);
+        match document::drawing::fill_region(drawing, pos, self.tools.fill_gap, canvas) {
+            Ok(shape) => {
+                let fill = Fill::new(shape, color, opacity);
+                let _ = self.execute(Box::new(AddFill::new(layer, frame, fill)));
+            }
+            Err(err) => {
+                let mut text = err.to_string();
+                if let Some(first) = text.get_mut(0..1) {
+                    first.make_ascii_uppercase();
+                }
+                self.set_error(text);
+            }
         }
     }
 

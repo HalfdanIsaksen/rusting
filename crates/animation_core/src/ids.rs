@@ -67,6 +67,10 @@ define_id!(
     /// Identifies a single stroke inside a drawing.
     StrokeId
 );
+define_id!(
+    /// Identifies a single fill (a filled region) inside a drawing.
+    FillId
+);
 
 #[cfg(test)]
 mod tests {

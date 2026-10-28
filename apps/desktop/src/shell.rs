@@ -223,6 +223,7 @@ fn paint_overlays(
     let radius = match session.state.tool {
         Tool::Brush => session.state.brush.width * 0.5 * zoom,
         Tool::Eraser => session.tools.eraser_radius * zoom,
+        Tool::Fill => 0.0,
     };
     if radius >= 2.0 {
         painter.circle_stroke(

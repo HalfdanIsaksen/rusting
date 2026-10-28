@@ -19,7 +19,7 @@
 //! them silently, [`from_str_with_report`] and [`load_with_report`] list them
 //! in a [`LoadReport`] so the app can warn before overwriting the file.
 
-use animation_core::{DrawingId, FrameIndex, LayerId, StrokeId};
+use animation_core::{DrawingId, FillId, FrameIndex, LayerId, StrokeId};
 use document::Document;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -28,7 +28,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// The format version written by this build.
-pub const FORMAT_VERSION: u32 = 1;
+///
+/// - 1: first format.
+/// - 2: vector drawings have a `fills` list (fill bucket, ADR-007).
+pub const FORMAT_VERSION: u32 = 2;
 
 /// File extension for project files (without the dot).
 pub const FILE_EXTENSION: &str = "rusting";
@@ -99,6 +102,14 @@ pub enum ValidationError {
     DuplicateStroke {
         /// The repeated stroke ID.
         stroke: StrokeId,
+        /// Drawing holding the second copy.
+        drawing: DrawingId,
+    },
+    /// Two fills share an ID.
+    #[error("fill ID {fill} is used more than once (found again in drawing {drawing})")]
+    DuplicateFill {
+        /// The repeated fill ID.
+        fill: FillId,
         /// Drawing holding the second copy.
         drawing: DrawingId,
     },
@@ -298,9 +309,27 @@ pub fn load_with_report(path: &Path) -> Result<(Document, LoadReport), FileForma
     from_str_with_report(&std::fs::read_to_string(path)?)
 }
 
-/// Upgrades raw document JSON from `version` to [`FORMAT_VERSION`].
-/// Version 1 is the first format, so there is nothing to migrate yet.
-fn migrate(_version: u32, document: serde_json::Value) -> serde_json::Value {
+/// Upgrades raw document JSON from `version` to [`FORMAT_VERSION`], one
+/// version step at a time.
+fn migrate(version: u32, mut document: serde_json::Value) -> serde_json::Value {
+    if version < 2 {
+        // v1 → v2: vector drawings gain an empty `fills` list.
+        if let Some(drawings) = document
+            .get_mut("drawings")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            for content in drawings.values_mut() {
+                if let Some(vector) = content
+                    .get_mut("Vector")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    vector
+                        .entry("fills")
+                        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+                }
+            }
+        }
+    }
     document
 }
 
@@ -408,10 +437,44 @@ pub fn validate(doc: &Document) -> Result<(), ValidationError> {
     }
 
     let mut seen_strokes = BTreeSet::new();
+    let mut seen_fills = BTreeSet::new();
     for (&drawing, content) in doc.drawings() {
         let Some(vector) = content.as_vector() else {
             continue;
         };
+        for fill in vector.fills() {
+            if !seen_fills.insert(fill.id) {
+                return Err(ValidationError::DuplicateFill {
+                    fill: fill.id,
+                    drawing,
+                });
+            }
+            let what = |field: &str| format!("fill {} {field}", fill.id);
+            check_range(
+                || what("opacity"),
+                fill.opacity,
+                unit(fill.opacity),
+                "0..=1",
+            )?;
+            for (channel, v) in [
+                ("red", fill.color.r),
+                ("green", fill.color.g),
+                ("blue", fill.color.b),
+                ("alpha", fill.color.a),
+            ] {
+                check_range(|| what(channel), v, unit(v), "0..=1")?;
+            }
+            for (c, contour) in fill.contours.iter().enumerate() {
+                for (i, p) in contour.iter().enumerate() {
+                    check_range(
+                        || what(&format!("contour {c} point {i}")),
+                        if p.x.is_finite() { p.y } else { p.x },
+                        p.is_finite(),
+                        "finite numbers",
+                    )?;
+                }
+            }
+        }
         for stroke in vector.strokes() {
             if !seen_strokes.insert(stroke.id) {
                 return Err(ValidationError::DuplicateStroke {
@@ -464,7 +527,9 @@ mod tests {
     use super::*;
     use animation_core::{DocumentId as DocumentIdForTest, Rgba, Vec2};
     use document::CanvasSize;
-    use drawing::{BrushStyle, DrawingContent, Stroke, StrokePoint, VectorDrawing};
+    use drawing::{
+        BrushStyle, DrawingContent, Fill, FillShape, Stroke, StrokePoint, VectorDrawing,
+    };
     use timeline::Keyframe;
 
     fn sample() -> Document {
@@ -493,6 +558,16 @@ mod tests {
                 opacity: 0.8,
             },
         ));
+        v.push_fill(Fill::new(
+            FillShape {
+                contours: vec![
+                    vec![Vec2::ZERO, Vec2::new(8.0, 0.0), Vec2::splat(8.0)],
+                    vec![Vec2::ONE, Vec2::new(2.0, 1.5), Vec2::new(3.0, 1.0)],
+                ],
+            },
+            Rgba::new(0.9, 0.5, 0.1, 1.0),
+            0.75,
+        ));
         let drawing = d.add_drawing(DrawingContent::Vector(v));
         d.track_mut(l1)
             .unwrap()
@@ -512,6 +587,93 @@ mod tests {
     }
 
     #[test]
+    fn fills_roundtrip() {
+        let doc = sample();
+        let text = to_string(&doc).unwrap();
+        assert!(text.contains("\"fills\""));
+        let loaded = from_str(&text).unwrap();
+        let fills = |d: &Document| {
+            d.drawings()
+                .values()
+                .filter_map(|c| c.as_vector())
+                .flat_map(|v| v.fills().to_vec())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(fills(&loaded).len(), 1);
+        assert_eq!(fills(&loaded), fills(&doc));
+    }
+
+    /// A version 1 file as written by the first release (no `fills`).
+    const V1_FILE: &str = r#"{
+  "format_version": 1,
+  "document": {
+    "id": "5f0c2a8e-8d7e-4a51-9c0c-2b7f3d1e9a10",
+    "name": "Old",
+    "canvas": { "width": 64, "height": 32 },
+    "background": { "r": 1.0, "g": 1.0, "b": 1.0, "a": 1.0 },
+    "fps": { "numerator": 24, "denominator": 1 },
+    "frame_count": 12,
+    "layers": { "layers": [ {
+      "id": "0d9d6f3c-3b1e-4a0e-8f43-7c1c5a5e2b11",
+      "name": "Ink", "visible": true, "locked": false, "opacity": 1.0,
+      "transform": { "translation": [0.0, 0.0], "rotation": 0.0, "scale": [1.0, 1.0] }
+    } ] },
+    "tracks": { "0d9d6f3c-3b1e-4a0e-8f43-7c1c5a5e2b11": { "keys": {
+      "0": { "Drawing": "9a4b7f9e-1c2d-4e5f-8a9b-0c1d2e3f4a5b" }
+    } } },
+    "drawings": { "9a4b7f9e-1c2d-4e5f-8a9b-0c1d2e3f4a5b": { "Vector": { "strokes": [ {
+      "id": "1b2c3d4e-5f60-4718-9a2b-3c4d5e6f7081",
+      "points": [ { "pos": [1.0, 2.0], "pressure": 1.0 }, { "pos": [5.0, 6.0], "pressure": 0.5 } ],
+      "style": { "color": { "r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0 }, "width": 4.0, "opacity": 1.0 }
+    } ] } } }
+  }
+}"#;
+
+    #[test]
+    fn version_1_file_loads_without_fills() {
+        let (doc, report) = from_str_with_report(V1_FILE).unwrap();
+        assert!(report.is_clean(), "{report:?}");
+        assert_eq!(doc.name, "Old");
+        let vector = doc.drawings().values().next().unwrap().as_vector().unwrap();
+        assert_eq!(vector.strokes().len(), 1);
+        assert!(vector.fills().is_empty());
+        // Saving writes the current version, which loads back the same.
+        let text = to_string(&doc).unwrap();
+        assert!(text.contains(&format!("\"format_version\": {FORMAT_VERSION}")));
+        assert_eq!(from_str(&text).unwrap(), doc);
+    }
+
+    #[test]
+    fn duplicate_or_corrupt_fills_are_rejected() {
+        let doc = sample();
+        let dup = edit_json(&doc, |v| {
+            let drawing = v["document"]["drawings"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+                .next()
+                .unwrap();
+            let fills = drawing["Vector"]["fills"].as_array_mut().unwrap();
+            let copy = fills[0].clone();
+            fills.push(copy);
+        });
+        assert!(matches!(
+            invalid(&dup),
+            ValidationError::DuplicateFill { .. }
+        ));
+        let bad = edit_json(&doc, |v| {
+            let drawing = v["document"]["drawings"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+                .next()
+                .unwrap();
+            drawing["Vector"]["fills"][0]["opacity"] = 3.0.into();
+        });
+        assert!(matches!(invalid(&bad), ValidationError::OutOfRange { .. }));
+    }
+
+    #[test]
     fn roundtrip_through_file() {
         let doc = sample();
         let path = std::env::temp_dir().join(format!("rusting-test-{}.{FILE_EXTENSION}", doc.id));
@@ -524,7 +686,7 @@ mod tests {
     #[test]
     fn newer_version_is_rejected() {
         let text = to_string(&sample()).unwrap().replacen(
-            "\"format_version\": 1",
+            &format!("\"format_version\": {FORMAT_VERSION}"),
             "\"format_version\": 99",
             1,
         );
@@ -578,14 +740,18 @@ mod tests {
 
     #[test]
     fn newer_version_message_says_what_to_do() {
-        let text = edit_json(&sample(), |v| v["format_version"] = 2.into());
+        let newer = FORMAT_VERSION + 1;
+        let text = edit_json(&sample(), |v| v["format_version"] = newer.into());
         let err = from_str(&text).unwrap_err();
         assert!(matches!(
             err,
-            FileFormatError::UnsupportedVersion { found: 2 }
+            FileFormatError::UnsupportedVersion { found } if found == newer
         ));
         let msg = err.to_string();
-        assert!(msg.contains("version 2") && msg.contains("newer"), "{msg}");
+        assert!(
+            msg.contains(&format!("version {newer}")) && msg.contains("newer"),
+            "{msg}"
+        );
     }
 
     #[test]

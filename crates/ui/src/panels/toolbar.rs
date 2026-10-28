@@ -1,8 +1,9 @@
-//! The tool panel: brush/eraser, size, colour and opacity.
+//! The tool panel: brush/eraser/fill, size, gaps, colour and opacity.
 
 use crate::session::Session;
 use crate::tools::EraserMode;
 use document::animation_core::Rgba;
+use document::drawing::GapClosing;
 use editor::Tool;
 
 /// Quick colour swatches (linear RGB).
@@ -17,6 +18,22 @@ const SWATCHES: [[f32; 3]; 8] = [
     [0.02, 0.15, 0.75],
 ];
 
+/// Fill tool settings: gap closing. Colour and opacity are the brush's
+/// (shown below, as for the brush).
+fn fill_settings(ui: &mut egui::Ui, session: &mut Session) {
+    ui.label("Close gaps");
+    let gap = &mut session.tools.fill_gap;
+    egui::ComboBox::from_id_salt("fill_gap")
+        .selected_text(gap.label())
+        .show_ui(ui, |ui| {
+            for option in GapClosing::ALL {
+                ui.selectable_value(gap, option, option.label());
+            }
+        });
+    ui.weak("Fills with the brush colour and opacity. Click a fill to recolour it.");
+    ui.add_space(4.0);
+}
+
 /// Draws the tool panel.
 pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
     ui.heading("Tools");
@@ -29,19 +46,26 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
                 .on_hover_text("B");
             ui.selectable_value(tool, Tool::Eraser, "Eraser")
                 .on_hover_text("E");
+            ui.selectable_value(tool, Tool::Fill, "Fill")
+                .on_hover_text("K — fills the area enclosed by lines");
         });
     });
     ui.separator();
 
+    if session.state.tool == Tool::Fill {
+        fill_settings(ui, session);
+    }
     match session.state.tool {
-        Tool::Brush => {
-            ui.label("Size");
-            ui.add(
-                egui::Slider::new(&mut session.state.brush.width, 0.5..=200.0)
-                    .logarithmic(true)
-                    .max_decimals(1),
-            );
-            ui.add_space(4.0);
+        Tool::Brush | Tool::Fill => {
+            if session.state.tool == Tool::Brush {
+                ui.label("Size");
+                ui.add(
+                    egui::Slider::new(&mut session.state.brush.width, 0.5..=200.0)
+                        .logarithmic(true)
+                        .max_decimals(1),
+                );
+                ui.add_space(4.0);
+            }
             ui.label("Opacity");
             ui.add(egui::Slider::new(
                 &mut session.state.brush.opacity,
