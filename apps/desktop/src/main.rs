@@ -404,18 +404,20 @@ fn collect_draws(
 
     let erasing = session.tools.erasing();
     let mut preview = session.tools.preview();
-    // Selected items being dragged are drawn moved by the drag offset.
+    // Selected items being dragged are drawn moved by the drag offset, or
+    // scaled/rotated copies while the transform tool drags (copies, so brush
+    // widths match what release commits).
     let offset = session.tools.move_offset();
-    let moving = session
-        .tools
-        .selection_at()
-        .filter(|_| offset != Vec2::ZERO)
-        .map(|(layer, _)| layer);
+    let reshape = session.tools.transform_preview();
+    let selection_layer = session.tools.selection_at().map(|(layer, _)| layer);
     let selected = session.tools.selection();
     for layer in &doc.evaluate(frame).layers {
         let transform = transform_matrix(&layer.transform);
         let moved = transform * Mat4::from_translation(offset.extend(0.0));
-        let is_moving = moving == Some(layer.layer_id);
+        let is_selection_layer = selection_layer == Some(layer.layer_id);
+        let is_moving = is_selection_layer && offset != Vec2::ZERO;
+        let reshaping =
+            |item: ItemId| reshape.filter(|_| is_selection_layer && selected.contains(&item));
         let place = |item: ItemId| {
             if is_moving && selected.contains(&item) {
                 moved
@@ -424,19 +426,21 @@ fn collect_draws(
             }
         };
         for fill in layer.drawing.fills() {
-            draws.fill(
-                fill,
-                fill_color(fill, layer.opacity),
-                place(ItemId::Fill(fill.id)),
-            );
+            let item = ItemId::Fill(fill.id);
+            if let Some(t) = reshaping(item) {
+                let fill = fill.transformed(&t);
+                draws.fill(&fill, fill_color(&fill, layer.opacity), transform);
+            } else {
+                draws.fill(fill, fill_color(fill, layer.opacity), place(item));
+            }
         }
         for stroke in layer.drawing.strokes() {
-            if !erasing.contains(&stroke.id) {
-                draws.stroke(
-                    stroke,
-                    stroke_color(stroke, layer.opacity),
-                    place(ItemId::Stroke(stroke.id)),
-                );
+            let item = ItemId::Stroke(stroke.id);
+            if let Some(t) = reshaping(item) {
+                let stroke = stroke.transformed(&t);
+                draws.stroke(&stroke, stroke_color(&stroke, layer.opacity), transform);
+            } else if !erasing.contains(&stroke.id) {
+                draws.stroke(stroke, stroke_color(stroke, layer.opacity), place(item));
             } else {
                 for piece in session.tools.erase_preview(stroke.id) {
                     draws.stroke(piece, stroke_color(piece, layer.opacity), transform);

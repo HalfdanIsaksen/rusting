@@ -15,17 +15,25 @@
 //! drags the selection (committed as one `TranslateItems` on release); a
 //! press on empty space drags a marquee. See [`Session::sync_selection`] for
 //! when the selection is cleared.
+//!
+//! The transform tool works on the same selection. It shows a box around it
+//! (see [`TransformBox`]): dragging a corner or edge handle scales from the
+//! opposite side (Shift keeps the aspect ratio, Alt scales from the centre),
+//! dragging the knob above the box or just outside a corner rotates about the
+//! centre (Shift snaps to 15°), and dragging inside the box moves it. The
+//! drag is previewed and committed as one `TransformItems` on release. A
+//! press anywhere else selects, like the select tool.
 
 use crate::session::Session;
 use document::animation_core::{FrameIndex, LayerId, StrokeId, Vec2};
-use document::drawing::select::rect_from_corners;
+use document::drawing::select::{Affine2, rect_from_corners, scale_rotate_about};
 use document::drawing::{
     BrushStyle, Fill, GapClosing, ItemId, Stroke, StrokeBuilder, StrokePoint, VectorDrawing,
 };
 use editor::Tool;
 use editor::commands::{
-    AddFill, AddStroke, Batch, RemoveFill, RemoveStroke, ReplaceStroke, TranslateItems,
-    remove_items,
+    AddFill, AddStroke, Batch, RemoveFill, RemoveStroke, ReplaceStroke, TransformItems,
+    TranslateItems, remove_items,
 };
 
 /// Smallest distance between recorded brush points, in screen points.
@@ -44,6 +52,207 @@ const SELECT_TOLERANCE_SCREEN: f32 = 4.0;
 /// How far the pointer must travel before a select press counts as a drag,
 /// in screen points.
 const DRAG_THRESHOLD_SCREEN: f32 = 3.0;
+
+/// Gap between the selection's bounds and the box drawn around it, in
+/// screen points.
+pub const SELECTION_BOX_PAD_SCREEN: f32 = 3.0;
+
+/// Half the side of a transform handle's hit area, in screen points.
+pub const TRANSFORM_HANDLE_SCREEN: f32 = 6.0;
+
+/// How far above the transform box the rotate knob sits, in screen points.
+pub const ROTATE_KNOB_SCREEN: f32 = 22.0;
+
+/// How far outside a corner of the transform box a press rotates, in screen
+/// points.
+const ROTATE_ZONE_SCREEN: f32 = 24.0;
+
+/// Smallest scale factor the transform tool makes (keeps items from
+/// collapsing to nothing, which can't be scaled back).
+const MIN_SCALE: f32 = 0.01;
+
+/// Rotation step with Shift held, in degrees.
+const ROTATE_SNAP_DEGREES: f32 = 15.0;
+
+/// A part of the transform box.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransformHandle {
+    /// A scale handle. `x` and `y` are -1, 0 or 1: left/top, middle or
+    /// right/bottom. Corners have both non-zero, edges one.
+    Scale {
+        /// Horizontal side.
+        x: i8,
+        /// Vertical side.
+        y: i8,
+    },
+    /// The rotate knob, or the zone just outside a corner.
+    Rotate,
+    /// Inside the box: drags move the selection.
+    Inside,
+}
+
+impl TransformHandle {
+    /// The eight scale handles: corners first, then edge middles.
+    pub const SCALE: [Self; 8] = [
+        Self::Scale { x: -1, y: -1 },
+        Self::Scale { x: 1, y: -1 },
+        Self::Scale { x: 1, y: 1 },
+        Self::Scale { x: -1, y: 1 },
+        Self::Scale { x: 0, y: -1 },
+        Self::Scale { x: 1, y: 0 },
+        Self::Scale { x: 0, y: 1 },
+        Self::Scale { x: -1, y: 0 },
+    ];
+}
+
+/// The transform tool's box around the selection at one zoom level: the
+/// selection's bounds padded by [`SELECTION_BOX_PAD_SCREEN`]. Coordinates
+/// are document units.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TransformBox {
+    /// The selection's bounds, unpadded; transforms are worked out on these.
+    pub bounds: (Vec2, Vec2),
+    /// Top-left corner of the box.
+    pub min: Vec2,
+    /// Bottom-right corner of the box.
+    pub max: Vec2,
+    /// Screen points per document unit.
+    pub zoom: f32,
+}
+
+impl TransformBox {
+    /// The box around `bounds` at `zoom`.
+    pub fn new(bounds: (Vec2, Vec2), zoom: f32) -> Self {
+        let zoom = zoom.max(f32::EPSILON);
+        let pad = Vec2::splat(SELECTION_BOX_PAD_SCREEN / zoom);
+        Self {
+            bounds,
+            min: bounds.0 - pad,
+            max: bounds.1 + pad,
+            zoom,
+        }
+    }
+
+    /// Centre of the box (and of the selection's bounds).
+    pub fn center(&self) -> Vec2 {
+        (self.min + self.max) * 0.5
+    }
+
+    /// Where a scale handle sits; `None` for the other handles.
+    pub fn handle_pos(&self, handle: TransformHandle) -> Option<Vec2> {
+        match handle {
+            TransformHandle::Scale { x, y } => {
+                let half = (self.max - self.min) * 0.5;
+                Some(self.center() + Vec2::new(f32::from(x), f32::from(y)) * half)
+            }
+            _ => None,
+        }
+    }
+
+    /// Where the rotate knob sits: above the middle of the top edge.
+    pub fn rotate_knob(&self) -> Vec2 {
+        Vec2::new(self.center().x, self.min.y - ROTATE_KNOB_SCREEN / self.zoom)
+    }
+
+    /// The part of the box under `pos`, if any. Handles win over the
+    /// inside, and the inside over the rotate zones outside the corners.
+    pub fn hit(&self, pos: Vec2) -> Option<TransformHandle> {
+        let reach = TRANSFORM_HANDLE_SCREEN / self.zoom;
+        let on_handle = TransformHandle::SCALE.into_iter().find(|&h| {
+            self.handle_pos(h)
+                .is_some_and(|p| (pos - p).abs().max_element() <= reach)
+        });
+        if on_handle.is_some() {
+            return on_handle;
+        }
+        if (pos - self.rotate_knob()).length() <= reach {
+            return Some(TransformHandle::Rotate);
+        }
+        if pos.cmpge(self.min).all() && pos.cmple(self.max).all() {
+            return Some(TransformHandle::Inside);
+        }
+        let zone = ROTATE_ZONE_SCREEN / self.zoom;
+        let near_corner = TransformHandle::SCALE[..4].iter().any(|&h| {
+            self.handle_pos(h)
+                .is_some_and(|p| (pos - p).length() <= zone)
+        });
+        near_corner.then_some(TransformHandle::Rotate)
+    }
+}
+
+/// What a transform drag does.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum TransformMode {
+    /// Scale with handle `(x, y)` (see [`TransformHandle::Scale`]) of the
+    /// selection's `bounds`.
+    Scale { x: i8, y: i8, bounds: (Vec2, Vec2) },
+    /// Rotate about `pivot`.
+    Rotate { pivot: Vec2 },
+}
+
+/// Keeps a scale factor at least [`MIN_SCALE`] away from zero, keeping its
+/// sign (mirroring is allowed).
+fn clamp_scale(s: f32) -> f32 {
+    if s.abs() >= MIN_SCALE {
+        s
+    } else if s < 0.0 {
+        -MIN_SCALE
+    } else {
+        MIN_SCALE
+    }
+}
+
+impl TransformMode {
+    /// The transform for a drag from `start` to `pos` (document units).
+    /// `shift` keeps the aspect ratio when scaling and snaps the angle when
+    /// rotating; `alt` scales from the centre instead of the opposite side.
+    fn transform(self, start: Vec2, pos: Vec2, shift: bool, alt: bool) -> Affine2 {
+        match self {
+            Self::Scale { x, y, bounds } => {
+                let center = (bounds.0 + bounds.1) * 0.5;
+                let side = Vec2::new(f32::from(x), f32::from(y));
+                let half = (bounds.1 - bounds.0) * 0.5;
+                let handle = center + side * half;
+                let anchor = if alt { center } else { center - side * half };
+                let reach = handle - anchor;
+                let moved = handle + (pos - start) - anchor;
+                // Per-axis factor; `None` on an axis the handle doesn't drag
+                // or on a zero-size selection.
+                let axis =
+                    |s: f32, r: f32, m: f32| (s != 0.0 && r.abs() > f32::EPSILON).then(|| m / r);
+                let (sx, sy) = (
+                    axis(side.x, reach.x, moved.x),
+                    axis(side.y, reach.y, moved.y),
+                );
+                let scale = if shift {
+                    let uniform = match (sx, sy) {
+                        // Project onto the diagonal so both axes follow.
+                        (Some(_), Some(_)) => moved.dot(reach) / reach.length_squared(),
+                        (Some(s), None) | (None, Some(s)) => s,
+                        (None, None) => 1.0,
+                    };
+                    Vec2::splat(uniform)
+                } else {
+                    Vec2::new(sx.unwrap_or(1.0), sy.unwrap_or(1.0))
+                };
+                let scale = Vec2::new(clamp_scale(scale.x), clamp_scale(scale.y));
+                scale_rotate_about(anchor, scale, 0.0)
+            }
+            Self::Rotate { pivot } => {
+                let (from, to) = (start - pivot, pos - pivot);
+                let mut angle = from.angle_to(to);
+                if !angle.is_finite() {
+                    angle = 0.0;
+                }
+                if shift {
+                    let step = ROTATE_SNAP_DEGREES.to_radians();
+                    angle = (angle / step).round() * step;
+                }
+                scale_rotate_about(pivot, Vec2::ONE, angle)
+            }
+        }
+    }
+}
 
 /// A gesture in progress.
 #[derive(Clone, Debug)]
@@ -86,6 +295,19 @@ enum Gesture {
         /// The selection to add to (Shift), or empty.
         base: Vec<ItemId>,
     },
+    /// Scaling or rotating the selection with the transform tool.
+    Transform {
+        layer: LayerId,
+        frame: FrameIndex,
+        mode: TransformMode,
+        start: Vec2,
+        /// Latest pointer position, to redo the transform when a modifier
+        /// changes without the pointer moving.
+        last: Vec2,
+        zoom: f32,
+        dragged: bool,
+        transform: Affine2,
+    },
 }
 
 /// Whether the pointer moved from `start` to `pos` far enough to be a drag.
@@ -120,6 +342,10 @@ pub struct ToolController {
     selection: Vec<ItemId>,
     /// The layer and frame the selection belongs to.
     selection_at: Option<(LayerId, FrameIndex)>,
+    /// Shift held: keep the aspect ratio / snap the angle while transforming.
+    shift: bool,
+    /// Alt held: scale from the centre while transforming.
+    alt: bool,
 }
 
 impl Default for ToolController {
@@ -132,6 +358,8 @@ impl Default for ToolController {
             gesture: None,
             selection: Vec::new(),
             selection_at: None,
+            shift: false,
+            alt: false,
         }
     }
 }
@@ -170,6 +398,66 @@ impl ToolController {
         }
     }
 
+    /// How the selection is being dragged, as one transform: a translation
+    /// while moving it, a scale or rotation with the transform tool.
+    /// Identity when not dragging.
+    pub fn selection_transform(&self) -> Affine2 {
+        match &self.gesture {
+            Some(Gesture::Transform {
+                transform,
+                dragged: true,
+                ..
+            }) => *transform,
+            _ => Affine2::from_translation(self.move_offset()),
+        }
+    }
+
+    /// The scale or rotation being dragged with the transform tool; draw the
+    /// selected items through it (with [`Stroke::transformed`], so brush
+    /// widths match what release commits). `None` when not transforming.
+    pub fn transform_preview(&self) -> Option<Affine2> {
+        match &self.gesture {
+            Some(Gesture::Transform {
+                transform,
+                dragged: true,
+                ..
+            }) => Some(*transform),
+            _ => None,
+        }
+    }
+
+    /// The transform handle being dragged, if any (for the cursor).
+    pub fn transform_dragging(&self) -> Option<TransformHandle> {
+        match &self.gesture {
+            Some(Gesture::Transform { mode, .. }) => Some(match *mode {
+                TransformMode::Scale { x, y, .. } => TransformHandle::Scale { x, y },
+                TransformMode::Rotate { .. } => TransformHandle::Rotate,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Tells the transform tool which modifiers are held: Shift keeps the
+    /// aspect ratio (or snaps the angle), Alt scales from the centre. The
+    /// drag in progress follows at once.
+    pub fn set_modifiers(&mut self, shift: bool, alt: bool) {
+        if (shift, alt) == (self.shift, self.alt) {
+            return;
+        }
+        self.shift = shift;
+        self.alt = alt;
+        if let Some(Gesture::Transform {
+            mode,
+            start,
+            last,
+            transform,
+            ..
+        }) = &mut self.gesture
+        {
+            *transform = mode.transform(*start, *last, shift, alt);
+        }
+    }
+
     /// The selection box being dragged, as `(min, max)` in document
     /// coordinates.
     pub fn marquee(&self) -> Option<(Vec2, Vec2)> {
@@ -194,7 +482,7 @@ impl ToolController {
         self.selection_at = None;
         if matches!(
             self.gesture,
-            Some(Gesture::Move { .. } | Gesture::Marquee { .. })
+            Some(Gesture::Move { .. } | Gesture::Marquee { .. } | Gesture::Transform { .. })
         ) {
             self.gesture = None;
         }
@@ -274,6 +562,7 @@ impl Session {
     /// the select tool add to or remove from the selection.
     pub fn pointer_down_with(&mut self, pos: Vec2, zoom: f32, shift: bool) -> bool {
         self.tools.cancel();
+        self.tools.shift = shift;
         if let Some(reason) = self.draw_block_reason() {
             self.set_error(reason);
             return false;
@@ -292,6 +581,10 @@ impl Session {
                 return true;
             }
             Tool::Select => match self.select_press(layer, frame, pos, zoom, shift) {
+                Some(gesture) => gesture,
+                None => return true,
+            },
+            Tool::Transform => match self.transform_press(layer, frame, pos, zoom, shift) {
                 Some(gesture) => gesture,
                 None => return true,
             },
@@ -332,7 +625,21 @@ impl Session {
     /// Continues the gesture to `pos` (document coordinates).
     pub fn pointer_move(&mut self, pos: Vec2) {
         let radius = self.tools.eraser_radius;
+        let (shift, alt) = (self.tools.shift, self.tools.alt);
         match &mut self.tools.gesture {
+            Some(Gesture::Transform {
+                mode,
+                start,
+                last,
+                zoom,
+                dragged,
+                transform,
+                ..
+            }) => {
+                *last = pos;
+                *dragged |= past_drag_threshold(*start, pos, *zoom);
+                *transform = mode.transform(*start, pos, shift, alt);
+            }
             Some(Gesture::Move {
                 start,
                 delta,
@@ -536,6 +843,68 @@ impl Session {
         }
     }
 
+    /// The transform tool's box around the selection at `zoom` (screen
+    /// points per document unit), or `None` when that tool is not active or
+    /// nothing is selected.
+    pub fn transform_box(&self, zoom: f32) -> Option<TransformBox> {
+        if self.state.tool != Tool::Transform {
+            return None;
+        }
+        self.tools.selection_at()?;
+        let bounds = self.active_drawing()?.items_bounds(&self.tools.selection)?;
+        Some(TransformBox::new(bounds, zoom))
+    }
+
+    /// Transform tool press: starts scaling, rotating or moving when `pos`
+    /// is on the selection's box, and otherwise selects like the select
+    /// tool.
+    fn transform_press(
+        &mut self,
+        layer: LayerId,
+        frame: FrameIndex,
+        pos: Vec2,
+        zoom: f32,
+        shift: bool,
+    ) -> Option<Gesture> {
+        self.sync_selection();
+        let zoom = zoom.max(f32::EPSILON);
+        let hit = self
+            .transform_box(zoom)
+            .filter(|_| self.tools.selection_at() == Some((layer, frame)))
+            .and_then(|b| b.hit(pos).map(|h| (b, h)));
+        let mode = match hit {
+            Some((b, TransformHandle::Scale { x, y })) => TransformMode::Scale {
+                x,
+                y,
+                bounds: b.bounds,
+            },
+            Some((b, TransformHandle::Rotate)) => TransformMode::Rotate {
+                pivot: (b.bounds.0 + b.bounds.1) * 0.5,
+            },
+            Some((_, TransformHandle::Inside)) if !shift => {
+                return Some(Gesture::Move {
+                    layer,
+                    frame,
+                    start: pos,
+                    delta: Vec2::ZERO,
+                    zoom,
+                    dragged: false,
+                });
+            }
+            _ => return self.select_press(layer, frame, pos, zoom, shift),
+        };
+        Some(Gesture::Transform {
+            layer,
+            frame,
+            mode,
+            start: pos,
+            last: pos,
+            zoom,
+            dragged: false,
+            transform: Affine2::IDENTITY,
+        })
+    }
+
     /// The drawing the active layer shows at the current frame.
     pub fn active_drawing(&self) -> Option<&VectorDrawing> {
         vector_at(
@@ -605,8 +974,8 @@ impl Session {
         }
     }
 
-    /// Keeps the selection valid: clears it when the select tool is not
-    /// active, when the active layer or current frame differs from where it
+    /// Keeps the selection valid: clears it when neither the select nor the
+    /// transform tool is active, when the active layer or current frame differs from where it
     /// was made, or when the layer is locked or hidden; and drops items that
     /// no longer exist (e.g. after undo). Called after every document,
     /// frame and layer change, and once per UI frame.
@@ -620,7 +989,7 @@ impl Session {
             .get(layer)
             .is_some_and(|l| l.is_editable());
         let same_place = self.state.active_layer == Some(layer) && self.current_frame() == frame;
-        if self.state.tool != Tool::Select || !editable || !same_place {
+        if !self.state.tool.uses_selection() || !editable || !same_place {
             self.tools.clear_selection();
             return;
         }
@@ -646,7 +1015,23 @@ impl Session {
                 let items = self.tools.selection.clone();
                 let _ = self.execute(Box::new(TranslateItems::new(layer, frame, items, delta)));
             }
-            Some(Gesture::Move { .. } | Gesture::Marquee { .. }) => {}
+            Some(Gesture::Transform {
+                layer,
+                frame,
+                mode,
+                dragged: true,
+                transform,
+                ..
+            }) if transform != Affine2::IDENTITY => {
+                let label = match mode {
+                    TransformMode::Scale { .. } => "Scale",
+                    TransformMode::Rotate { .. } => "Rotate",
+                };
+                let items = self.tools.selection.clone();
+                let command = TransformItems::new(layer, frame, items, transform).with_label(label);
+                let _ = self.execute(Box::new(command));
+            }
+            Some(Gesture::Move { .. } | Gesture::Marquee { .. } | Gesture::Transform { .. }) => {}
             Some(Gesture::Brush {
                 layer,
                 frame,
@@ -1102,5 +1487,225 @@ mod tests {
         assert_eq!(moved, fill.translated(Vec2::new(10.0, 0.0)));
         s.undo();
         assert_eq!(s.active_drawing().unwrap().fills()[0], fill);
+    }
+
+    // ----- Transform tool ------------------------------------------------
+
+    fn close(a: Vec2, b: Vec2) -> bool {
+        (a - b).length() < 1e-3
+    }
+
+    /// The select scene with everything selected and the transform tool on.
+    fn transform_scene() -> (Session, TransformBox) {
+        let (mut s, _) = select_scene();
+        s.select_all();
+        s.state.tool = Tool::Transform;
+        s.sync_selection();
+        assert_eq!(
+            s.tools.selection().len(),
+            3,
+            "selection survives the switch"
+        );
+        let b = s.transform_box(1.0).unwrap();
+        (s, b)
+    }
+
+    #[test]
+    fn transform_box_hit_test() {
+        let b = TransformBox::new((Vec2::ZERO, Vec2::new(100.0, 50.0)), 2.0);
+        let pad = SELECTION_BOX_PAD_SCREEN / 2.0;
+        assert_eq!(b.min, Vec2::splat(-pad));
+        assert_eq!(b.hit(b.max), Some(TransformHandle::Scale { x: 1, y: 1 }));
+        assert_eq!(
+            b.hit(Vec2::new(50.0, 50.0 + pad + 1.0)),
+            Some(TransformHandle::Scale { x: 0, y: 1 })
+        );
+        assert_eq!(b.hit(b.rotate_knob()), Some(TransformHandle::Rotate));
+        assert_eq!(b.hit(Vec2::new(30.0, 20.0)), Some(TransformHandle::Inside));
+        // Just outside a corner rotates; far away is nothing.
+        assert_eq!(
+            b.hit(b.max + Vec2::splat(6.0)),
+            Some(TransformHandle::Rotate)
+        );
+        assert_eq!(b.hit(Vec2::new(300.0, 300.0)), None);
+    }
+
+    #[test]
+    fn scale_math_follows_the_handle() {
+        let bounds = (Vec2::ZERO, Vec2::new(100.0, 50.0));
+        let corner = TransformMode::Scale { x: 1, y: 1, bounds };
+        // Bottom-right dragged by (+100, +50): double size, top-left fixed.
+        let t = corner.transform(Vec2::ZERO, Vec2::new(100.0, 50.0), false, false);
+        assert!(close(t.transform_point2(Vec2::ZERO), Vec2::ZERO));
+        assert!(close(t.transform_point2(bounds.1), Vec2::new(200.0, 100.0)));
+        // Alt: scale from the centre instead, so both sides move.
+        let t = corner.transform(Vec2::ZERO, Vec2::new(50.0, 25.0), false, true);
+        assert!(close(
+            t.transform_point2(Vec2::new(50.0, 25.0)),
+            Vec2::new(50.0, 25.0)
+        ));
+        assert!(close(t.transform_point2(bounds.1), Vec2::new(150.0, 75.0)));
+        // Shift: uneven drag still scales both axes alike.
+        let t = corner.transform(Vec2::ZERO, Vec2::new(100.0, 0.0), true, false);
+        let size = t.transform_point2(bounds.1);
+        assert!((size.x / size.y - 2.0).abs() < 1e-4, "aspect kept: {size}");
+        // An edge handle only scales its own axis, unless Shift is held.
+        let right = TransformMode::Scale { x: 1, y: 0, bounds };
+        let t = right.transform(Vec2::ZERO, Vec2::new(-50.0, 30.0), false, false);
+        assert!(close(t.transform_point2(bounds.1), Vec2::new(50.0, 50.0)));
+        let t = right.transform(Vec2::ZERO, Vec2::new(-50.0, 30.0), true, false);
+        assert!(close(t.transform_point2(bounds.1), Vec2::new(50.0, 37.5)));
+        // Dragging past the anchor mirrors, but never collapses to zero.
+        let t = right.transform(Vec2::ZERO, Vec2::new(-100.0, 0.0), false, false);
+        assert!(t.matrix2.determinant().abs() > 0.0);
+        let t = right.transform(Vec2::ZERO, Vec2::new(-200.0, 0.0), false, false);
+        assert!(close(t.transform_point2(bounds.1), Vec2::new(-100.0, 50.0)));
+    }
+
+    #[test]
+    fn rotate_math_and_snap() {
+        let rotate = TransformMode::Rotate { pivot: Vec2::ZERO };
+        // From straight up to straight right: a quarter turn.
+        let t = rotate.transform(Vec2::new(0.0, -10.0), Vec2::new(10.0, 0.0), false, false);
+        assert!(close(
+            t.transform_point2(Vec2::new(0.0, -1.0)),
+            Vec2::new(1.0, 0.0)
+        ));
+        // 20° snaps to 15° with Shift.
+        let end = Vec2::from_angle(20f32.to_radians()) * 10.0;
+        let t = rotate.transform(Vec2::new(10.0, 0.0), end, true, false);
+        let got = Vec2::X.angle_to(t.transform_point2(Vec2::X)).to_degrees();
+        assert!((got - 15.0).abs() < 1e-3, "{got}");
+    }
+
+    #[test]
+    fn dragging_a_corner_scales_in_one_undo_step() {
+        let (mut s, b) = transform_scene();
+        let before = strokes(&s);
+        let undo_len = s.history.undo_len();
+        let handle = b.handle_pos(TransformHandle::Scale { x: 1, y: 1 }).unwrap();
+        let (min, max) = b.bounds;
+        assert!(s.pointer_down_with(handle, 1.0, false));
+        s.pointer_move(handle + (max - min) * 0.25);
+        let preview = s.tools.transform_preview().expect("live preview");
+        assert_eq!(strokes(&s), before, "document untouched while dragging");
+        s.pointer_move(handle + (max - min));
+        s.pointer_up();
+        assert!(s.tools.transform_preview().is_none());
+        assert_ne!(preview, Affine2::IDENTITY);
+        assert_eq!(s.history.undo_len(), undo_len + 1);
+        assert_eq!(s.history.undo_label(), Some("Scale"));
+        let after = strokes(&s);
+        for (a, z) in before.iter().zip(&after) {
+            assert_eq!(a.id, z.id);
+            for (p, q) in a.points.iter().zip(&z.points) {
+                // Doubled about the top-left corner of the bounds.
+                assert!(close(q.pos, min + (p.pos - min) * 2.0));
+            }
+            assert!((z.style.width - a.style.width * 2.0).abs() < 1e-3);
+        }
+        assert_eq!(s.tools.selection().len(), 3, "still selected");
+        s.undo();
+        assert_eq!(strokes(&s), before);
+        s.redo();
+        assert_eq!(strokes(&s), after);
+    }
+
+    #[test]
+    fn dragging_the_knob_rotates_about_the_centre() {
+        let (mut s, b) = transform_scene();
+        let before = strokes(&s);
+        let center = (b.bounds.0 + b.bounds.1) * 0.5;
+        let knob = b.rotate_knob();
+        assert!(s.pointer_down_with(knob, 1.0, false));
+        // Swing from above the centre to its right: a quarter turn.
+        s.pointer_move(center + Vec2::new((knob - center).length(), 0.0));
+        s.pointer_up();
+        assert_eq!(s.history.undo_label(), Some("Rotate"));
+        let after = strokes(&s);
+        let quarter = |p: Vec2| center + Vec2::new(-(p - center).y, (p - center).x);
+        for (a, z) in before.iter().zip(&after) {
+            for (p, q) in a.points.iter().zip(&z.points) {
+                assert!(
+                    close(q.pos, quarter(p.pos)),
+                    "{} vs {}",
+                    q.pos,
+                    quarter(p.pos)
+                );
+            }
+            assert!((z.style.width - a.style.width).abs() < 1e-4);
+        }
+        s.undo();
+        assert_eq!(strokes(&s), before);
+    }
+
+    #[test]
+    fn modifiers_update_the_drag_in_place() {
+        let (mut s, b) = transform_scene();
+        let handle = b.handle_pos(TransformHandle::Scale { x: 1, y: 1 }).unwrap();
+        assert!(s.pointer_down_with(handle, 1.0, false));
+        s.pointer_move(handle + Vec2::new(100.0, 0.0));
+        let free = s.tools.transform_preview().unwrap();
+        s.tools.set_modifiers(true, false);
+        let kept = s.tools.transform_preview().unwrap();
+        assert_ne!(free, kept);
+        let d = kept.matrix2;
+        assert!((d.x_axis.x - d.y_axis.y).abs() < 1e-5, "uniform with Shift");
+        s.tools.set_modifiers(false, false);
+        assert_eq!(s.tools.transform_preview(), Some(free));
+        s.tools.cancel();
+    }
+
+    #[test]
+    fn dragging_inside_the_box_moves() {
+        let (mut s, b) = transform_scene();
+        let before = strokes(&s);
+        // Empty space inside the box, between the lines.
+        let inside = Vec2::new(50.0, 120.0);
+        assert_eq!(b.hit(inside), Some(TransformHandle::Inside));
+        drag(&mut s, inside, inside + Vec2::new(10.0, 5.0), false);
+        assert_eq!(s.history.undo_label(), Some("Move"));
+        assert_eq!(
+            strokes(&s)[0].points[0].pos,
+            before[0].points[0].pos + Vec2::new(10.0, 5.0)
+        );
+    }
+
+    #[test]
+    fn transform_without_a_selection_just_selects() {
+        let (mut s, ids) = select_scene();
+        s.state.tool = Tool::Transform;
+        let before = strokes(&s);
+        let undo_len = s.history.undo_len();
+        assert!(s.transform_box(1.0).is_none());
+        // A drag on empty space is a marquee, not a transform.
+        drag(
+            &mut s,
+            Vec2::new(-20.0, -20.0),
+            Vec2::new(10.0, 60.0),
+            false,
+        );
+        assert_eq!(s.tools.selection(), [ids[0], ids[1]]);
+        // A click elsewhere selects that item instead.
+        click(&mut s, Vec2::new(50.0, 200.0), false);
+        assert_eq!(s.tools.selection(), [ids[2]]);
+        assert_eq!(strokes(&s), before);
+        assert_eq!(s.history.undo_len(), undo_len);
+        // Other tools drop the selection.
+        s.state.tool = Tool::Brush;
+        s.sync_selection();
+        assert!(s.tools.selection().is_empty());
+    }
+
+    #[test]
+    fn a_click_on_a_handle_records_nothing() {
+        let (mut s, b) = transform_scene();
+        let undo_len = s.history.undo_len();
+        let handle = b
+            .handle_pos(TransformHandle::Scale { x: -1, y: 0 })
+            .unwrap();
+        click(&mut s, handle, false);
+        drag(&mut s, handle, handle + Vec2::new(1.0, 0.0), false);
+        assert_eq!(s.history.undo_len(), undo_len);
     }
 }

@@ -82,14 +82,17 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
 
     let gesture = session.tools.is_active();
     if ctx.input_mut(|i| i.consume_shortcut(&SELECT_ALL)) && !gesture {
-        session.state.tool = Tool::Select;
+        if !session.state.tool.uses_selection() {
+            session.state.tool = Tool::Select;
+        }
         session.select_all();
     }
     // With a selection, arrows nudge it instead of moving the playhead.
-    let selecting = session.state.tool == Tool::Select && !session.tools.selection().is_empty();
-    let (select, escape, delete, shift) = ctx.input(|i| {
+    let selecting = session.state.tool.uses_selection() && !session.tools.selection().is_empty();
+    let (select, transform, escape, delete, shift) = ctx.input(|i| {
         (
             i.modifiers.is_none() && i.key_pressed(Key::V),
+            i.modifiers.is_none() && i.key_pressed(Key::Q),
             i.key_pressed(Key::Escape),
             i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace),
             i.modifiers.shift,
@@ -138,6 +141,9 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
     if !gesture {
         if select {
             session.state.tool = Tool::Select;
+        }
+        if transform {
+            session.state.tool = Tool::Transform;
         }
         if brush {
             session.state.tool = Tool::Brush;
@@ -217,6 +223,22 @@ mod tests {
         press(&mut s, TOGGLE_TOOLBAR);
         press(&mut s, TOGGLE_TIMELINE);
         assert_eq!(s.view, crate::session::ViewSettings::default());
+    }
+
+    #[test]
+    fn q_picks_the_transform_tool_and_keeps_the_selection() {
+        let mut s = Session::new();
+        s.state.tool = Tool::Select;
+        press(&mut s, KeyboardShortcut::new(Modifiers::NONE, Key::Q));
+        assert_eq!(s.state.tool, Tool::Transform);
+        press(&mut s, SELECT_ALL);
+        assert_eq!(
+            s.state.tool,
+            Tool::Transform,
+            "Cmd+A keeps the transform tool"
+        );
+        press(&mut s, KeyboardShortcut::new(Modifiers::NONE, Key::V));
+        assert_eq!(s.state.tool, Tool::Select);
     }
 
     #[test]

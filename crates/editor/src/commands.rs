@@ -5,7 +5,7 @@ mod fill;
 mod select;
 pub use canvas::ResizeCanvas;
 pub use fill::{AddFill, RemoveFill};
-pub use select::{TranslateItems, remove_items};
+pub use select::{TransformItems, TranslateItems, remove_items};
 
 use crate::{Command, CommandError};
 use animation_core::{DrawingId, Fps, FrameIndex, LayerId, StrokeId};

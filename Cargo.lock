@@ -538,6 +538,7 @@ name = "drawing"
 version = "0.1.0"
 dependencies = [
  "animation_core",
+ "glam",
  "serde",
 ]
 

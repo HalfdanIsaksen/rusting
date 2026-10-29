@@ -69,6 +69,13 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
                      (Shift ×10), Delete removes, ⌘A selects all, Esc deselects.",
                 );
             }
+            Tool::Transform => {
+                ui.weak(
+                    "Drag a corner or edge to scale (Shift keeps proportions, Alt scales from \
+                     the centre). Drag the knob or just outside a corner to rotate (Shift snaps \
+                     to 15°). Drag inside to move; click elsewhere to select.",
+                );
+            }
             Tool::Brush => {
                 brush_size(ui, session);
                 ui.separator();
