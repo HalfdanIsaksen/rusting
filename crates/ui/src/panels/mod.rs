@@ -3,6 +3,7 @@
 mod dialogs;
 mod layers;
 mod menu;
+mod preview;
 mod resize_canvas;
 mod shortcuts;
 mod start_menu;
@@ -12,6 +13,8 @@ mod tool_options;
 pub mod toolbar;
 
 use crate::session::Session;
+
+pub use preview::window as preview_window;
 
 /// Draws the whole editor for one frame, or the start menu while it is up. `canvas` fills the central area;
 /// the host draws the canvas and forwards pointer input to the session.
@@ -25,6 +28,9 @@ pub fn show(
         return;
     }
     if session.update_playback() {
+        ui.ctx().request_repaint();
+    }
+    if session.preview.update(&session.document) {
         ui.ctx().request_repaint();
     }
     shortcuts::handle(ui.ctx(), session);

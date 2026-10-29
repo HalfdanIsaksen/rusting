@@ -10,7 +10,7 @@ use crate::gpu::RendererError;
 use crate::stroke_cache::StrokeCache;
 use crate::viewport::Viewport;
 use animation_core::Rgba;
-use animation_core::glam::{DVec2, Vec2};
+use animation_core::glam::Vec2;
 
 /// One frame to render offscreen.
 #[derive(Clone, Copy, Debug)]
@@ -87,13 +87,7 @@ impl OffscreenRenderer {
 
         // The canvas fills the target exactly: no pan, one zoom step per scale.
         let canvas_size = Vec2::new(frame.canvas_size.0 as f32, frame.canvas_size.1 as f32);
-        let viewport = Viewport {
-            canvas_size,
-            zoom: f64::from(width) / f64::from(frame.canvas_size.0.max(1)),
-            pan: DVec2::ZERO,
-            screen_size: Vec2::new(width as f32, height as f32),
-            scale_factor: 1.0,
-        };
+        let viewport = Viewport::filling(canvas_size, (width, height));
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("offscreen"),
         });

@@ -35,6 +35,44 @@ struct Graphics {
     last_canvas: Option<CanvasState>,
     /// Renders export frames; created on the first export.
     offscreen: Option<OffscreenRenderer>,
+    /// Renders the View → Preview image; created when it first opens.
+    preview: Option<PreviewGraphics>,
+}
+
+/// The preview window's own small canvas. It has its own mesh cache and
+/// uniform buffers, so it never disturbs the editor canvas, and it only
+/// re-renders when what it shows changes.
+struct PreviewGraphics {
+    canvas: CanvasRenderer,
+    texture: egui::TextureId,
+    /// What the preview texture currently shows.
+    last: Option<PreviewState>,
+}
+
+impl PreviewGraphics {
+    fn new(device: &wgpu::Device, egui_renderer: &mut egui_wgpu::Renderer) -> Self {
+        let canvas = CanvasRenderer::new(device);
+        let texture = egui_renderer.register_native_texture(
+            device,
+            canvas.display_view(),
+            wgpu::FilterMode::Linear,
+        );
+        Self {
+            canvas,
+            texture,
+            last: None,
+        }
+    }
+}
+
+/// Everything that determines the preview image.
+#[derive(Clone, Debug, PartialEq)]
+struct PreviewState {
+    size: (u32, u32),
+    canvas_size: Vec2,
+    background: Option<Rgba>,
+    draws: Vec<StrokeDraw>,
+    geometry_generation: u64,
 }
 
 /// Everything that determines the canvas image.
@@ -119,6 +157,7 @@ impl App {
             canvas_texture,
             last_canvas: None,
             offscreen: None,
+            preview: None,
         });
         Ok(())
     }
@@ -134,7 +173,16 @@ impl App {
         let raw_input = egui_state.take_egui_input(window);
         let shell = &mut self.shell;
         let texture = graphics.canvas_texture;
-        let output = self.egui_ctx.run_ui(raw_input, |ui| shell.ui(ui, texture));
+        if shell.session.preview.is_open() && graphics.preview.is_none() {
+            graphics.preview = Some(PreviewGraphics::new(
+                graphics.gpu.device(),
+                &mut graphics.egui_renderer,
+            ));
+        }
+        let preview_texture = graphics.preview.as_ref().map(|p| p.texture);
+        let output = self
+            .egui_ctx
+            .run_ui(raw_input, |ui| shell.ui(ui, texture, preview_texture));
         egui_state.handle_platform_output(window, output.platform_output);
         let title = shell.session.title();
         if title != self.title {
@@ -149,6 +197,7 @@ impl App {
             canvas_texture,
             last_canvas,
             offscreen,
+            preview,
         } = graphics;
 
         // 2. Size the canvas texture to the panel and gather what to draw.
@@ -176,6 +225,12 @@ impl App {
             }
         });
         let canvas_state = canvas_state.filter(|state| last_canvas.as_ref() != Some(state));
+        let preview_state = match (shell.preview_size, preview.as_mut()) {
+            (Some(size), Some(preview)) => {
+                prepare_preview(gpu, egui_renderer, preview, shell, size)
+            }
+            _ => None,
+        };
 
         // 3. Upload egui textures and geometry, then draw canvas + UI.
         // egui 0.37 asserts that every texture delta is consumed.
@@ -206,6 +261,18 @@ impl App {
                     },
                 );
             }
+            if let (Some(state), Some(preview)) = (&preview_state, preview.as_mut()) {
+                preview.canvas.render_bare(
+                    device,
+                    queue,
+                    encoder,
+                    &Viewport::filling(state.canvas_size, state.size),
+                    &CanvasFrame {
+                        background: state.background,
+                        strokes: &state.draws,
+                    },
+                );
+            }
             let commands = egui_renderer.update_buffers(device, queue, encoder, &jobs, &screen);
             let mut pass = encoder
                 .begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -227,6 +294,9 @@ impl App {
         });
         if presented && let Some(state) = canvas_state {
             *last_canvas = Some(state);
+        }
+        if presented && let (Some(state), Some(preview)) = (preview_state, preview.as_mut()) {
+            preview.last = Some(state);
         }
         for id in textures_delta.free.drain() {
             egui_renderer.free_texture(&id);
@@ -267,6 +337,39 @@ impl App {
             self.next_repaint = Instant::now().checked_add(delay);
         }
     }
+}
+
+/// Sizes the preview texture and gathers the document content at the
+/// preview's frame: no onion skins, tool previews or selection, exactly as
+/// export draws it. `None` when the preview already shows this.
+fn prepare_preview(
+    gpu: &Gpu,
+    egui_renderer: &mut egui_wgpu::Renderer,
+    preview: &mut PreviewGraphics,
+    shell: &Shell,
+    (width, height): (u32, u32),
+) -> Option<PreviewState> {
+    let device = gpu.device();
+    if preview.canvas.resize(device, width, height) {
+        egui_renderer.update_egui_texture_from_wgpu_texture(
+            device,
+            preview.canvas.display_view(),
+            wgpu::FilterMode::Linear,
+            preview.texture,
+        );
+    }
+    let doc = &shell.session.document;
+    let mut draws = DrawListBuilder::new(device, preview.canvas.stroke_cache_mut());
+    draws.render_list(&doc.evaluate(shell.session.preview_frame()));
+    let draws = draws.finish();
+    let state = PreviewState {
+        size: preview.canvas.target().size(),
+        canvas_size: Vec2::new(doc.canvas.width as f32, doc.canvas.height as f32),
+        background: shell.background(),
+        draws,
+        geometry_generation: preview.canvas.stroke_cache().generation(),
+    };
+    (preview.last.as_ref() != Some(&state)).then_some(state)
 }
 
 /// Meshes to draw this frame, bottom to top: onion skins, the document at

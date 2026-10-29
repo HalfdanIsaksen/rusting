@@ -48,6 +48,8 @@ pub struct Shell {
     pub debug_triangle_id: StrokeId,
     /// File → Export: options dialog, progress and the running export.
     pub export: ExportPanel,
+    /// Physical size of the preview window's image, while it is open.
+    pub preview_size: Option<(u32, u32)>,
     /// The document the viewport was last fitted to.
     fitted_document: Option<DocumentId>,
 }
@@ -61,6 +63,7 @@ impl Shell {
             debug: DebugOptions::from_env(),
             debug_triangle_id: StrokeId::new(),
             export: ExportPanel::new(),
+            preview_size: None,
             fitted_document: None,
         }
     }
@@ -75,18 +78,27 @@ impl Shell {
     }
 
     /// Builds the whole UI for one frame. `canvas_texture` is the egui id of
-    /// the renderer's canvas texture.
-    pub fn ui(&mut self, ui: &mut egui::Ui, canvas_texture: egui::TextureId) {
+    /// the renderer's canvas texture, `preview_texture` that of the preview
+    /// window's image once it exists.
+    pub fn ui(
+        &mut self,
+        ui: &mut egui::Ui,
+        canvas_texture: egui::TextureId,
+        preview_texture: Option<egui::TextureId>,
+    ) {
+        let transparent = self.background().is_none();
         let Self {
             session,
             viewport,
             fitted_document,
             export,
+            preview_size,
             ..
         } = self;
         ui::show(ui, session, |ui, session| {
             canvas(ui, session, viewport, fitted_document, canvas_texture);
         });
+        *preview_size = ui::preview_window(ui.ctx(), session, preview_texture, transparent);
         export.ui(ui.ctx(), session);
     }
 }
