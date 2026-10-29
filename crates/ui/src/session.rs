@@ -128,6 +128,25 @@ impl Default for TimelineView {
     }
 }
 
+/// Which panels around the canvas are shown (the View menu). Hidden panels
+/// give their space to the canvas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewSettings {
+    /// The tool strip on the left.
+    pub toolbar: bool,
+    /// The timeline at the bottom, with its layer column.
+    pub timeline: bool,
+}
+
+impl Default for ViewSettings {
+    fn default() -> Self {
+        Self {
+            toolbar: true,
+            timeline: true,
+        }
+    }
+}
+
 /// What the "Resize Canvas" dialog is editing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResizeCanvasDialog {
@@ -177,6 +196,8 @@ pub struct Session {
     pub tools: ToolController,
     /// Timeline layout.
     pub timeline: TimelineView,
+    /// Which panels are shown. Kept when the document changes.
+    pub view: ViewSettings,
     /// Set by the canvas when Space was used to pan, so releasing Space does
     /// not also toggle playback.
     pub space_panned: bool,
@@ -213,6 +234,7 @@ impl Session {
             onion: OnionSkin::default(),
             tools: ToolController::default(),
             timeline: TimelineView::default(),
+            view: ViewSettings::default(),
             space_panned: false,
             resize_canvas: None,
             status: None,
@@ -223,7 +245,7 @@ impl Session {
     }
 
     /// Replaces the document and resets history, selection and playback.
-    /// Tool, brush, onion-skin and timeline settings are kept.
+    /// Tool, brush, onion-skin, timeline and view settings are kept.
     fn replace_document(&mut self, document: Document, path: Option<PathBuf>) {
         let tool = self.state.tool;
         let brush = self.state.brush;
@@ -675,6 +697,20 @@ mod tests {
         let same = s.document.canvas;
         s.resize_canvas(same, CanvasAnchor::Center);
         assert!(!s.history.can_undo());
+    }
+
+    #[test]
+    fn view_shows_all_panels_by_default_and_survives_opening_a_file() {
+        let mut s = Session::new();
+        assert_eq!(s.view, ViewSettings::default());
+        assert!(s.view.toolbar && s.view.timeline);
+
+        let path = temp_path("view.rusting");
+        assert!(s.save_to(&path));
+        s.view.toolbar = false;
+        assert!(s.open_path(&path));
+        assert!(!s.view.toolbar);
+        assert!(s.view.timeline);
     }
 
     #[test]

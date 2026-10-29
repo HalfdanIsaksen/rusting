@@ -32,16 +32,23 @@ pub fn show(
 
     egui::Panel::top("menu_bar").show(ui, |ui| menu::bar(ui, session));
     egui::Panel::bottom("status_bar").show(ui, |ui| status::bar(ui, session));
-    egui::Panel::bottom("timeline")
-        .resizable(true)
-        .default_size(210.0)
-        .min_size(140.0)
-        .show(ui, |ui| timeline::panel(ui, session));
-    egui::Panel::left("toolbar")
-        .resizable(false)
-        .exact_size(toolbar::WIDTH)
-        .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(4, 0)))
-        .show(ui, |ui| toolbar::panel(ui, session));
+    // Hidden panels are simply not added, so the canvas takes their space.
+    if session.view.timeline {
+        egui::Panel::bottom("timeline")
+            .resizable(true)
+            .default_size(210.0)
+            .min_size(140.0)
+            .show(ui, |ui| timeline::panel(ui, session));
+    }
+    if session.view.toolbar {
+        egui::Panel::left("toolbar")
+            .resizable(false)
+            .exact_size(toolbar::WIDTH)
+            .frame(
+                egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(4, 0)),
+            )
+            .show(ui, |ui| toolbar::panel(ui, session));
+    }
     // Added after the side panels so it spans only the canvas.
     egui::Panel::top("tool_options")
         .resizable(false)

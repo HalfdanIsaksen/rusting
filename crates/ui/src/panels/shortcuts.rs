@@ -25,6 +25,11 @@ pub const SELECT_ALL: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAN
 /// Quit.
 pub const QUIT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Q);
 
+/// Show or hide the tool strip.
+pub const TOGGLE_TOOLBAR: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Num1);
+/// Show or hide the timeline.
+pub const TOGGLE_TIMELINE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Num2);
+
 /// Handles global shortcuts. Plain-key shortcuts are skipped while a text
 /// field has keyboard focus.
 pub fn handle(ctx: &egui::Context, session: &mut Session) {
@@ -32,16 +37,20 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
     let modal_open = session.dialog().is_some() || session.resize_canvas.is_some();
 
     // Most specific first: Shift+Cmd+S before Cmd+S (egui ignores extra Shift).
-    let (save_as, save, new, open, quit) = ctx.input_mut(|i| {
+    let (save_as, save, new, open, quit, toolbar, timeline) = ctx.input_mut(|i| {
         (
             i.consume_shortcut(&SAVE_AS),
             i.consume_shortcut(&SAVE),
             i.consume_shortcut(&NEW),
             i.consume_shortcut(&OPEN),
             i.consume_shortcut(&QUIT),
+            i.consume_shortcut(&TOGGLE_TOOLBAR),
+            i.consume_shortcut(&TOGGLE_TIMELINE),
         )
     });
     if !modal_open {
+        session.view.toolbar ^= toolbar;
+        session.view.timeline ^= timeline;
         if save_as {
             session.save_as();
         } else if save {
@@ -173,5 +182,50 @@ fn finish_space(session: &mut Session, space_down: bool, space_up: bool, gesture
     }
     if space_up && !session.space_panned && !gesture {
         session.toggle_playback();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn press(session: &mut Session, shortcut: KeyboardShortcut) {
+        let ctx = egui::Context::default();
+        let event = |pressed| egui::Event::Key {
+            key: shortcut.logical_key,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: shortcut.modifiers,
+        };
+        let input = egui::RawInput {
+            events: vec![event(true), event(false)],
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| handle(ui.ctx(), session));
+        output.textures_delta.clear();
+    }
+
+    #[test]
+    fn view_shortcuts_toggle_panels() {
+        let mut s = Session::new();
+        press(&mut s, TOGGLE_TOOLBAR);
+        assert!(!s.view.toolbar);
+        assert!(s.view.timeline);
+        press(&mut s, TOGGLE_TIMELINE);
+        assert!(!s.view.timeline);
+        press(&mut s, TOGGLE_TOOLBAR);
+        press(&mut s, TOGGLE_TIMELINE);
+        assert_eq!(s.view, crate::session::ViewSettings::default());
+    }
+
+    #[test]
+    fn view_shortcuts_do_not_clash() {
+        let all = [
+            NEW, OPEN, SAVE, SAVE_AS, UNDO, REDO, REDO_ALT, SELECT_ALL, QUIT,
+        ];
+        for view in [TOGGLE_TOOLBAR, TOGGLE_TIMELINE] {
+            assert!(all.iter().all(|s| s.logical_key != view.logical_key));
+        }
     }
 }
