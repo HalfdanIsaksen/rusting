@@ -5,6 +5,7 @@
 
 use document::animation_core::glam::Vec2;
 use document::animation_core::{DocumentId, Rgba, StrokeId};
+use document::drawing::ItemId;
 use editor::Tool;
 use renderer::Viewport;
 use ui::Session;
@@ -143,7 +144,7 @@ fn handle_tool_input(
     let to_canvas =
         |p: egui::Pos2| viewport.screen_to_canvas(Vec2::new(p.x - rect.min.x, p.y - rect.min.y));
     let typing = ui.ctx().egui_wants_keyboard_input();
-    let (pressed, released, down, origin, space, moves) = ui.input(|i| {
+    let (pressed, released, down, origin, space, shift, moves) = ui.input(|i| {
         let moves: Vec<egui::Pos2> = i
             .events
             .iter()
@@ -158,6 +159,7 @@ fn handle_tool_input(
             i.pointer.primary_down(),
             i.pointer.press_origin(),
             i.key_down(egui::Key::Space) && !typing,
+            i.modifiers.shift,
             moves,
         )
     });
@@ -169,7 +171,7 @@ fn handle_tool_input(
         && !session.tools.is_active()
         && let Some(origin) = origin
     {
-        session.pointer_down(to_canvas(origin), viewport.zoom as f32);
+        session.pointer_down_with(to_canvas(origin), viewport.zoom as f32, shift);
     }
     if session.tools.is_active() {
         for p in moves {
@@ -192,6 +194,7 @@ fn paint_overlays(
     panning: bool,
 ) {
     let painter = ui.painter_at(rect);
+    paint_selection(&painter, rect, viewport, session);
     let blocked = session.draw_block_reason();
     if let Some(reason) = &blocked {
         let text = format!("🔒 {reason} — drawing is disabled");
@@ -215,15 +218,30 @@ fn paint_overlays(
         ui.ctx().set_cursor_icon(egui::CursorIcon::NotAllowed);
         return;
     }
-    ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
     let Some(hover) = ui.input(|i| i.pointer.latest_pos()) else {
         return;
     };
     let zoom = viewport.zoom as f32;
+    if session.state.tool == Tool::Select {
+        let pos = viewport.screen_to_canvas(Vec2::new(hover.x - rect.min.x, hover.y - rect.min.y));
+        let over_selection = session
+            .item_under(pos, zoom)
+            .is_some_and(|item| session.tools.selection().contains(&item));
+        let icon = if session.tools.move_offset() != Vec2::ZERO {
+            egui::CursorIcon::Grabbing
+        } else if over_selection {
+            egui::CursorIcon::Move
+        } else {
+            egui::CursorIcon::Default
+        };
+        ui.ctx().set_cursor_icon(icon);
+        return;
+    }
+    ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
     let radius = match session.state.tool {
         Tool::Brush => session.state.brush.width * 0.5 * zoom,
         Tool::Eraser => session.tools.eraser_radius * zoom,
-        Tool::Fill => 0.0,
+        Tool::Fill | Tool::Select => 0.0,
     };
     if radius >= 2.0 {
         painter.circle_stroke(
@@ -235,6 +253,111 @@ fn paint_overlays(
             hover,
             radius,
             egui::Stroke::new(0.75, egui::Color32::from_white_alpha(200)),
+        );
+    }
+}
+
+/// Selection colour.
+const SELECTION_COLOR: egui::Color32 = egui::Color32::from_rgb(30, 144, 255);
+
+/// The selection (an outline on each selected item and a box around them
+/// all, moved by the drag in progress) and the marquee. Line widths are in
+/// screen points, so they don't change with zoom.
+fn paint_selection(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    viewport: &Viewport,
+    session: &Session,
+) {
+    let to_screen = |p: Vec2| {
+        let s = viewport.canvas_to_screen(p);
+        egui::pos2(s.x + rect.min.x, s.y + rect.min.y)
+    };
+    let screen_rect =
+        |(min, max): (Vec2, Vec2)| egui::Rect::from_two_pos(to_screen(min), to_screen(max));
+
+    if let Some(drawing) = session.active_drawing()
+        && session.tools.selection_at().is_some()
+    {
+        let offset = session.tools.move_offset();
+        let outline = egui::Stroke::new(1.5, SELECTION_COLOR);
+        let halo = egui::Stroke::new(3.5, egui::Color32::from_white_alpha(160));
+        let selection = session.tools.selection();
+        for &item in selection {
+            let paths: Vec<(Vec<egui::Pos2>, bool)> = match item {
+                ItemId::Stroke(id) => drawing
+                    .stroke(id)
+                    .map(|s| {
+                        (
+                            s.points.iter().map(|p| to_screen(p.pos + offset)).collect(),
+                            false,
+                        )
+                    })
+                    .into_iter()
+                    .collect(),
+                ItemId::Fill(id) => drawing
+                    .fill(id)
+                    .map(|f| {
+                        f.contours
+                            .iter()
+                            .map(|c| (c.iter().map(|p| to_screen(*p + offset)).collect(), true))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            };
+            for (points, closed) in paths {
+                match points.as_slice() {
+                    [] => {}
+                    [p] => {
+                        painter.circle_stroke(*p, 3.0, outline);
+                    }
+                    _ => {
+                        for stroke in [halo, outline] {
+                            let shape = if closed {
+                                egui::Shape::closed_line(points.clone(), stroke)
+                            } else {
+                                egui::Shape::line(points.clone(), stroke)
+                            };
+                            painter.add(shape);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some((min, max)) = drawing.items_bounds(selection) {
+            let bounds = screen_rect((min + offset, max + offset)).expand(3.0);
+            painter.rect_stroke(
+                bounds,
+                0.0,
+                egui::Stroke::new(1.0, SELECTION_COLOR),
+                egui::StrokeKind::Outside,
+            );
+            for corner in [
+                bounds.left_top(),
+                bounds.right_top(),
+                bounds.left_bottom(),
+                bounds.right_bottom(),
+            ] {
+                let handle = egui::Rect::from_center_size(corner, egui::vec2(6.0, 6.0));
+                painter.rect_filled(handle, 0.0, egui::Color32::WHITE);
+                painter.rect_stroke(
+                    handle,
+                    0.0,
+                    egui::Stroke::new(1.0, SELECTION_COLOR),
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
+    }
+
+    if let Some(marquee) = session.tools.marquee() {
+        let r = screen_rect(marquee);
+        painter.rect_filled(r, 0.0, SELECTION_COLOR.gamma_multiply(0.12));
+        painter.rect_stroke(
+            r,
+            0.0,
+            egui::Stroke::new(1.0, SELECTION_COLOR),
+            egui::StrokeKind::Inside,
         );
     }
 }

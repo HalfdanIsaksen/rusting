@@ -118,6 +118,14 @@ impl VectorDrawing {
         &self.strokes
     }
 
+    pub(crate) fn strokes_mut(&mut self) -> &mut [Stroke] {
+        &mut self.strokes
+    }
+
+    pub(crate) fn fills_mut(&mut self) -> &mut [Fill] {
+        &mut self.fills
+    }
+
     /// Whether the drawing has no strokes and no fills.
     pub fn is_empty(&self) -> bool {
         self.strokes.is_empty() && self.fills.is_empty()

@@ -40,8 +40,10 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
     ui.add_space(4.0);
     let busy = session.tools.is_active();
     ui.add_enabled_ui(!busy, |ui| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             let tool = &mut session.state.tool;
+            ui.selectable_value(tool, Tool::Select, "Select")
+                .on_hover_text("V — select, move and delete strokes and fills");
             ui.selectable_value(tool, Tool::Brush, "✏ Brush")
                 .on_hover_text("B");
             ui.selectable_value(tool, Tool::Eraser, "Eraser")
@@ -98,6 +100,12 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
                     }
                 }
             });
+        }
+        Tool::Select => {
+            ui.weak(
+                "Click or drag a box to select (Shift adds). Drag to move, arrows nudge \
+                 (Shift ×10), Delete removes, ⌘A selects all, Esc deselects.",
+            );
         }
         Tool::Eraser => {
             ui.label("Eraser size");
