@@ -10,6 +10,7 @@
 //! and renders the canvas with [`OnionSkin::collect`] and
 //! [`ToolController::preview`].
 
+pub mod icons;
 pub mod onion;
 pub mod panels;
 pub mod playback;

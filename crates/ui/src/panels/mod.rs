@@ -6,7 +6,8 @@ mod menu;
 mod shortcuts;
 mod status;
 mod timeline;
-mod toolbar;
+mod tool_options;
+pub mod toolbar;
 
 use crate::session::Session;
 
@@ -32,12 +33,18 @@ pub fn show(
         .show(ui, |ui| timeline::panel(ui, session));
     egui::Panel::left("toolbar")
         .resizable(false)
-        .default_size(190.0)
+        .exact_size(toolbar::WIDTH)
+        .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(4, 0)))
         .show(ui, |ui| toolbar::panel(ui, session));
     egui::Panel::right("layers")
         .resizable(true)
         .default_size(240.0)
         .show(ui, |ui| layers::panel(ui, session));
+    // Added after the side panels so it spans only the canvas.
+    egui::Panel::top("tool_options")
+        .resizable(false)
+        .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(8, 4)))
+        .show(ui, |ui| tool_options::bar(ui, session));
     egui::CentralPanel::no_frame().show(ui, |ui| canvas(ui, session));
 
     dialogs::show(ui.ctx(), session);

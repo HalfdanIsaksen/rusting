@@ -1,148 +1,227 @@
-//! The tool panel: brush/eraser/fill, size, gaps, colour and opacity.
+//! The tool strip: a narrow column of icon buttons, two per row, in groups.
+//!
+//! The strip only picks the tool. Per-tool settings live in the tool options
+//! bar ([`super::tool_options`]); tools with extra options show a corner
+//! triangle and open a small popup on right-click or press-and-hold.
 
+use super::tool_options;
+use crate::icons::{self, IconFn};
 use crate::session::Session;
-use crate::tools::EraserMode;
-use document::animation_core::Rgba;
-use document::drawing::GapClosing;
 use editor::Tool;
 
-/// Quick colour swatches (linear RGB).
-const SWATCHES: [[f32; 3]; 8] = [
-    [0.0, 0.0, 0.0],
-    [1.0, 1.0, 1.0],
-    [0.216, 0.216, 0.216],
-    [0.8, 0.02, 0.02],
-    [0.95, 0.4, 0.0],
-    [0.9, 0.75, 0.0],
-    [0.05, 0.45, 0.08],
-    [0.02, 0.15, 0.75],
-];
+/// Side of a tool button, in points.
+const BUTTON: f32 = 30.0;
+/// Space between buttons, in points.
+const GAP: f32 = 2.0;
+/// Margin between the strip edge and the buttons, in points.
+const MARGIN: f32 = 4.0;
+/// How long a press must be held to open a tool's options popup, in seconds.
+const HOLD_SECS: f64 = 0.4;
 
-/// Fill tool settings: gap closing. Colour and opacity are the brush's
-/// (shown below, as for the brush).
-fn fill_settings(ui: &mut egui::Ui, session: &mut Session) {
-    ui.label("Close gaps");
-    let gap = &mut session.tools.fill_gap;
-    egui::ComboBox::from_id_salt("fill_gap")
-        .selected_text(gap.label())
-        .show_ui(ui, |ui| {
-            for option in GapClosing::ALL {
-                ui.selectable_value(gap, option, option.label());
-            }
-        });
-    ui.weak("Fills with the brush colour and opacity. Click a fill to recolour it.");
-    ui.add_space(4.0);
+/// Width of the strip including its margins: two buttons per row.
+pub const WIDTH: f32 = 2.0 * BUTTON + GAP + 2.0 * MARGIN;
+
+/// Tool groups, top to bottom. A divider separates neighbouring groups.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolGroup {
+    /// Selection tools.
+    Selection,
+    /// Drawing tools.
+    Drawing,
+    /// Tools that change existing artwork: eraser, paint bucket.
+    Paint,
 }
 
-/// Draws the tool panel.
+/// Popup content with a tool's extra options.
+pub type OptionsFn = fn(&mut egui::Ui, &mut Session);
+
+/// One button of the strip.
+#[derive(Clone, Copy)]
+pub struct ToolEntry {
+    /// The tool the button selects.
+    pub tool: Tool,
+    /// Draws the button's icon.
+    pub icon: IconFn,
+    /// Name shown in the tooltip.
+    pub name: &'static str,
+    /// Keyboard shortcut shown in the tooltip.
+    pub shortcut: &'static str,
+    /// Group the button belongs to; entries of one group must be adjacent.
+    pub group: ToolGroup,
+    /// Extra options: adds the corner triangle and the popup.
+    pub options: Option<OptionsFn>,
+}
+
+impl ToolEntry {
+    /// An entry without extra options.
+    pub const fn new(
+        tool: Tool,
+        icon: IconFn,
+        name: &'static str,
+        shortcut: &'static str,
+        group: ToolGroup,
+    ) -> Self {
+        Self {
+            tool,
+            icon,
+            name,
+            shortcut,
+            group,
+            options: None,
+        }
+    }
+
+    /// Adds extra options, shown in a popup.
+    pub const fn with_options(mut self, options: OptionsFn) -> Self {
+        self.options = Some(options);
+        self
+    }
+}
+
+/// The strip's buttons, top to bottom.
+pub const TOOLS: &[ToolEntry] = &[
+    ToolEntry::new(
+        Tool::Select,
+        icons::arrow,
+        "Selection",
+        "V",
+        ToolGroup::Selection,
+    ),
+    ToolEntry::new(Tool::Brush, icons::brush, "Brush", "B", ToolGroup::Drawing),
+    ToolEntry::new(Tool::Eraser, icons::eraser, "Eraser", "E", ToolGroup::Paint)
+        .with_options(eraser_popup),
+    ToolEntry::new(
+        Tool::Fill,
+        icons::paint_bucket,
+        "Paint Bucket",
+        "K",
+        ToolGroup::Paint,
+    )
+    .with_options(fill_popup),
+];
+
+fn eraser_popup(ui: &mut egui::Ui, session: &mut Session) {
+    ui.strong("Eraser mode");
+    if tool_options::eraser_mode_choices(ui, session) {
+        session.state.tool = Tool::Eraser;
+        ui.close();
+    }
+}
+
+fn fill_popup(ui: &mut egui::Ui, session: &mut Session) {
+    ui.strong("Close gaps");
+    if tool_options::gap_choices(ui, session) {
+        session.state.tool = Tool::Fill;
+        ui.close();
+    }
+}
+
+/// Draws the tool strip.
 pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
-    ui.heading("Tools");
-    ui.add_space(4.0);
     let busy = session.tools.is_active();
+    ui.spacing_mut().item_spacing = egui::vec2(GAP, GAP);
+    ui.add_space(MARGIN);
+    // Tool switching is locked while a gesture is in progress.
     ui.add_enabled_ui(!busy, |ui| {
-        ui.horizontal_wrapped(|ui| {
-            let tool = &mut session.state.tool;
-            ui.selectable_value(tool, Tool::Select, "Select")
-                .on_hover_text("V — select, move and delete strokes and fills");
-            ui.selectable_value(tool, Tool::Brush, "✏ Brush")
-                .on_hover_text("B");
-            ui.selectable_value(tool, Tool::Eraser, "Eraser")
-                .on_hover_text("E");
-            ui.selectable_value(tool, Tool::Fill, "Fill")
-                .on_hover_text("K — fills the area enclosed by lines");
-        });
-    });
-    ui.separator();
-
-    if session.state.tool == Tool::Fill {
-        fill_settings(ui, session);
-    }
-    match session.state.tool {
-        Tool::Brush | Tool::Fill => {
-            if session.state.tool == Tool::Brush {
-                ui.label("Size");
-                ui.add(
-                    egui::Slider::new(&mut session.state.brush.width, 0.5..=200.0)
-                        .logarithmic(true)
-                        .max_decimals(1),
-                );
-                ui.add_space(4.0);
+        for (index, group) in TOOLS.chunk_by(|a, b| a.group == b.group).enumerate() {
+            if index > 0 {
+                ui.add(egui::Separator::default().spacing(8.0));
             }
-            ui.label("Opacity");
-            ui.add(egui::Slider::new(
-                &mut session.state.brush.opacity,
-                0.05..=1.0,
-            ));
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label("Colour");
-                let Rgba { r, g, b, a } = session.state.brush.color;
-                let mut rgb = [r, g, b];
-                if ui.color_edit_button_rgb(&mut rgb).changed() {
-                    session.state.brush.color = Rgba::new(rgb[0], rgb[1], rgb[2], a);
-                }
-            });
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
-                for [r, g, b] in SWATCHES {
-                    let color = egui::Rgba::from_rgb(r, g, b);
-                    let (rect, response) =
-                        ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
-                    ui.painter().rect_filled(rect, 3.0, color);
-                    ui.painter().rect_stroke(
-                        rect,
-                        3.0,
-                        ui.visuals().widgets.noninteractive.bg_stroke,
-                        egui::StrokeKind::Inside,
-                    );
-                    if response.clicked() {
-                        session.state.brush.color = Rgba::rgb(r, g, b);
-                    }
-                }
-            });
-        }
-        Tool::Select => {
-            ui.weak(
-                "Click or drag a box to select (Shift adds). Drag to move, arrows nudge \
-                 (Shift ×10), Delete removes, ⌘A selects all, Esc deselects.",
-            );
-        }
-        Tool::Eraser => {
-            ui.label("Eraser size");
-            let mut diameter = session.tools.eraser_radius * 2.0;
-            if ui
-                .add(
-                    egui::Slider::new(&mut diameter, 1.0..=400.0)
-                        .logarithmic(true)
-                        .max_decimals(1),
-                )
-                .changed()
-            {
-                session.tools.eraser_radius = diameter * 0.5;
-            }
-            ui.add_space(4.0);
-            ui.add_enabled_ui(!busy, |ui| {
+            for row in group.chunks(2) {
                 ui.horizontal(|ui| {
-                    let mode = &mut session.tools.eraser_mode;
-                    ui.selectable_value(mode, EraserMode::Partial, "Partial eraser")
-                        .on_hover_text("Cuts away only what the eraser passes over");
-                    ui.selectable_value(mode, EraserMode::Stroke, "Stroke eraser")
-                        .on_hover_text("Removes every stroke it touches");
+                    for entry in row {
+                        tool_button(ui, session, entry);
+                    }
                 });
-            });
-            ui.weak(match session.tools.eraser_mode {
-                EraserMode::Partial => {
-                    "Cuts away the part of each stroke it passes over on the active layer and frame."
-                }
-                EraserMode::Stroke => {
-                    "Removes every stroke it touches on the active layer and frame."
-                }
-            });
+            }
+        }
+    });
+}
+
+/// One square icon button, with its tooltip and options popup.
+fn tool_button(ui: &mut egui::Ui, session: &mut Session, entry: &ToolEntry) {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(BUTTON, BUTTON), egui::Sense::click());
+    let selected = session.state.tool == entry.tool;
+    let tooltip = format!("{} ({})", entry.name, entry.shortcut);
+
+    if ui.is_rect_visible(rect) {
+        let widgets = &ui.visuals().widgets;
+        let (bg, mut fg) = if selected {
+            (
+                Some(widgets.hovered.weak_bg_fill),
+                widgets.active.fg_stroke.color,
+            )
+        } else if response.hovered() {
+            (
+                Some(widgets.inactive.weak_bg_fill),
+                widgets.hovered.fg_stroke.color,
+            )
+        } else {
+            (None, widgets.inactive.fg_stroke.color)
+        };
+        if !ui.is_enabled() {
+            fg = fg.gamma_multiply(0.45);
+        }
+        let painter = ui.painter();
+        if let Some(bg) = bg {
+            painter.rect_filled(rect, 4.0, bg);
+        }
+        let icon_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(18.0, 18.0));
+        (entry.icon)(painter, icon_rect, fg);
+        if entry.options.is_some() {
+            icons::options_marker(painter, rect, fg.gamma_multiply(0.8));
         }
     }
 
-    ui.separator();
-    if let Some(reason) = session.draw_block_reason() {
-        ui.colored_label(ui.visuals().warn_fg_color, format!("⚠ {reason}"));
+    if response.clicked() {
+        session.state.tool = entry.tool;
+    }
+
+    if let Some(options) = entry.options {
+        // Right-click, or press and hold, opens the options.
+        let pressed_for = ui.input(|i| {
+            i.pointer
+                .press_start_time()
+                .map_or(0.0, |start| i.time - start)
+        });
+        let holding = response.is_pointer_button_down_on();
+        let held = holding && pressed_for >= HOLD_SECS;
+        if holding && !held {
+            ui.ctx()
+                .request_repaint_after_secs((HOLD_SECS - pressed_for) as f32);
+        }
+        let open = response.secondary_clicked() || held;
+        egui::Popup::from_response(&response)
+            .id(response.id.with("options"))
+            .open_memory(open.then_some(egui::SetOpenCommand::Bool(true)))
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .align(egui::RectAlign::RIGHT_START)
+            .gap(4.0)
+            .show(|ui| options(ui, session));
+    }
+
+    response
+        .on_hover_text(tooltip.clone())
+        .on_disabled_hover_text(tooltip);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_list_is_well_formed() {
+        // Each tool appears once.
+        for (i, a) in TOOLS.iter().enumerate() {
+            assert!(TOOLS[i + 1..].iter().all(|b| b.tool != a.tool));
+        }
+        // Each group is one run, so it gets exactly one divider.
+        let runs: Vec<ToolGroup> = TOOLS
+            .chunk_by(|a, b| a.group == b.group)
+            .map(|run| run[0].group)
+            .collect();
+        for (i, g) in runs.iter().enumerate() {
+            assert!(!runs[i + 1..].contains(g), "{g:?} is split");
+        }
     }
 }
