@@ -10,7 +10,7 @@ use crate::preview::Preview;
 use crate::tools::ToolController;
 use document::animation_core::{FrameIndex, LayerId};
 use document::{CanvasAnchor, CanvasSize, Document, NewDocumentSettings, SettingsError};
-use editor::commands::ResizeCanvas;
+use editor::commands::{DuplicateFrame, ResizeCanvas};
 use editor::{Command, CommandError, EditorState, History};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -366,6 +366,25 @@ impl Session {
         let count = i64::from(self.document.frame_count.max(1));
         let frame = (i64::from(self.current_frame().0) + delta).rem_euclid(count);
         self.set_frame(FrameIndex(u32::try_from(frame).unwrap_or(0)));
+    }
+
+    /// Duplicates the frame under the playhead on every layer (one undo
+    /// step) and moves the playhead onto the copy.
+    pub fn duplicate_frame(&mut self) {
+        if self.tools.is_active() {
+            return;
+        }
+        self.tools.cancel();
+        self.playback.pause();
+        let command = DuplicateFrame::new(self.current_frame());
+        let new_frame = command.new_frame();
+        if self.execute(Box::new(command)).is_ok() {
+            self.set_frame(new_frame);
+            self.set_status(format!(
+                "Duplicated to frame {}",
+                new_frame.display_number()
+            ));
+        }
     }
 
     /// Jumps to the previous (`forward == false`) or next key on the active layer.

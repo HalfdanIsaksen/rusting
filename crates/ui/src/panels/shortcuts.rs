@@ -22,6 +22,8 @@ pub const REDO: KeyboardShortcut =
 pub const REDO_ALT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Y);
 /// Select everything on the active layer's current drawing.
 pub const SELECT_ALL: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::A);
+/// Duplicate the frame under the playhead.
+pub const DUPLICATE_FRAME: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::D);
 /// Quit.
 pub const QUIT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Q);
 
@@ -78,6 +80,9 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
         session.redo();
     } else if undo {
         session.undo();
+    }
+    if ctx.input_mut(|i| i.consume_shortcut(&DUPLICATE_FRAME)) {
+        session.duplicate_frame();
     }
 
     let gesture = session.tools.is_active();
@@ -194,6 +199,7 @@ fn finish_space(session: &mut Session, space_down: bool, space_up: bool, gesture
 #[cfg(test)]
 mod tests {
     use super::*;
+    use document::animation_core::FrameIndex;
 
     fn press(session: &mut Session, shortcut: KeyboardShortcut) {
         let ctx = egui::Context::default();
@@ -246,8 +252,20 @@ mod tests {
         let all = [
             NEW, OPEN, SAVE, SAVE_AS, UNDO, REDO, REDO_ALT, SELECT_ALL, QUIT,
         ];
-        for view in [TOGGLE_TOOLBAR, TOGGLE_TIMELINE] {
+        for view in [TOGGLE_TOOLBAR, TOGGLE_TIMELINE, DUPLICATE_FRAME] {
             assert!(all.iter().all(|s| s.logical_key != view.logical_key));
         }
+    }
+
+    #[test]
+    fn cmd_d_duplicates_the_current_frame_and_undo_reverts() {
+        let mut s = Session::new();
+        let count = s.document.frame_count;
+        s.set_frame(FrameIndex(2));
+        press(&mut s, DUPLICATE_FRAME);
+        assert_eq!(s.document.frame_count, count + 1);
+        assert_eq!(s.current_frame(), FrameIndex(3));
+        press(&mut s, UNDO);
+        assert_eq!(s.document.frame_count, count);
     }
 }

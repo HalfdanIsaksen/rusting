@@ -2,9 +2,11 @@
 
 mod canvas;
 mod fill;
+mod frames;
 mod select;
 pub use canvas::ResizeCanvas;
 pub use fill::{AddFill, RemoveFill};
+pub use frames::DuplicateFrame;
 pub use select::{TransformItems, TranslateItems, remove_items};
 
 use crate::{Command, CommandError};
@@ -133,7 +135,7 @@ fn editable_layer(doc: &Document, layer: LayerId) -> Result<(), CommandError> {
 }
 
 /// Fails unless `frame` lies inside the animation.
-fn frame_in_range(doc: &Document, frame: FrameIndex) -> Result<(), CommandError> {
+pub(crate) fn frame_in_range(doc: &Document, frame: FrameIndex) -> Result<(), CommandError> {
     if frame.0 < doc.frame_count {
         Ok(())
     } else {
