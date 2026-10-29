@@ -88,6 +88,16 @@ impl VectorDrawing {
         self.fills_mut().iter_mut().find(|f| f.id == id)
     }
 
+    /// Moves every stroke and fill by `delta`, keeping IDs and order.
+    pub fn translate(&mut self, delta: Vec2) {
+        for stroke in self.strokes_mut() {
+            stroke.translate(delta);
+        }
+        for fill in self.fills_mut() {
+            fill.translate(delta);
+        }
+    }
+
     /// Whether the drawing holds `item`.
     pub fn contains_item(&self, item: ItemId) -> bool {
         match item {

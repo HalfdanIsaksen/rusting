@@ -1,4 +1,4 @@
-//! The menu bar: File, Edit and View.
+//! The menu bar: File, Edit, Canvas, View and Help.
 
 use super::shortcuts;
 use crate::session::{DiscardAction, ExportKind, Session};
@@ -64,6 +64,12 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
                 .clicked()
             {
                 session.redo();
+            }
+        });
+
+        ui.menu_button("Canvas", |ui| {
+            if ui.button("Resize Canvas…").clicked() {
+                session.open_resize_canvas();
             }
         });
 
