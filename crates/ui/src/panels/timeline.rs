@@ -2,7 +2,9 @@
 //! the frame grid (one row per layer, keys and exposures, scrubbing). The
 //! layer controls on the left of the grid live in [`super::layers`].
 
+use super::shortcuts;
 use super::status::fps_text;
+use crate::icons::{self, IconFn};
 use crate::onion::MAX_ONION_RANGE;
 use crate::session::{Session, TimelineView};
 use document::Document;
@@ -141,6 +143,18 @@ fn keys_and_onion(ui: &mut egui::Ui, session: &mut Session) {
         {
             let _ = session.execute(Box::new(AddKeyframe::new(id, frame, KeyframeKind::Empty)));
         }
+        let duplicate_tip = format!(
+            "Duplicate frame ({}): insert a copy of this frame right after it, on every layer",
+            ui.ctx().format_shortcut(&shortcuts::DUPLICATE_FRAME)
+        );
+        if icon_button(
+            ui,
+            icons::duplicate,
+            !session.playback.is_playing(),
+            &duplicate_tip,
+        ) {
+            session.duplicate_frame();
+        }
         if ui
             .add_enabled(key_here, egui::Button::new("✖ Remove key"))
             .on_hover_text("Remove the key at this frame on the active layer")
@@ -170,6 +184,38 @@ fn keys_and_onion(ui: &mut egui::Ui, session: &mut Session) {
         )
         .on_hover_text("Or Cmd/Ctrl+scroll over the frames");
     });
+}
+
+/// A button-sized icon button laid out inline. Returns whether it was clicked.
+fn icon_button(ui: &mut egui::Ui, icon: IconFn, enabled: bool, tip: &str) -> bool {
+    let size = ui.spacing().interact_size.y;
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(vec2(size + 4.0, size), sense);
+    let visuals = ui.visuals();
+    let style = if enabled {
+        visuals.widgets.style(&response)
+    } else {
+        &visuals.widgets.inactive
+    };
+    ui.painter()
+        .rect_filled(rect, style.corner_radius, style.weak_bg_fill);
+    let color = if enabled {
+        style.fg_stroke.color
+    } else {
+        visuals.weak_text_color().gamma_multiply(0.5)
+    };
+    let side = (size - 4.0).max(8.0);
+    icon(
+        &ui.painter_at(rect),
+        Rect::from_center_size(rect.center(), vec2(side, side)),
+        color,
+    );
+    let response = response.on_hover_text(tip);
+    enabled && response.clicked()
 }
 
 /// A `DragValue` that only reports a new value once the user lets go of it

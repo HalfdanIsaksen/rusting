@@ -196,6 +196,28 @@ impl DrawingContent {
             Self::Vector(v) => Some(v),
         }
     }
+
+    /// A deep copy whose strokes and fills get fresh IDs, so the copy can be
+    /// edited (and its items selected) independently of the original.
+    pub fn duplicate(&self) -> Self {
+        match self {
+            Self::Vector(v) => Self::Vector(v.duplicate()),
+        }
+    }
+}
+
+impl VectorDrawing {
+    /// A deep copy with fresh stroke and fill IDs, in the same paint order.
+    pub fn duplicate(&self) -> Self {
+        let mut copy = self.clone();
+        for stroke in &mut copy.strokes {
+            stroke.id = StrokeId::new();
+        }
+        for fill in &mut copy.fills {
+            fill.id = FillId::new();
+        }
+        copy
+    }
 }
 
 #[cfg(test)]
@@ -250,5 +272,29 @@ mod tests {
                 .remove_stroke(StrokeId::new())
                 .is_none()
         );
+    }
+
+    #[test]
+    fn duplicate_is_deep_with_fresh_ids() {
+        let mut d = VectorDrawing::new();
+        d.push_stroke(line());
+        d.push_stroke(line());
+        d.push_fill(crate::fill::Fill::new(
+            crate::fill::FillShape {
+                contours: vec![vec![Vec2::ZERO, Vec2::X, Vec2::Y]],
+            },
+            Rgba::WHITE,
+            1.0,
+        ));
+        let copy = d.duplicate();
+        assert_eq!(copy.strokes().len(), 2);
+        assert_eq!(copy.fills().len(), 1);
+        for (a, b) in d.strokes().iter().zip(copy.strokes()) {
+            assert_ne!(a.id, b.id);
+            assert_eq!(a.points, b.points);
+            assert_eq!(a.style, b.style);
+        }
+        assert_ne!(d.fills()[0].id, copy.fills()[0].id);
+        assert_eq!(d.fills()[0].contours, copy.fills()[0].contours);
     }
 }

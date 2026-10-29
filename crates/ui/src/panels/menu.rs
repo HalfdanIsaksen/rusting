@@ -77,6 +77,14 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
             {
                 session.redo();
             }
+            ui.separator();
+            if ui
+                .add(item(ui, "Duplicate Frame", &shortcuts::DUPLICATE_FRAME))
+                .on_hover_text("Insert a copy of this frame right after it, on every layer")
+                .clicked()
+            {
+                session.duplicate_frame();
+            }
         });
 
         ui.menu_button("Canvas", |ui| {
@@ -116,6 +124,7 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
                 ("Space", "Play / pause (hold and drag to pan)"),
                 ("← / →", "Previous / next frame"),
                 ("↑ / ↓", "Previous / next key"),
+                ("Cmd/Ctrl+D", "Duplicate frame"),
                 ("Middle-drag", "Pan the canvas"),
                 ("Wheel / pinch", "Zoom about the cursor"),
                 ("F", "Fit canvas"),

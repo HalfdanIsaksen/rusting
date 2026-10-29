@@ -370,3 +370,21 @@ pub fn chevron_down(painter: &Painter, rect: Rect, color: Color32) {
         Stroke::new(line_width(rect) * 1.5, color),
     ));
 }
+
+/// Two overlapping frames, the front one with a plus (duplicate frame).
+pub fn duplicate(painter: &Painter, rect: Rect, color: Color32) {
+    let w = line_width(rect);
+    // Back frame: only the parts not hidden by the front one.
+    painter.add(PathShape::line(
+        points(rect, &[(0.14, 0.62), (0.14, 0.14), (0.62, 0.14)]),
+        Stroke::new(w, color),
+    ));
+    outline(
+        painter,
+        rect,
+        color,
+        &[(0.32, 0.32), (0.86, 0.32), (0.86, 0.86), (0.32, 0.86)],
+    );
+    line(painter, rect, color, w * 1.2, (0.59, 0.45), (0.59, 0.73));
+    line(painter, rect, color, w * 1.2, (0.45, 0.59), (0.73, 0.59));
+}

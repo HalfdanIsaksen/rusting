@@ -34,6 +34,9 @@ pub enum CommandError {
     /// The animation must have at least one frame.
     #[error("the animation must have at least one frame")]
     ZeroFrameCount,
+    /// The animation cannot grow past the largest frame index.
+    #[error("the animation cannot have more frames")]
+    FrameLimit,
     /// The canvas must be at least one pixel wide and high.
     #[error("the canvas must be at least 1×1 pixels")]
     EmptyCanvas,
