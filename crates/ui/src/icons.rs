@@ -64,6 +64,42 @@ pub fn arrow(painter: &Painter, rect: Rect, color: Color32) {
     );
 }
 
+/// Transform tool: a box with corner handles and a curved rotate arrow.
+pub fn transform(painter: &Painter, rect: Rect, color: Color32) {
+    let w = line_width(rect);
+    outline(
+        painter,
+        rect,
+        color,
+        &[(0.16, 0.30), (0.70, 0.30), (0.70, 0.84), (0.16, 0.84)],
+    );
+    let h = 0.07;
+    for (x, y) in [(0.16, 0.30), (0.70, 0.30), (0.70, 0.84), (0.16, 0.84)] {
+        filled(
+            painter,
+            rect,
+            color,
+            &[
+                (x - h, y - h),
+                (x + h, y - h),
+                (x + h, y + h),
+                (x - h, y + h),
+            ],
+        );
+    }
+    // Rotate arrow arcing over the top-right corner.
+    painter.add(PathShape::line(
+        arc(rect, (0.70, 0.30), (0.20, 0.20), -2.2, -0.35),
+        Stroke::new(w, color),
+    ));
+    filled(
+        painter,
+        rect,
+        color,
+        &[(0.96, 0.18), (0.82, 0.26), (0.97, 0.34)],
+    );
+}
+
 /// Paint brush: handle, ferrule and a filled bristle tip.
 pub fn brush(painter: &Painter, rect: Rect, color: Color32) {
     let w = line_width(rect);

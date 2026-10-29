@@ -15,6 +15,15 @@ pub enum Tool {
     Fill,
     /// Select strokes and fills, then move or delete them.
     Select,
+    /// Scale and rotate the selection with box handles.
+    Transform,
+}
+
+impl Tool {
+    /// Whether the tool works on the selection (and keeps it alive).
+    pub fn uses_selection(self) -> bool {
+        matches!(self, Self::Select | Self::Transform)
+    }
 }
 
 /// Session state of the editor: active tool, layer and frame.

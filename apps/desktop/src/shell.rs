@@ -7,9 +7,11 @@ use crate::export::ExportPanel;
 use document::animation_core::glam::Vec2;
 use document::animation_core::{DocumentId, Rgba, StrokeId};
 use document::drawing::ItemId;
+use document::drawing::select::Affine2;
 use editor::Tool;
 use renderer::Viewport;
 use ui::Session;
+use ui::tools::{TransformBox, TransformHandle};
 
 /// Mouse-wheel zoom speed: zoom factor per logical point of scroll.
 const WHEEL_ZOOM_SPEED: f32 = 0.0025;
@@ -164,7 +166,7 @@ fn handle_tool_input(
     let to_canvas =
         |p: egui::Pos2| viewport.screen_to_canvas(Vec2::new(p.x - rect.min.x, p.y - rect.min.y));
     let typing = ui.ctx().egui_wants_keyboard_input();
-    let (pressed, released, down, origin, space, shift, moves) = ui.input(|i| {
+    let (pressed, released, down, origin, space, shift, alt, moves) = ui.input(|i| {
         let moves: Vec<egui::Pos2> = i
             .events
             .iter()
@@ -180,9 +182,11 @@ fn handle_tool_input(
             i.pointer.press_origin(),
             i.key_down(egui::Key::Space) && !typing,
             i.modifiers.shift,
+            i.modifiers.alt,
             moves,
         )
     });
+    session.tools.set_modifiers(shift, alt);
 
     if pressed
         && response.hovered()
@@ -242,6 +246,25 @@ fn paint_overlays(
         return;
     };
     let zoom = viewport.zoom as f32;
+    if session.state.tool == Tool::Transform {
+        let pos = viewport.screen_to_canvas(Vec2::new(hover.x - rect.min.x, hover.y - rect.min.y));
+        let handle = session
+            .tools
+            .transform_dragging()
+            .or_else(|| session.transform_box(zoom).and_then(|b| b.hit(pos)));
+        let icon = match handle {
+            _ if session.tools.move_offset() != Vec2::ZERO => egui::CursorIcon::Grabbing,
+            Some(TransformHandle::Scale { x: 0, .. }) => egui::CursorIcon::ResizeVertical,
+            Some(TransformHandle::Scale { y: 0, .. }) => egui::CursorIcon::ResizeHorizontal,
+            Some(TransformHandle::Scale { x, y }) if x == y => egui::CursorIcon::ResizeNwSe,
+            Some(TransformHandle::Scale { .. }) => egui::CursorIcon::ResizeNeSw,
+            Some(TransformHandle::Rotate) => egui::CursorIcon::Alias,
+            Some(TransformHandle::Inside) => egui::CursorIcon::Move,
+            None => egui::CursorIcon::Default,
+        };
+        ui.ctx().set_cursor_icon(icon);
+        return;
+    }
     if session.state.tool == Tool::Select {
         let pos = viewport.screen_to_canvas(Vec2::new(hover.x - rect.min.x, hover.y - rect.min.y));
         let over_selection = session
@@ -261,7 +284,7 @@ fn paint_overlays(
     let radius = match session.state.tool {
         Tool::Brush => session.state.brush.width * 0.5 * zoom,
         Tool::Eraser => session.tools.eraser_radius * zoom,
-        Tool::Fill | Tool::Select => 0.0,
+        Tool::Fill | Tool::Select | Tool::Transform => 0.0,
     };
     if radius >= 2.0 {
         painter.circle_stroke(
@@ -299,7 +322,8 @@ fn paint_selection(
     if let Some(drawing) = session.active_drawing()
         && session.tools.selection_at().is_some()
     {
-        let offset = session.tools.move_offset();
+        let drag = session.tools.selection_transform();
+        let map = |p: Vec2| to_screen(drag.transform_point2(p));
         let outline = egui::Stroke::new(1.5, SELECTION_COLOR);
         let halo = egui::Stroke::new(3.5, egui::Color32::from_white_alpha(160));
         let selection = session.tools.selection();
@@ -307,12 +331,7 @@ fn paint_selection(
             let paths: Vec<(Vec<egui::Pos2>, bool)> = match item {
                 ItemId::Stroke(id) => drawing
                     .stroke(id)
-                    .map(|s| {
-                        (
-                            s.points.iter().map(|p| to_screen(p.pos + offset)).collect(),
-                            false,
-                        )
-                    })
+                    .map(|s| (s.points.iter().map(|p| map(p.pos)).collect(), false))
                     .into_iter()
                     .collect(),
                 ItemId::Fill(id) => drawing
@@ -320,7 +339,7 @@ fn paint_selection(
                     .map(|f| {
                         f.contours
                             .iter()
-                            .map(|c| (c.iter().map(|p| to_screen(*p + offset)).collect(), true))
+                            .map(|c| (c.iter().map(|p| map(*p)).collect(), true))
                             .collect()
                     })
                     .unwrap_or_default(),
@@ -344,7 +363,10 @@ fn paint_selection(
                 }
             }
         }
-        if let Some((min, max)) = drawing.items_bounds(selection) {
+        if let Some(tbox) = session.transform_box(viewport.zoom as f32) {
+            paint_transform_box(painter, &tbox, drag, &to_screen);
+        } else if let Some((min, max)) = drawing.items_bounds(selection) {
+            let offset = drag.translation;
             let bounds = screen_rect((min + offset, max + offset)).expand(3.0);
             painter.rect_stroke(
                 bounds,
@@ -379,6 +401,41 @@ fn paint_selection(
             egui::Stroke::new(1.0, SELECTION_COLOR),
             egui::StrokeKind::Inside,
         );
+    }
+}
+
+/// The transform tool's box: outline, eight scale handles and the rotate
+/// knob, all carried along by the drag in progress (`drag`).
+fn paint_transform_box(
+    painter: &egui::Painter,
+    tbox: &TransformBox,
+    drag: Affine2,
+    to_screen: &dyn Fn(Vec2) -> egui::Pos2,
+) {
+    let map = |p: Vec2| to_screen(drag.transform_point2(p));
+    let line = egui::Stroke::new(1.0, SELECTION_COLOR);
+    let corners: Vec<egui::Pos2> = TransformHandle::SCALE[..4]
+        .iter()
+        .filter_map(|&h| tbox.handle_pos(h))
+        .map(map)
+        .collect();
+    painter.add(egui::Shape::closed_line(corners, line));
+    let top = tbox
+        .handle_pos(TransformHandle::Scale { x: 0, y: -1 })
+        .map(map);
+    let knob = map(tbox.rotate_knob());
+    if let Some(top) = top {
+        painter.line_segment([top, knob], line);
+    }
+    painter.circle_filled(knob, 4.0, egui::Color32::WHITE);
+    painter.circle_stroke(knob, 4.0, line);
+    for handle in TransformHandle::SCALE {
+        let Some(pos) = tbox.handle_pos(handle) else {
+            continue;
+        };
+        let square = egui::Rect::from_center_size(map(pos), egui::vec2(7.0, 7.0));
+        painter.rect_filled(square, 0.0, egui::Color32::WHITE);
+        painter.rect_stroke(square, 0.0, line, egui::StrokeKind::Inside);
     }
 }
 

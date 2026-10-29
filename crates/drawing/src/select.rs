@@ -1,10 +1,12 @@
-//! Selection geometry: item ids, bounds, translation and hit-testing a point
-//! or a rectangle against strokes and fills (the selection tool).
+//! Selection geometry: item ids, bounds, translation, scale/rotate
+//! transforms and hit-testing a point or a rectangle against strokes and
+//! fills (the selection and transform tools).
 //!
 //! Rectangles are `(min, max)` pairs in document coordinates, like
 //! [`Stroke::bounds`].
 
 use animation_core::{FillId, StrokeId, Vec2};
+pub use glam::Affine2;
 
 use crate::fill::Fill;
 use crate::stroke::{Stroke, VectorDrawing};
@@ -45,7 +47,40 @@ pub fn rect_union(a: (Vec2, Vec2), b: (Vec2, Vec2)) -> (Vec2, Vec2) {
     (a.0.min(b.0), a.1.max(b.1))
 }
 
+/// Scales by `scale` and then rotates by `angle` (radians, positive turns
+/// +x towards +y), both about `pivot`. The scale is along the document axes,
+/// before rotation, so it matches a box handle dragged on axis-aligned
+/// bounds. Negative factors mirror.
+pub fn scale_rotate_about(pivot: Vec2, scale: Vec2, angle: f32) -> Affine2 {
+    Affine2::from_translation(pivot)
+        * Affine2::from_angle(angle)
+        * Affine2::from_scale(scale)
+        * Affine2::from_translation(-pivot)
+}
+
+/// How much a transform scales lengths on average: the square root of its
+/// area scale. Used for brush widths, which have no direction.
+pub fn width_scale(transform: &Affine2) -> f32 {
+    transform.matrix2.determinant().abs().sqrt()
+}
+
 impl Stroke {
+    /// Maps every point through `transform` and scales the brush width by
+    /// [`width_scale`], so a uniformly scaled stroke keeps its look.
+    pub fn transform(&mut self, transform: &Affine2) {
+        for point in &mut self.points {
+            point.pos = transform.transform_point2(point.pos);
+        }
+        self.style.width *= width_scale(transform);
+    }
+
+    /// A transformed copy, keeping the same ID.
+    pub fn transformed(&self, transform: &Affine2) -> Self {
+        let mut out = self.clone();
+        out.transform(transform);
+        out
+    }
+
     /// Moves every point by `delta`.
     pub fn translate(&mut self, delta: Vec2) {
         for point in &mut self.points {
@@ -62,6 +97,28 @@ impl Stroke {
 }
 
 impl Fill {
+    /// Maps every contour point through `transform`. A mirroring transform
+    /// would flip each contour's winding, which tells outer contours from
+    /// holes, so contours are then reversed to keep it.
+    pub fn transform(&mut self, transform: &Affine2) {
+        let mirrored = transform.matrix2.determinant() < 0.0;
+        for contour in &mut self.contours {
+            for point in contour.iter_mut() {
+                *point = transform.transform_point2(*point);
+            }
+            if mirrored {
+                contour.reverse();
+            }
+        }
+    }
+
+    /// A transformed copy, keeping the same ID.
+    pub fn transformed(&self, transform: &Affine2) -> Self {
+        let mut out = self.clone();
+        out.transform(transform);
+        out
+    }
+
     /// Moves every contour point by `delta`.
     pub fn translate(&mut self, delta: Vec2) {
         for point in self.contours.iter_mut().flatten() {
@@ -245,6 +302,69 @@ mod tests {
         assert_eq!(moved.id, f.id);
         assert_eq!(moved.bounds(), Some((v(5.0, 5.0), v(15.0, 15.0))));
         assert!(moved.contains(v(14.0, 14.0)) && !f.contains(v(14.0, 14.0)));
+    }
+
+    fn close(a: Vec2, b: Vec2) -> bool {
+        (a - b).length() < 1e-4
+    }
+
+    #[test]
+    fn scale_about_pivot_keeps_the_pivot() {
+        let t = scale_rotate_about(v(10.0, 20.0), v(2.0, 3.0), 0.0);
+        assert!(close(t.transform_point2(v(10.0, 20.0)), v(10.0, 20.0)));
+        assert!(close(t.transform_point2(v(11.0, 21.0)), v(12.0, 23.0)));
+        assert!(close(t.transform_point2(v(0.0, 0.0)), v(-10.0, -40.0)));
+        assert!((width_scale(&t) - 6f32.sqrt()).abs() < 1e-5);
+    }
+
+    #[test]
+    fn rotate_about_pivot() {
+        let quarter = std::f32::consts::FRAC_PI_2;
+        let t = scale_rotate_about(v(5.0, 5.0), Vec2::ONE, quarter);
+        assert!(close(t.transform_point2(v(5.0, 5.0)), v(5.0, 5.0)));
+        // +x turns towards +y (down on screen: clockwise).
+        assert!(close(t.transform_point2(v(6.0, 5.0)), v(5.0, 6.0)));
+        assert!(close(t.transform_point2(v(5.0, 6.0)), v(4.0, 5.0)));
+        assert!((width_scale(&t) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn scale_happens_before_rotation() {
+        // Stretch x by 2, then turn a quarter: a point right of the pivot
+        // ends up twice as far below it.
+        let t = scale_rotate_about(Vec2::ZERO, v(2.0, 1.0), std::f32::consts::FRAC_PI_2);
+        assert!(close(t.transform_point2(v(1.0, 0.0)), v(0.0, 2.0)));
+        assert!(close(t.transform_point2(v(0.0, 1.0)), v(-1.0, 0.0)));
+    }
+
+    #[test]
+    fn transform_strokes_and_fills() {
+        let s = line(v(0.0, 0.0), v(10.0, 0.0));
+        let t = scale_rotate_about(v(5.0, 0.0), Vec2::splat(2.0), 0.0);
+        let big = s.transformed(&t);
+        assert_eq!(big.id, s.id);
+        assert!(close(big.points[0].pos, v(-5.0, 0.0)));
+        assert!(close(big.points[1].pos, v(15.0, 0.0)));
+        assert!((big.style.width - 4.0).abs() < 1e-5, "width scales too");
+        assert_eq!(big.points[1].pressure, s.points[1].pressure);
+
+        let f = square(v(0.0, 0.0), 10.0);
+        let moved = f.transformed(&t);
+        assert_eq!(moved.id, f.id);
+        let (min, max) = moved.bounds().unwrap();
+        assert!(close(min, v(-5.0, 0.0)) && close(max, v(15.0, 20.0)));
+    }
+
+    #[test]
+    fn mirroring_a_fill_keeps_its_winding() {
+        use crate::fill::signed_area;
+        let f = square(v(0.0, 0.0), 10.0);
+        let flipped = f.transformed(&scale_rotate_about(v(5.0, 5.0), v(-1.0, 1.0), 0.0));
+        assert_eq!(
+            signed_area(&flipped.contours[0]).signum(),
+            signed_area(&f.contours[0]).signum()
+        );
+        assert!(flipped.contains(v(2.0, 2.0)));
     }
 
     #[test]
