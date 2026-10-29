@@ -28,6 +28,19 @@ pub enum Request {
     SaveAsDialog,
     /// Close the application. Unsaved changes were already confirmed.
     Quit,
+    /// Show the export options for `ExportKind`, then a save dialog.
+    Export(ExportKind),
+}
+
+/// What File → Export writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExportKind {
+    /// The current frame as one PNG or JPEG.
+    Frame,
+    /// Every frame (or a range) as numbered PNG or JPEG files.
+    Sequence,
+    /// The animation as an H.264 MP4 video.
+    Video,
 }
 
 /// An action that throws away the current document.
@@ -399,6 +412,19 @@ impl Session {
         }
     }
 
+    /// Asks the host to export (it shows the options and a save dialog).
+    pub fn export(&mut self, kind: ExportKind) {
+        self.requests.push(Request::Export(kind));
+    }
+
+    /// Shows an error dialog.
+    pub fn show_error(&mut self, title: impl Into<String>, message: impl Into<String>) {
+        self.dialog = Some(Dialog::Error {
+            title: title.into(),
+            message: message.into(),
+        });
+    }
+
     /// Requests for the host application, oldest first. Clears the queue.
     pub fn take_requests(&mut self) -> Vec<Request> {
         std::mem::take(&mut self.requests)
@@ -589,6 +615,17 @@ mod tests {
         s.perform(DiscardAction::New);
         assert!(!s.is_dirty());
         assert_eq!(s.document.layers().len(), 1);
+    }
+
+    #[test]
+    fn export_asks_the_host_and_errors_show_a_dialog() {
+        let mut s = Session::new();
+        s.export(ExportKind::Video);
+        assert_eq!(s.take_requests(), [Request::Export(ExportKind::Video)]);
+        s.show_error("Export failed", "disk full");
+        assert!(
+            matches!(s.dialog(), Some(Dialog::Error { title, .. }) if title == "Export failed")
+        );
     }
 
     #[test]

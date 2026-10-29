@@ -17,6 +17,7 @@ drawing = { path = "crates/drawing" }
 scene = { path = "crates/scene" }
 document = { path = "crates/document" }
 file_format = { path = "crates/file_format" }
+export = { path = "crates/export" }
 editor = { path = "crates/editor" }
 renderer = { path = "crates/renderer" }
 ui = { path = "crates/ui" }

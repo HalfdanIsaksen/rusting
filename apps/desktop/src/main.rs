@@ -4,14 +4,16 @@
 //! panels, and the renderer draws the canvas into its own texture, which egui
 //! shows in the central panel (ADR-002). Frames are drawn only on demand.
 
+mod export;
 mod shell;
 
 use document::animation_core::Rgba;
 use document::animation_core::Vec2;
 use document::animation_core::glam::Mat4;
-use document::drawing::{Fill, ItemId, Stroke, tessellate, tessellate_fill};
+use document::drawing::ItemId;
 use renderer::{
-    CanvasFrame, CanvasRenderer, Gpu, Mesh, StrokeDraw, StrokeKey, Viewport, transform_matrix,
+    CanvasFrame, CanvasRenderer, DrawListBuilder, Gpu, Mesh, OffscreenRenderer, StrokeDraw,
+    StrokeKey, Viewport, fill_color, stroke_color, transform_matrix,
 };
 use shell::Shell;
 use std::path::{Path, PathBuf};
@@ -31,6 +33,8 @@ struct Graphics {
     canvas_texture: egui::TextureId,
     /// What the canvas texture currently shows, to skip identical re-renders.
     last_canvas: Option<CanvasState>,
+    /// Renders export frames; created on the first export.
+    offscreen: Option<OffscreenRenderer>,
 }
 
 /// Everything that determines the canvas image.
@@ -113,6 +117,7 @@ impl App {
             canvas,
             canvas_texture,
             last_canvas: None,
+            offscreen: None,
         });
         Ok(())
     }
@@ -142,6 +147,7 @@ impl App {
             canvas,
             canvas_texture,
             last_canvas,
+            offscreen,
         } = graphics;
 
         // 2. Size the canvas texture to the panel and gather what to draw.
@@ -224,11 +230,28 @@ impl App {
         // 4. Native dialogs and quitting, requested by the UI.
         let window = window.clone();
         for request in self.shell.session.take_requests() {
-            handle_request(&mut self.shell.session, request, event_loop);
+            handle_request(&mut self.shell, request, event_loop);
             window.request_redraw();
         }
 
-        // 5. Schedule the next frame only if egui wants one.
+        // 5. Export: ask where to save confirmed options, then render a few
+        // frames of the running export (the worker thread encodes them).
+        let shell = &mut self.shell;
+        if let Some(settings) = shell.export.take_confirmed()
+            && let Some(path) = export::ask_path(&settings, &shell.session)
+            && let Err(err) = shell.export.start(settings, &path, &shell.session)
+        {
+            shell.session.show_error("Export failed", err);
+        }
+        if shell.export.is_running() {
+            let offscreen = offscreen.get_or_insert_with(|| OffscreenRenderer::new(gpu.device()));
+            if let Some(outcome) = shell.export.pump(gpu.device(), gpu.queue(), offscreen) {
+                export::report(outcome, &mut shell.session);
+            }
+            window.request_redraw();
+        }
+
+        // 6. Schedule the next frame only if egui wants one.
         let delay = output
             .viewport_output
             .get(&egui::ViewportId::ROOT)
@@ -241,17 +264,12 @@ impl App {
     }
 }
 
-/// Something with a cached mesh: a stroke or a fill.
-#[derive(Clone, Copy)]
-enum Item<'a> {
-    Stroke(&'a Stroke),
-    Fill(&'a Fill),
-}
-
 /// Meshes to draw this frame, bottom to top: onion skins, the document at
 /// the current frame (each drawing's fills under its strokes; strokes being
-/// erased are replaced by what is left of them), the stroke being drawn, and the debug triangle. Meshes are
-/// tessellated once and cached by id.
+/// erased are replaced by what is left of them, and selected items being
+/// dragged are moved), the stroke being drawn, and the debug triangle.
+/// Export draws the same document content through the same
+/// [`DrawListBuilder::render_list`] rules, without the editor-only parts.
 fn collect_draws(
     device: &wgpu::Device,
     canvas: &mut CanvasRenderer,
@@ -260,42 +278,16 @@ fn collect_draws(
     let session = &shell.session;
     let doc = &session.document;
     let frame = session.current_frame();
-    let cache = canvas.stroke_cache_mut();
-    let mut draws = Vec::new();
-    let mut push = |item: Item<'_>, color: Rgba, transform: Mat4| {
-        let id = match item {
-            Item::Stroke(stroke) => {
-                cache.ensure(device, stroke.id, StrokeKey::of(stroke), || {
-                    Some(tessellate(stroke))
-                });
-                stroke.id.into()
-            }
-            Item::Fill(fill) => {
-                cache.ensure(device, fill.id, StrokeKey::of_fill(fill), || {
-                    Some(tessellate_fill(fill))
-                });
-                fill.id.into()
-            }
-        };
-        draws.push(StrokeDraw {
-            id,
-            color,
-            transform,
-        });
-    };
+    let mut draws = DrawListBuilder::new(device, canvas.stroke_cache_mut());
 
     for skin in session.onion.collect(doc, frame) {
         let transform = transform_matrix(&skin.transform);
         for fill in skin.drawing.fills() {
-            push(
-                Item::Fill(fill),
-                skin.color.with_opacity(fill.opacity),
-                transform,
-            );
+            draws.fill(fill, skin.color.with_opacity(fill.opacity), transform);
         }
         for stroke in skin.drawing.strokes() {
-            push(
-                Item::Stroke(stroke),
+            draws.stroke(
+                stroke,
                 skin.color.with_opacity(stroke.style.opacity),
                 transform,
             );
@@ -312,12 +304,6 @@ fn collect_draws(
         .filter(|_| offset != Vec2::ZERO)
         .map(|(layer, _)| layer);
     let selected = session.tools.selection();
-    let style_color = |stroke: &Stroke, layer_opacity: f32| {
-        stroke
-            .style
-            .color
-            .with_opacity(stroke.style.opacity * layer_opacity)
-    };
     for layer in &doc.evaluate(frame).layers {
         let transform = transform_matrix(&layer.transform);
         let moved = transform * Mat4::from_translation(offset.extend(0.0));
@@ -330,32 +316,27 @@ fn collect_draws(
             }
         };
         for fill in layer.drawing.fills() {
-            let color = fill.color.with_opacity(fill.opacity * layer.opacity);
-            push(Item::Fill(fill), color, place(ItemId::Fill(fill.id)));
+            draws.fill(
+                fill,
+                fill_color(fill, layer.opacity),
+                place(ItemId::Fill(fill.id)),
+            );
         }
         for stroke in layer.drawing.strokes() {
             if !erasing.contains(&stroke.id) {
-                push(
-                    Item::Stroke(stroke),
-                    style_color(stroke, layer.opacity),
+                draws.stroke(
+                    stroke,
+                    stroke_color(stroke, layer.opacity),
                     place(ItemId::Stroke(stroke.id)),
                 );
             } else {
                 for piece in session.tools.erase_preview(stroke.id) {
-                    push(
-                        Item::Stroke(piece),
-                        style_color(piece, layer.opacity),
-                        transform,
-                    );
+                    draws.stroke(piece, stroke_color(piece, layer.opacity), transform);
                 }
             }
         }
         if let Some((_, stroke)) = preview.take_if(|(id, _)| *id == layer.layer_id) {
-            push(
-                Item::Stroke(&stroke),
-                style_color(&stroke, layer.opacity),
-                transform,
-            );
+            draws.stroke(&stroke, stroke_color(&stroke, layer.opacity), transform);
         }
     }
     // The active layer shows nothing yet at this frame: draw the preview on top.
@@ -363,18 +344,15 @@ fn collect_draws(
         let layer = doc.layers().get(layer_id);
         let transform = layer.map_or(Mat4::IDENTITY, |l| transform_matrix(&l.transform));
         let opacity = layer.map_or(1.0, |l| l.opacity);
-        push(
-            Item::Stroke(&stroke),
-            style_color(&stroke, opacity),
-            transform,
-        );
+        draws.stroke(&stroke, stroke_color(&stroke, opacity), transform);
     }
 
     if shell.debug.test_triangle {
         let id = shell.debug_triangle_id;
         let canvas_size = &doc.canvas;
         let (w, h) = (canvas_size.width as f32, canvas_size.height as f32);
-        cache.ensure(
+        let device = draws.device();
+        draws.cache().ensure(
             device,
             id,
             StrokeKey::from_raw(u64::from(canvas_size.width) << 32 | u64::from(canvas_size.height)),
@@ -391,11 +369,16 @@ fn collect_draws(
             transform: Mat4::IDENTITY,
         });
     }
-    draws
+    draws.finish()
 }
 
 /// Native file dialogs (via `rfd`) and quitting, on behalf of the UI.
-fn handle_request(session: &mut ui::Session, request: ui::Request, event_loop: &ActiveEventLoop) {
+fn handle_request(shell: &mut Shell, request: ui::Request, event_loop: &ActiveEventLoop) {
+    if let ui::Request::Export(kind) = request {
+        shell.export.open(kind, &shell.session);
+        return;
+    }
+    let session = &mut shell.session;
     let dialog = || {
         let dialog =
             rfd::FileDialog::new().add_filter("Rusting project", &[ui::session::PROJECT_EXTENSION]);
@@ -434,6 +417,7 @@ fn handle_request(session: &mut ui::Session, request: ui::Request, event_loop: &
             }
         }
         ui::Request::Quit => event_loop.exit(),
+        ui::Request::Export(_) => {}
     }
 }
 

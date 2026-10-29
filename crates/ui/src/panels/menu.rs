@@ -1,7 +1,7 @@
 //! The menu bar: File, Edit and View.
 
 use super::shortcuts;
-use crate::session::{DiscardAction, Session};
+use crate::session::{DiscardAction, ExportKind, Session};
 use egui::{Button, KeyboardShortcut};
 
 fn item<'a>(ui: &egui::Ui, text: &'a str, shortcut: &KeyboardShortcut) -> Button<'a> {
@@ -25,6 +25,17 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
             if ui.add(item(ui, "Save As…", &shortcuts::SAVE_AS)).clicked() {
                 session.save_as();
             }
+            ui.menu_button("Export", |ui| {
+                if ui.button("Export Frame…").clicked() {
+                    session.export(ExportKind::Frame);
+                }
+                if ui.button("Export Image Sequence…").clicked() {
+                    session.export(ExportKind::Sequence);
+                }
+                if ui.button("Export Video (MP4)…").clicked() {
+                    session.export(ExportKind::Video);
+                }
+            });
             ui.separator();
             if ui.add(item(ui, "Quit", &shortcuts::QUIT)).clicked() {
                 session.request(DiscardAction::Quit);

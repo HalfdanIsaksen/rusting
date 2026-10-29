@@ -3,6 +3,7 @@
 //! The canvas lives here rather than in `ui` because it needs the renderer's
 //! [`Viewport`] to turn pointer positions into document coordinates.
 
+use crate::export::ExportPanel;
 use document::animation_core::glam::Vec2;
 use document::animation_core::{DocumentId, Rgba, StrokeId};
 use document::drawing::ItemId;
@@ -45,6 +46,8 @@ pub struct Shell {
     pub debug: DebugOptions,
     /// Stroke id used for the debug triangle's cached mesh.
     pub debug_triangle_id: StrokeId,
+    /// File → Export: options dialog, progress and the running export.
+    pub export: ExportPanel,
     /// The document the viewport was last fitted to.
     fitted_document: Option<DocumentId>,
 }
@@ -57,6 +60,7 @@ impl Shell {
             viewport: None,
             debug: DebugOptions::from_env(),
             debug_triangle_id: StrokeId::new(),
+            export: ExportPanel::new(),
             fitted_document: None,
         }
     }
@@ -77,11 +81,13 @@ impl Shell {
             session,
             viewport,
             fitted_document,
+            export,
             ..
         } = self;
         ui::show(ui, session, |ui, session| {
             canvas(ui, session, viewport, fitted_document, canvas_texture);
         });
+        export.ui(ui.ctx(), session);
     }
 }
 
