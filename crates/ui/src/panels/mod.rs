@@ -4,6 +4,7 @@ mod dialogs;
 mod layers;
 mod menu;
 mod shortcuts;
+mod start_menu;
 mod status;
 mod timeline;
 mod tool_options;
@@ -11,13 +12,17 @@ pub mod toolbar;
 
 use crate::session::Session;
 
-/// Draws the whole editor for one frame. `canvas` fills the central area;
+/// Draws the whole editor for one frame, or the start menu while it is up. `canvas` fills the central area;
 /// the host draws the canvas and forwards pointer input to the session.
 pub fn show(
     ui: &mut egui::Ui,
     session: &mut Session,
     canvas: impl FnOnce(&mut egui::Ui, &mut Session),
 ) {
+    if session.start_menu().is_some() {
+        start_menu::show(ui, session);
+        return;
+    }
     if session.update_playback() {
         ui.ctx().request_repaint();
     }

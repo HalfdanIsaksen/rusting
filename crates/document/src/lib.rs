@@ -6,9 +6,11 @@
 
 pub mod document;
 pub mod evaluate;
+pub mod new_document;
 
 pub use document::{CanvasSize, Document, RemovedLayer};
 pub use evaluate::{RenderLayer, RenderList};
+pub use new_document::{NewDocumentSettings, SettingsError, Template};
 
 // Re-exported so downstream crates use exactly the same types.
 pub use animation_core;
