@@ -3,6 +3,7 @@
 mod dialogs;
 mod layers;
 mod menu;
+mod resize_canvas;
 mod shortcuts;
 mod start_menu;
 mod status;
@@ -49,4 +50,5 @@ pub fn show(
     egui::CentralPanel::no_frame().show(ui, |ui| canvas(ui, session));
 
     dialogs::show(ui.ctx(), session);
+    resize_canvas::show(ui.ctx(), session);
 }

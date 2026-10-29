@@ -1,7 +1,9 @@
 //! Concrete document commands.
 
+mod canvas;
 mod fill;
 mod select;
+pub use canvas::ResizeCanvas;
 pub use fill::{AddFill, RemoveFill};
 pub use select::{TranslateItems, remove_items};
 

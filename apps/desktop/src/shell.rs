@@ -113,9 +113,11 @@ fn canvas(
     if viewport.screen_size != screen_size || viewport.scale_factor != ppp {
         viewport.set_screen_size(screen_size, ppp);
     }
+    // A newly opened or created document starts fitted, and so does a
+    // resized canvas (including undo/redo of a resize).
+    let resized = viewport.canvas_size != canvas_size;
     viewport.canvas_size = canvas_size;
-    // A newly opened or created document starts fitted.
-    if *fitted_document != Some(session.document.id) {
+    if resized || *fitted_document != Some(session.document.id) {
         viewport.fit_canvas();
         *fitted_document = Some(session.document.id);
     }

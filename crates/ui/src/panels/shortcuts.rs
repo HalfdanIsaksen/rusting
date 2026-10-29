@@ -29,7 +29,7 @@ pub const QUIT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key
 /// field has keyboard focus.
 pub fn handle(ctx: &egui::Context, session: &mut Session) {
     let typing = ctx.egui_wants_keyboard_input();
-    let modal_open = session.dialog().is_some();
+    let modal_open = session.dialog().is_some() || session.resize_canvas.is_some();
 
     // Most specific first: Shift+Cmd+S before Cmd+S (egui ignores extra Shift).
     let (save_as, save, new, open, quit) = ctx.input_mut(|i| {

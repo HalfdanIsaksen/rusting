@@ -8,7 +8,8 @@ use crate::onion::OnionSkin;
 use crate::playback::Playback;
 use crate::tools::ToolController;
 use document::animation_core::{FrameIndex, LayerId};
-use document::{CanvasSize, Document, NewDocumentSettings, SettingsError};
+use document::{CanvasAnchor, CanvasSize, Document, NewDocumentSettings, SettingsError};
+use editor::commands::ResizeCanvas;
 use editor::{Command, CommandError, EditorState, History};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -127,6 +128,36 @@ impl Default for TimelineView {
     }
 }
 
+/// What the "Resize Canvas" dialog is editing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResizeCanvasDialog {
+    /// New width in pixels.
+    pub width: u32,
+    /// New height in pixels.
+    pub height: u32,
+    /// The point the canvas grows or shrinks from.
+    pub anchor: CanvasAnchor,
+}
+
+impl ResizeCanvasDialog {
+    /// Starts from `size`, anchored at the centre.
+    pub fn new(size: CanvasSize) -> Self {
+        Self {
+            width: size.width,
+            height: size.height,
+            anchor: CanvasAnchor::Center,
+        }
+    }
+
+    /// The size entered.
+    pub fn size(&self) -> CanvasSize {
+        CanvasSize {
+            width: self.width,
+            height: self.height,
+        }
+    }
+}
+
 /// The open project and everything the editor does to it.
 #[derive(Debug)]
 pub struct Session {
@@ -149,6 +180,8 @@ pub struct Session {
     /// Set by the canvas when Space was used to pan, so releasing Space does
     /// not also toggle playback.
     pub space_panned: bool,
+    /// The open "Resize Canvas" dialog, if any.
+    pub resize_canvas: Option<ResizeCanvasDialog>,
     status: Option<Status>,
     dialog: Option<Dialog>,
     requests: Vec<Request>,
@@ -181,6 +214,7 @@ impl Session {
             tools: ToolController::default(),
             timeline: TimelineView::default(),
             space_panned: false,
+            resize_canvas: None,
             status: None,
             dialog: None,
             requests: Vec::new(),
@@ -261,6 +295,28 @@ impl Session {
         self.state.set_current_frame(&self.document, frame);
         self.playback.sync(&self.document);
         self.sync_selection();
+    }
+
+    // ----- Canvas ---------------------------------------------------------
+
+    /// Opens the "Resize Canvas" dialog, prefilled with the current size.
+    pub fn open_resize_canvas(&mut self) {
+        self.resize_canvas = Some(ResizeCanvasDialog::new(self.document.canvas));
+    }
+
+    /// Resizes the canvas to `size`, keeping artwork in place relative to
+    /// `anchor`. One undo step; does nothing if the size is unchanged.
+    pub fn resize_canvas(&mut self, size: CanvasSize, anchor: CanvasAnchor) {
+        if size == self.document.canvas {
+            return;
+        }
+        self.tools.cancel();
+        if self
+            .execute(Box::new(ResizeCanvas::new(size, anchor)))
+            .is_ok()
+        {
+            self.set_status(format!("Canvas resized to {}×{}", size.width, size.height));
+        }
     }
 
     // ----- Frame and layer selection -------------------------------------
@@ -593,6 +649,32 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rusting-ui-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir.join(name)
+    }
+
+    #[test]
+    fn resize_canvas_is_one_undo_step() {
+        let mut s = Session::new();
+        s.open_resize_canvas();
+        let dialog = s.resize_canvas.take().unwrap();
+        assert_eq!(dialog.size(), s.document.canvas);
+        assert_eq!(dialog.anchor, CanvasAnchor::Center);
+
+        let new = CanvasSize {
+            width: 800,
+            height: 600,
+        };
+        s.resize_canvas(new, CanvasAnchor::TopLeft);
+        assert_eq!(s.document.canvas, new);
+        assert!(s.is_dirty());
+        assert_eq!(s.history.undo_label(), Some("Resize Canvas"));
+        s.undo();
+        assert_eq!(s.document.canvas.width, 1920);
+        assert!(!s.is_dirty());
+
+        // The same size is not recorded.
+        let same = s.document.canvas;
+        s.resize_canvas(same, CanvasAnchor::Center);
+        assert!(!s.history.can_undo());
     }
 
     #[test]

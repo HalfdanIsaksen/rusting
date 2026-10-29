@@ -6,7 +6,7 @@
 use animation_core::{FrameIndex, Rgba, Vec2};
 use document::drawing::{DrawingContent, Fill, FillShape, VectorDrawing};
 use document::timeline::Keyframe;
-use document::{CanvasSize, Document};
+use document::{CanvasAnchor, CanvasSize, Document};
 use renderer::{DrawListBuilder, OffscreenFrame, OffscreenRenderer, headless_device};
 
 fn rect_fill(min: Vec2, max: Vec2, color: Rgba) -> Fill {
@@ -135,4 +135,55 @@ fn renders_document_at_scale_and_reads_back_pixels() {
         "{:?}",
         pixel(&pixels, 190, 50)
     );
+}
+
+#[test]
+fn renders_resized_canvas_with_moved_artwork() {
+    let Ok((device, queue)) = pollster::block_on(headless_device()) else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut doc = document();
+    let mut offscreen = OffscreenRenderer::new(&device);
+    let render = |doc: &Document, offscreen: &mut OffscreenRenderer| {
+        let mut builder = DrawListBuilder::new(&device, offscreen.stroke_cache_mut());
+        builder.render_list(&doc.evaluate(FrameIndex(0)));
+        let draws = builder.finish();
+        offscreen
+            .render(
+                &device,
+                &queue,
+                &OffscreenFrame {
+                    canvas_size: (doc.canvas.width, doc.canvas.height),
+                    scale: 1.0,
+                    background: None,
+                    strokes: &draws,
+                },
+            )
+            .unwrap()
+    };
+    // Warm the mesh cache at the old size.
+    render(&doc, &mut offscreen);
+
+    // Double the width anchored on the right: artwork moves 100 px right,
+    // the way the editor's Resize Canvas moves it.
+    let new = CanvasSize {
+        width: 200,
+        height: 50,
+    };
+    let offset = CanvasAnchor::Right.offset(doc.canvas, new);
+    let ids: Vec<_> = doc.drawings().keys().copied().collect();
+    for id in ids {
+        doc.drawing_mut(id)
+            .and_then(DrawingContent::as_vector_mut)
+            .unwrap()
+            .translate(offset);
+    }
+    doc.canvas = new;
+
+    let pixels = render(&doc, &mut offscreen);
+    assert_eq!((pixels.width, pixels.height), (200, 50));
+    assert_eq!(pixel(&pixels, 20, 25)[3], 0, "new area is empty");
+    assert!(close(pixel(&pixels, 120, 25), [255, 0, 0, 255]));
+    assert!(close(pixel(&pixels, 180, 25), [0, 0, 255, 128]));
 }
