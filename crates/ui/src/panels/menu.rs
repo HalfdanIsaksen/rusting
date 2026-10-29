@@ -2,10 +2,22 @@
 
 use super::shortcuts;
 use crate::session::{DiscardAction, ExportKind, Session};
-use egui::{Button, KeyboardShortcut};
+use egui::{Atom, Button, Checkbox, KeyboardShortcut, RichText};
 
 fn item<'a>(ui: &egui::Ui, text: &'a str, shortcut: &KeyboardShortcut) -> Button<'a> {
     Button::new(text).shortcut_text(ui.ctx().format_shortcut(shortcut))
+}
+
+/// A checkable View-menu item bound to `on`, with an optional shortcut hint.
+/// The checkmark always shows the current value.
+fn toggle(ui: &mut egui::Ui, text: &str, on: &mut bool, shortcut: Option<&KeyboardShortcut>) {
+    let hint = shortcut
+        .map(|s| ui.ctx().format_shortcut(s))
+        .unwrap_or_default();
+    ui.add(Checkbox::new(
+        on,
+        (text, Atom::grow(), RichText::new(hint).weak()),
+    ));
 }
 
 /// Draws the menu bar.
@@ -73,7 +85,22 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
             }
         });
 
+        // One `toggle` line per panel or window.
         ui.menu_button("View", |ui| {
+            let view = &mut session.view;
+            toggle(
+                ui,
+                "Toolbar",
+                &mut view.toolbar,
+                Some(&shortcuts::TOGGLE_TOOLBAR),
+            );
+            toggle(
+                ui,
+                "Timeline",
+                &mut view.timeline,
+                Some(&shortcuts::TOGGLE_TIMELINE),
+            );
+            ui.separator();
             ui.checkbox(&mut session.onion.enabled, "Onion skin");
         });
 
