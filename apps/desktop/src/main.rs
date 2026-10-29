@@ -62,11 +62,12 @@ struct App {
 }
 
 impl App {
-    /// The app with a new document, or the project at `open` if given.
+    /// The app showing the project at `open` if given and readable, or else
+    /// the start menu for a new document.
     fn new(open: Option<&Path>) -> Self {
         let mut session = ui::Session::new();
-        if let Some(path) = open {
-            session.open_path(path);
+        if !open.is_some_and(|path| session.open_path(path)) {
+            session.show_start_menu(ui::StartMenu::new(Default::default(), false));
         }
         Self {
             window: None,
@@ -151,7 +152,11 @@ impl App {
         } = graphics;
 
         // 2. Size the canvas texture to the panel and gather what to draw.
-        let canvas_state = shell.viewport.map(|viewport| {
+        // Nothing to draw while the start menu covers the window.
+        let viewport = shell
+            .viewport
+            .filter(|_| shell.session.start_menu().is_none());
+        let canvas_state = viewport.map(|viewport| {
             let (width, height) = viewport.physical_size();
             if canvas.resize(gpu.device(), width, height) {
                 egui_renderer.update_egui_texture_from_wgpu_texture(

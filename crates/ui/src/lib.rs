@@ -20,5 +20,5 @@ pub mod tools;
 pub use onion::{OnionDrawing, OnionSkin};
 pub use panels::show;
 pub use playback::Playback;
-pub use session::{DiscardAction, ExportKind, Request, Session};
+pub use session::{DiscardAction, ExportKind, Request, Session, StartMenu};
 pub use tools::{EraserMode, ToolController};

@@ -8,7 +8,7 @@ use crate::onion::OnionSkin;
 use crate::playback::Playback;
 use crate::tools::ToolController;
 use document::animation_core::{FrameIndex, LayerId};
-use document::{CanvasSize, Document};
+use document::{CanvasSize, Document, NewDocumentSettings, SettingsError};
 use editor::{Command, CommandError, EditorState, History};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -68,6 +68,34 @@ pub enum Dialog {
     ConfirmDiscard(DiscardAction),
 }
 
+/// The start menu: settings for a new document, shown instead of the editor
+/// at launch and for File → New.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartMenu {
+    /// The values in the form.
+    pub settings: NewDocumentSettings,
+    /// The user picked the "Custom" card, so it stays highlighted even while
+    /// the values still match a template.
+    pub custom: bool,
+    /// Whether there is a document behind the menu to go back to (File →
+    /// New). At launch there is none, so the menu can't be cancelled.
+    pub can_cancel: bool,
+    /// Give the name field keyboard focus on the next frame.
+    pub focus_name: bool,
+}
+
+impl StartMenu {
+    /// A menu prefilled with `settings`.
+    pub fn new(settings: NewDocumentSettings, can_cancel: bool) -> Self {
+        Self {
+            settings,
+            custom: false,
+            can_cancel,
+            focus_name: true,
+        }
+    }
+}
+
 /// A short message in the status bar.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Status {
@@ -124,6 +152,7 @@ pub struct Session {
     status: Option<Status>,
     dialog: Option<Dialog>,
     requests: Vec<Request>,
+    start_menu: Option<StartMenu>,
 }
 
 impl Default for Session {
@@ -155,6 +184,7 @@ impl Session {
             status: None,
             dialog: None,
             requests: Vec::new(),
+            start_menu: None,
         }
     }
 
@@ -316,8 +346,12 @@ impl Session {
         )
     }
 
-    /// The window title, with a `*` when there are unsaved changes.
+    /// The window title, with a `*` when there are unsaved changes. Just
+    /// the app name while the start menu is up.
     pub fn title(&self) -> String {
+        if self.start_menu.is_some() {
+            return "Rusting".to_owned();
+        }
         let dirty = if self.is_dirty() { "*" } else { "" };
         format!("{}{dirty} — Rusting", self.display_name())
     }
@@ -335,8 +369,17 @@ impl Session {
     pub(crate) fn perform(&mut self, action: DiscardAction) {
         match action {
             DiscardAction::New => {
-                self.replace_document(new_document(), None);
-                self.set_status("New document");
+                // Start from the current document's size, rate and length.
+                let doc = &self.document;
+                let fps = doc.fps.as_f64().round().max(1.0) as u32;
+                let settings = NewDocumentSettings {
+                    name: "Untitled".to_owned(),
+                    width: doc.canvas.width,
+                    height: doc.canvas.height,
+                    fps,
+                    frame_count: doc.frame_count.max(1),
+                };
+                self.show_start_menu(StartMenu::new(settings, true));
             }
             DiscardAction::Open => self.requests.push(Request::OpenDialog),
             DiscardAction::Quit => self.requests.push(Request::Quit),
@@ -349,6 +392,7 @@ impl Session {
         match file_format::load_with_report(path) {
             Ok((document, report)) => {
                 self.replace_document(document, Some(path.to_path_buf()));
+                self.start_menu = None;
                 if report.is_clean() {
                     self.set_status(format!("Opened {}", path.display()));
                 } else {
@@ -370,6 +414,45 @@ impl Session {
                 false
             }
         }
+    }
+
+    /// Shows the start menu instead of the editor.
+    pub fn show_start_menu(&mut self, menu: StartMenu) {
+        self.tools.cancel();
+        self.playback.pause();
+        self.start_menu = Some(menu);
+    }
+
+    /// The start menu, if it is showing.
+    pub fn start_menu(&self) -> Option<&StartMenu> {
+        self.start_menu.as_ref()
+    }
+
+    /// Mutable access to the start menu's form.
+    pub fn start_menu_mut(&mut self) -> Option<&mut StartMenu> {
+        self.start_menu.as_mut()
+    }
+
+    /// Goes back to the editor without a new document. Does nothing if the
+    /// menu can't be cancelled (at launch).
+    pub fn cancel_start_menu(&mut self) {
+        if self.start_menu.as_ref().is_some_and(|m| m.can_cancel) {
+            self.start_menu = None;
+        }
+    }
+
+    /// Replaces the document with a new one made from the start menu's
+    /// settings and closes the menu. Invalid settings leave everything as is.
+    pub fn create_from_start_menu(&mut self) -> Result<(), SettingsError> {
+        let Some(menu) = &self.start_menu else {
+            return Ok(());
+        };
+        let document = menu.settings.create()?;
+        let name = document.name.clone();
+        self.replace_document(document, None);
+        self.start_menu = None;
+        self.set_status(format!("New document “{name}”"));
+        Ok(())
     }
 
     /// Saves to the current path, or asks for one.
@@ -613,8 +696,88 @@ mod tests {
             Some(&Dialog::ConfirmDiscard(DiscardAction::Quit))
         );
         s.perform(DiscardAction::New);
+        assert!(s.start_menu().is_some());
+        s.create_from_start_menu().unwrap();
         assert!(!s.is_dirty());
         assert_eq!(s.document.layers().len(), 1);
+    }
+
+    #[test]
+    fn start_menu_creates_a_document_with_its_settings() {
+        let mut s = Session::new();
+        let mut menu = StartMenu::new(NewDocumentSettings::default(), false);
+        menu.settings = NewDocumentSettings {
+            name: "Bounce".into(),
+            width: 640,
+            height: 480,
+            fps: 12,
+            frame_count: 30,
+        };
+        s.show_start_menu(menu);
+        assert_eq!(s.title(), "Rusting");
+
+        // Can't cancel at launch: there's no document to go back to.
+        s.cancel_start_menu();
+        assert!(s.start_menu().is_some());
+
+        s.create_from_start_menu().unwrap();
+        assert!(s.start_menu().is_none());
+        let doc = &s.document;
+        assert_eq!(doc.name, "Bounce");
+        assert_eq!((doc.canvas.width, doc.canvas.height), (640, 480));
+        assert_eq!(doc.fps, document::animation_core::Fps::whole(12).unwrap());
+        assert_eq!(doc.frame_count, 30);
+        assert_eq!(s.playback.fps(), doc.fps);
+        assert!(s.state.can_draw(doc));
+        assert_eq!(s.title(), "Bounce — Rusting");
+        // The timeline is as long as the document.
+        s.step(-1);
+        assert_eq!(s.current_frame(), FrameIndex(29));
+    }
+
+    #[test]
+    fn invalid_start_menu_settings_keep_the_menu_open() {
+        let mut s = Session::new();
+        let before = s.document.clone();
+        let mut menu = StartMenu::new(NewDocumentSettings::default(), true);
+        menu.settings.frame_count = 0;
+        s.show_start_menu(menu);
+        assert_eq!(s.create_from_start_menu(), Err(SettingsError::FrameCount));
+        assert!(s.start_menu().is_some());
+        assert_eq!(s.document, before);
+        s.cancel_start_menu();
+        assert!(s.start_menu().is_none());
+        assert_eq!(s.document, before);
+    }
+
+    #[test]
+    fn file_new_prefills_from_the_current_document() {
+        let mut s = Session::new();
+        s.document.canvas = CanvasSize {
+            width: 800,
+            height: 600,
+        };
+        s.document.frame_count = 10;
+        s.request(DiscardAction::New);
+        let menu = s.start_menu().unwrap();
+        assert!(menu.can_cancel);
+        assert_eq!(
+            (menu.settings.width, menu.settings.height, menu.settings.fps),
+            (800, 600, 24)
+        );
+        assert_eq!(menu.settings.frame_count, 10);
+    }
+
+    #[test]
+    fn opening_a_file_closes_the_start_menu() {
+        let mut s = Session::new();
+        let path = temp_path("from-start-menu");
+        assert!(s.save_to(&path));
+        let saved = s.path.clone().unwrap();
+        let mut other = Session::new();
+        other.show_start_menu(StartMenu::new(NewDocumentSettings::default(), false));
+        assert!(other.open_path(&saved));
+        assert!(other.start_menu().is_none());
     }
 
     #[test]
