@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 document.workspace = true
 editor.workspace = true
+export.workspace = true
 renderer.workspace = true
 ui.workspace = true
 winit.workspace = true
@@ -27,6 +28,9 @@ pollster.workspace = true
 rfd = "0.17"
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [lints]
 workspace = true

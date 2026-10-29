@@ -17,6 +17,33 @@ pub enum RendererError {
     /// The surface reports no usable configuration for this adapter.
     #[error("surface is not supported by the adapter")]
     UnsupportedSurface,
+    /// An offscreen render is larger than the GPU's texture limit.
+    #[error("{width}x{height} is larger than this GPU supports ({max} pixels per side)")]
+    TooLarge {
+        /// Requested width.
+        width: u32,
+        /// Requested height.
+        height: u32,
+        /// Largest supported side.
+        max: u32,
+    },
+    /// Reading rendered pixels back from the GPU failed.
+    #[error("could not read pixels back from the GPU: {0}")]
+    ReadBack(String),
+}
+
+/// Opens a GPU device with no window, for offscreen rendering and tests.
+pub async fn headless_device() -> Result<(wgpu::Device, wgpu::Queue), RendererError> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions::default())
+        .await?;
+    Ok(adapter
+        .request_device(&wgpu::DeviceDescriptor {
+            label: Some("rusting-headless"),
+            ..Default::default()
+        })
+        .await?)
 }
 
 /// The GPU context: device, queue and the configured window surface.

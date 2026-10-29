@@ -3,6 +3,7 @@
 use crate::canvas_target::{
     CANVAS_DEPTH_FORMAT, CANVAS_RENDER_FORMAT, CANVAS_SAMPLE_COUNT, CanvasTarget,
 };
+use crate::draw_list::{fill_color, stroke_color};
 use crate::mesh::MeshSource;
 use crate::stroke_cache::{DEFAULT_MAX_UNUSED_RENDERS, MeshId, StrokeCache, StrokeKey};
 use crate::viewport::Viewport;
@@ -90,6 +91,15 @@ pub fn transform_matrix(transform: &Transform2D) -> Mat4 {
         Quat::from_rotation_z(transform.rotation),
         transform.translation.extend(0.0),
     )
+}
+
+/// What is drawn around the canvas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Chrome {
+    /// Workspace, shadow, outline and checkerboard, as in the editor.
+    Editor,
+    /// Only the canvas content, on a transparent clear (export).
+    Bare,
 }
 
 /// A pipeline with one uniform buffer at group 0.
@@ -257,7 +267,7 @@ impl CanvasRenderer {
                     });
                 draws.push(StrokeDraw {
                     id: fill.id.into(),
-                    color: fill.color.with_opacity(fill.opacity * layer.opacity),
+                    color: fill_color(fill, layer.opacity),
                     transform,
                 });
             }
@@ -268,10 +278,7 @@ impl CanvasRenderer {
                     });
                 draws.push(StrokeDraw {
                     id: stroke.id.into(),
-                    color: stroke
-                        .style
-                        .color
-                        .with_opacity(stroke.style.opacity * layer.opacity),
+                    color: stroke_color(stroke, layer.opacity),
                     transform,
                 });
             }
@@ -288,6 +295,33 @@ impl CanvasRenderer {
         encoder: &mut wgpu::CommandEncoder,
         viewport: &Viewport,
         frame: &CanvasFrame<'_>,
+    ) {
+        self.encode(device, queue, encoder, viewport, frame, Chrome::Editor);
+    }
+
+    /// Records a render of the bare canvas, for export: no workspace,
+    /// shadow or outline, a transparent clear, and no checkerboard (a `None`
+    /// background stays transparent). `viewport` should map the canvas onto
+    /// the whole target (see [`crate::offscreen`]).
+    pub(crate) fn render_bare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        viewport: &Viewport,
+        frame: &CanvasFrame<'_>,
+    ) {
+        self.encode(device, queue, encoder, viewport, frame, Chrome::Bare);
+    }
+
+    fn encode(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        viewport: &Viewport,
+        frame: &CanvasFrame<'_>,
+        chrome: Chrome,
     ) {
         self.strokes.tick();
         let (width, height) = self.target.size();
@@ -346,7 +380,15 @@ impl CanvasRenderer {
         );
         self.write_draws(device, queue, frame.strokes);
 
-        let workspace = style.workspace;
+        let clear = match chrome {
+            Chrome::Editor => wgpu::Color {
+                r: f64::from(style.workspace.r),
+                g: f64::from(style.workspace.g),
+                b: f64::from(style.workspace.b),
+                a: 1.0,
+            },
+            Chrome::Bare => wgpu::Color::TRANSPARENT,
+        };
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("canvas"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -354,12 +396,7 @@ impl CanvasRenderer {
                 resolve_target: Some(self.target.resolve_view()),
                 depth_slice: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: f64::from(workspace.r),
-                        g: f64::from(workspace.g),
-                        b: f64::from(workspace.b),
-                        a: 1.0,
-                    }),
+                    load: wgpu::LoadOp::Clear(clear),
                     store: wgpu::StoreOp::Discard,
                 },
             })],
@@ -374,13 +411,17 @@ impl CanvasRenderer {
             ..Default::default()
         });
 
-        pass.set_pipeline(&self.frame.pipeline);
-        pass.set_bind_group(0, &self.frame.bind_group, &[]);
-        pass.draw(0..4, 0..1);
+        if chrome == Chrome::Editor {
+            pass.set_pipeline(&self.frame.pipeline);
+            pass.set_bind_group(0, &self.frame.bind_group, &[]);
+            pass.draw(0..4, 0..1);
+        }
 
-        pass.set_pipeline(&self.background.pipeline);
-        pass.set_bind_group(0, &self.background.bind_group, &[]);
-        pass.draw(0..4, 0..1);
+        if chrome == Chrome::Editor || frame.background.is_some() {
+            pass.set_pipeline(&self.background.pipeline);
+            pass.set_bind_group(0, &self.background.bind_group, &[]);
+            pass.draw(0..4, 0..1);
+        }
 
         // Strokes are clipped to the canvas.
         if let Some((sx, sy, sw, sh)) = scissor(rect_min, rect_max, (width, height)) {
