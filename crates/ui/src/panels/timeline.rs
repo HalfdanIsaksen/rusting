@@ -1,5 +1,6 @@
 //! The timeline panel: playback bar, key buttons, onion-skin settings and
-//! the frame grid (one row per layer, keys and exposures, scrubbing).
+//! the frame grid (one row per layer, keys and exposures, scrubbing). The
+//! layer controls on the left of the grid live in [`super::layers`].
 
 use super::status::fps_text;
 use crate::onion::MAX_ONION_RANGE;
@@ -12,9 +13,10 @@ use editor::commands::{
 };
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, vec2};
 
-const NAME_WIDTH: f32 = 120.0;
-const ROW_HEIGHT: f32 = 22.0;
-const RULER_HEIGHT: f32 = 20.0;
+/// Height of one layer row.
+pub(super) const ROW_HEIGHT: f32 = 22.0;
+/// Height of the frame-number ruler (and the layer column's header).
+pub(super) const RULER_HEIGHT: f32 = 20.0;
 const MAX_FPS: u32 = 120;
 const MAX_FRAMES: u32 = 100_000;
 
@@ -191,11 +193,11 @@ fn committed_drag_value(
 }
 
 /// One timeline row.
-struct Row {
-    id: LayerId,
-    name: String,
-    visible: bool,
-    locked: bool,
+pub(super) struct Row {
+    pub(super) id: LayerId,
+    pub(super) name: String,
+    pub(super) visible: bool,
+    pub(super) locked: bool,
 }
 
 fn rows(doc: &Document) -> Vec<Row> {
@@ -211,7 +213,7 @@ fn rows(doc: &Document) -> Vec<Row> {
         .collect()
 }
 
-/// Layer names on the left, frames on the right.
+/// Layer controls on the left, frames on the right.
 fn grid(ui: &mut egui::Ui, session: &mut Session) {
     let rows = rows(&session.document);
     let height = RULER_HEIGHT + rows.len() as f32 * ROW_HEIGHT;
@@ -221,58 +223,13 @@ fn grid(ui: &mut egui::Ui, session: &mut Session) {
         .show(ui, |ui| {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
-                names(ui, session, &rows, height);
+                super::layers::column(ui, session, &rows, height);
                 egui::ScrollArea::horizontal()
                     .id_salt("timeline_horizontal")
                     .auto_shrink([false, true])
                     .show(ui, |ui| frames(ui, session, &rows, height));
             });
         });
-}
-
-fn names(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
-    let (rect, response) = ui.allocate_exact_size(vec2(NAME_WIDTH, height), Sense::click());
-    let painter = ui.painter_at(rect);
-    let visuals = ui.visuals();
-    let font = egui::FontId::proportional(13.0);
-    painter.text(
-        Pos2::new(rect.left() + 6.0, rect.top() + RULER_HEIGHT * 0.5),
-        egui::Align2::LEFT_CENTER,
-        "Layer",
-        egui::FontId::proportional(11.0),
-        visuals.weak_text_color(),
-    );
-    for (i, row) in rows.iter().enumerate() {
-        let top = rect.top() + RULER_HEIGHT + i as f32 * ROW_HEIGHT;
-        let row_rect =
-            Rect::from_min_size(Pos2::new(rect.left(), top), vec2(NAME_WIDTH, ROW_HEIGHT));
-        if session.state.active_layer == Some(row.id) {
-            painter.rect_filled(row_rect, 0.0, visuals.selection.bg_fill.gamma_multiply(0.5));
-        }
-        let mut color = visuals.text_color();
-        if !row.visible {
-            color = color.gamma_multiply(0.4);
-        }
-        let marker = if row.locked { "🔒 " } else { "" };
-        painter.text(
-            Pos2::new(rect.left() + 6.0, top + ROW_HEIGHT * 0.5),
-            egui::Align2::LEFT_CENTER,
-            format!("{marker}{}", row.name),
-            font.clone(),
-            color,
-        );
-        painter.hline(
-            rect.x_range(),
-            top + ROW_HEIGHT,
-            visuals.widgets.noninteractive.bg_stroke,
-        );
-    }
-    if response.clicked()
-        && let Some(pos) = response.interact_pointer_pos()
-        && let Some(row) = row_at(rows, pos.y - rect.top())
-    {
-        session.select_layer(row);
-    }
 }
 
 fn row_at(rows: &[Row], y: f32) -> Option<LayerId> {

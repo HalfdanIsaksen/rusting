@@ -1,4 +1,4 @@
-//! Tool icons drawn with the egui painter.
+//! Tool and layer icons drawn with the egui painter.
 //!
 //! Every icon is a few vector shapes laid out in a unit square that is mapped
 //! onto the target rect, so icons stay crisp at any size and DPI. Colours come
@@ -203,5 +203,134 @@ pub fn options_marker(painter: &Painter, button: Rect, color: Color32) {
         ],
         color,
         Stroke::NONE,
+    ));
+}
+
+/// Samples an elliptical arc of the unit square (angles in radians, 0 =
+/// right, positive = down) onto `rect`.
+fn arc(rect: Rect, center: (f32, f32), radius: (f32, f32), from: f32, to: f32) -> Vec<Pos2> {
+    const STEPS: usize = 12;
+    (0..=STEPS)
+        .map(|i| {
+            let a = from + (to - from) * i as f32 / STEPS as f32;
+            at(
+                rect,
+                center.0 + radius.0 * a.cos(),
+                center.1 + radius.1 * a.sin(),
+            )
+        })
+        .collect()
+}
+
+fn curve(painter: &Painter, rect: Rect, color: Color32, pts: [(f32, f32); 3]) {
+    painter.add(QuadraticBezierShape::from_points_stroke(
+        [
+            at(rect, pts[0].0, pts[0].1),
+            at(rect, pts[1].0, pts[1].1),
+            at(rect, pts[2].0, pts[2].1),
+        ],
+        false,
+        Color32::TRANSPARENT,
+        PathStroke::new(line_width(rect), color),
+    ));
+}
+
+/// Open eye: the layer is visible.
+pub fn eye(painter: &Painter, rect: Rect, color: Color32) {
+    curve(
+        painter,
+        rect,
+        color,
+        [(0.08, 0.5), (0.5, 0.08), (0.92, 0.5)],
+    );
+    curve(
+        painter,
+        rect,
+        color,
+        [(0.08, 0.5), (0.5, 0.92), (0.92, 0.5)],
+    );
+    painter.circle_filled(at(rect, 0.5, 0.5), rect.width() * 0.13, color);
+}
+
+/// Closed eye (a lowered lid): the layer is hidden.
+pub fn eye_closed(painter: &Painter, rect: Rect, color: Color32) {
+    curve(
+        painter,
+        rect,
+        color,
+        [(0.1, 0.45), (0.5, 0.85), (0.9, 0.45)],
+    );
+}
+
+/// Padlock, closed or open.
+fn padlock(painter: &Painter, rect: Rect, color: Color32, closed: bool) {
+    let w = line_width(rect);
+    let body = Rect::from_min_max(at(rect, 0.22, 0.48), at(rect, 0.78, 0.9));
+    painter.rect_filled(body, w, color);
+    // The open shackle is lifted and its right leg stays out of the body.
+    let (lift, right_end) = if closed { (0.0, 0.48) } else { (0.1, 0.3) };
+    let top = 0.34 - lift;
+    let mut shackle = vec![at(rect, 0.34, 0.48)];
+    shackle.extend(arc(
+        rect,
+        (0.5, top),
+        (0.16, 0.2),
+        std::f32::consts::PI,
+        std::f32::consts::TAU,
+    ));
+    shackle.push(at(rect, 0.66, right_end));
+    painter.add(PathShape::line(shackle, Stroke::new(w * 1.3, color)));
+}
+
+/// Closed padlock: the layer is locked.
+pub fn lock_closed(painter: &Painter, rect: Rect, color: Color32) {
+    padlock(painter, rect, color, true);
+}
+
+/// Open padlock: the layer can be edited.
+pub fn lock_open(painter: &Painter, rect: Rect, color: Color32) {
+    padlock(painter, rect, color, false);
+}
+
+/// Plus sign (add).
+pub fn plus(painter: &Painter, rect: Rect, color: Color32) {
+    let w = line_width(rect) * 1.4;
+    line(painter, rect, color, w, (0.5, 0.2), (0.5, 0.8));
+    line(painter, rect, color, w, (0.2, 0.5), (0.8, 0.5));
+}
+
+/// Trash can (delete).
+pub fn trash(painter: &Painter, rect: Rect, color: Color32) {
+    let w = line_width(rect);
+    line(painter, rect, color, w * 1.3, (0.18, 0.26), (0.82, 0.26));
+    outline(
+        painter,
+        rect,
+        color,
+        &[(0.4, 0.26), (0.42, 0.14), (0.58, 0.14), (0.6, 0.26)],
+    );
+    outline(
+        painter,
+        rect,
+        color,
+        &[(0.26, 0.26), (0.32, 0.88), (0.68, 0.88), (0.74, 0.26)],
+    );
+    line(painter, rect, color, w, (0.44, 0.4), (0.45, 0.76));
+    line(painter, rect, color, w, (0.56, 0.4), (0.55, 0.76));
+}
+
+/// Upward chevron (move up).
+pub fn chevron_up(painter: &Painter, rect: Rect, color: Color32) {
+    painter.add(PathShape::line(
+        points(rect, &[(0.22, 0.64), (0.5, 0.34), (0.78, 0.64)]),
+        Stroke::new(line_width(rect) * 1.5, color),
+    ));
+}
+
+/// Downward chevron (move down).
+pub fn chevron_down(painter: &Painter, rect: Rect, color: Color32) {
+    painter.add(PathShape::line(
+        points(rect, &[(0.22, 0.36), (0.5, 0.66), (0.78, 0.36)]),
+        Stroke::new(line_width(rect) * 1.5, color),
     ));
 }

@@ -36,10 +36,6 @@ pub fn show(
         .exact_size(toolbar::WIDTH)
         .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(4, 0)))
         .show(ui, |ui| toolbar::panel(ui, session));
-    egui::Panel::right("layers")
-        .resizable(true)
-        .default_size(240.0)
-        .show(ui, |ui| layers::panel(ui, session));
     // Added after the side panels so it spans only the canvas.
     egui::Panel::top("tool_options")
         .resizable(false)
