@@ -6,6 +6,7 @@
 
 use crate::onion::OnionSkin;
 use crate::playback::Playback;
+use crate::preview::Preview;
 use crate::tools::ToolController;
 use document::animation_core::{FrameIndex, LayerId};
 use document::{CanvasAnchor, CanvasSize, Document, NewDocumentSettings, SettingsError};
@@ -192,6 +193,8 @@ pub struct Session {
     pub playback: Playback,
     /// Onion-skin settings.
     pub onion: OnionSkin,
+    /// View → Preview: the preview window and its own playback.
+    pub preview: Preview,
     /// Canvas tool settings and the gesture in progress.
     pub tools: ToolController,
     /// Timeline layout.
@@ -225,6 +228,7 @@ impl Session {
     pub fn with_document(document: Document, path: Option<PathBuf>) -> Self {
         let state = EditorState::for_document(&document);
         let playback = Playback::new(&document);
+        let preview = Preview::new(&document);
         Self {
             document,
             history: History::new(),
@@ -232,6 +236,7 @@ impl Session {
             path,
             playback,
             onion: OnionSkin::default(),
+            preview,
             tools: ToolController::default(),
             timeline: TimelineView::default(),
             view: ViewSettings::default(),
@@ -253,6 +258,7 @@ impl Session {
         self.state.tool = tool;
         self.state.brush = brush;
         self.playback = Playback::new(&document);
+        self.preview.reset(&document);
         self.document = document;
         self.history.clear();
         self.path = path;
@@ -400,6 +406,18 @@ impl Session {
             self.sync_selection();
         }
         self.playback.is_playing()
+    }
+
+    /// The frame the preview window shows: its own while it plays, else
+    /// the editor's current frame.
+    pub fn preview_frame(&self) -> FrameIndex {
+        self.preview.frame(self.current_frame())
+    }
+
+    /// Starts or stops the preview window's own looping playback.
+    pub fn toggle_preview_playback(&mut self) {
+        let frame = self.current_frame();
+        self.preview.toggle(&self.document, frame);
     }
 
     /// Starts or stops playback from the current frame.

@@ -49,6 +49,19 @@ impl Viewport {
         viewport
     }
 
+    /// A viewport mapping the canvas exactly onto a `width` x `height` pixel
+    /// target: no pan, no margin, one physical pixel per point. The target
+    /// should have the canvas's aspect ratio.
+    pub fn filling(canvas_size: Vec2, (width, height): (u32, u32)) -> Self {
+        Self {
+            canvas_size,
+            zoom: f64::from(width) / f64::from(canvas_size.x.max(1.0)),
+            pan: DVec2::ZERO,
+            screen_size: Vec2::new(width as f32, height as f32),
+            scale_factor: 1.0,
+        }
+    }
+
     /// Converts a screen point (logical points) to canvas coordinates.
     pub fn screen_to_canvas(&self, screen: Vec2) -> Vec2 {
         self.screen_to_canvas_f64(screen.as_dvec2()).as_vec2()

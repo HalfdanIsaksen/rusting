@@ -102,6 +102,10 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
             );
             ui.separator();
             ui.checkbox(&mut session.onion.enabled, "Onion skin");
+            let mut preview = session.preview.is_open();
+            if ui.checkbox(&mut preview, "Preview").changed() {
+                session.preview.set_open(preview);
+            }
         });
 
         ui.menu_button("Help", |ui| {

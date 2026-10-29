@@ -299,11 +299,12 @@ impl CanvasRenderer {
         self.encode(device, queue, encoder, viewport, frame, Chrome::Editor);
     }
 
-    /// Records a render of the bare canvas, for export: no workspace,
-    /// shadow or outline, a transparent clear, and no checkerboard (a `None`
-    /// background stays transparent). `viewport` should map the canvas onto
-    /// the whole target (see [`crate::offscreen`]).
-    pub(crate) fn render_bare(
+    /// Records a render of the bare canvas, for export and the preview
+    /// window: no workspace, shadow or outline, a transparent clear, and no
+    /// checkerboard (a `None` background stays transparent). `viewport`
+    /// should map the canvas onto the whole target
+    /// (see [`Viewport::filling`]).
+    pub fn render_bare(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,

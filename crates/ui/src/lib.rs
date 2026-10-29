@@ -14,11 +14,13 @@ pub mod icons;
 pub mod onion;
 pub mod panels;
 pub mod playback;
+pub mod preview;
 pub mod session;
 pub mod tools;
 
 pub use onion::{OnionDrawing, OnionSkin};
-pub use panels::show;
+pub use panels::{preview_window, show};
 pub use playback::Playback;
+pub use preview::Preview;
 pub use session::{DiscardAction, ExportKind, Request, Session, StartMenu, ViewSettings};
 pub use tools::{EraserMode, ToolController};
