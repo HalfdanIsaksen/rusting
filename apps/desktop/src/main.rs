@@ -7,8 +7,9 @@
 mod shell;
 
 use document::animation_core::Rgba;
+use document::animation_core::Vec2;
 use document::animation_core::glam::Mat4;
-use document::drawing::{Fill, Stroke, tessellate, tessellate_fill};
+use document::drawing::{Fill, ItemId, Stroke, tessellate, tessellate_fill};
 use renderer::{
     CanvasFrame, CanvasRenderer, Gpu, Mesh, StrokeDraw, StrokeKey, Viewport, transform_matrix,
 };
@@ -303,6 +304,14 @@ fn collect_draws(
 
     let erasing = session.tools.erasing();
     let mut preview = session.tools.preview();
+    // Selected items being dragged are drawn moved by the drag offset.
+    let offset = session.tools.move_offset();
+    let moving = session
+        .tools
+        .selection_at()
+        .filter(|_| offset != Vec2::ZERO)
+        .map(|(layer, _)| layer);
+    let selected = session.tools.selection();
     let style_color = |stroke: &Stroke, layer_opacity: f32| {
         stroke
             .style
@@ -311,16 +320,25 @@ fn collect_draws(
     };
     for layer in &doc.evaluate(frame).layers {
         let transform = transform_matrix(&layer.transform);
+        let moved = transform * Mat4::from_translation(offset.extend(0.0));
+        let is_moving = moving == Some(layer.layer_id);
+        let place = |item: ItemId| {
+            if is_moving && selected.contains(&item) {
+                moved
+            } else {
+                transform
+            }
+        };
         for fill in layer.drawing.fills() {
             let color = fill.color.with_opacity(fill.opacity * layer.opacity);
-            push(Item::Fill(fill), color, transform);
+            push(Item::Fill(fill), color, place(ItemId::Fill(fill.id)));
         }
         for stroke in layer.drawing.strokes() {
             if !erasing.contains(&stroke.id) {
                 push(
                     Item::Stroke(stroke),
                     style_color(stroke, layer.opacity),
-                    transform,
+                    place(ItemId::Stroke(stroke.id)),
                 );
             } else {
                 for piece in session.tools.erase_preview(stroke.id) {

@@ -158,6 +158,7 @@ impl Session {
         self.history.clear();
         self.path = path;
         self.tools.cancel();
+        self.sync_selection();
     }
 
     // ----- Commands -----------------------------------------------------
@@ -216,6 +217,7 @@ impl Session {
         let frame = self.state.current_frame();
         self.state.set_current_frame(&self.document, frame);
         self.playback.sync(&self.document);
+        self.sync_selection();
     }
 
     // ----- Frame and layer selection -------------------------------------
@@ -229,6 +231,7 @@ impl Session {
     pub fn set_frame(&mut self, frame: FrameIndex) {
         self.state.set_current_frame(&self.document, frame);
         self.playback.seek(self.state.current_frame());
+        self.sync_selection();
     }
 
     /// Steps the playhead by `delta` frames, wrapping around the document.
@@ -263,6 +266,7 @@ impl Session {
         if self.document.layers().get(layer).is_some() {
             self.tools.cancel();
             self.state.active_layer = Some(layer);
+            self.sync_selection();
         }
     }
 
@@ -272,6 +276,7 @@ impl Session {
         self.playback.sync(&self.document);
         if let Some(frame) = self.playback.tick() {
             self.state.set_current_frame(&self.document, frame);
+            self.sync_selection();
         }
         self.playback.is_playing()
     }

@@ -21,6 +21,7 @@ pub fn show(
         ui.ctx().request_repaint();
     }
     shortcuts::handle(ui.ctx(), session);
+    session.sync_selection();
 
     egui::Panel::top("menu_bar").show(ui, |ui| menu::bar(ui, session));
     egui::Panel::bottom("status_bar").show(ui, |ui| status::bar(ui, session));

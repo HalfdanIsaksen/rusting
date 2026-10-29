@@ -20,6 +20,8 @@ pub const REDO: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::Z);
 /// Redo (Windows/Linux habit).
 pub const REDO_ALT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Y);
+/// Select everything on the active layer's current drawing.
+pub const SELECT_ALL: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::A);
 /// Quit.
 pub const QUIT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Q);
 
@@ -70,6 +72,26 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
     }
 
     let gesture = session.tools.is_active();
+    if ctx.input_mut(|i| i.consume_shortcut(&SELECT_ALL)) && !gesture {
+        session.state.tool = Tool::Select;
+        session.select_all();
+    }
+    // With a selection, arrows nudge it instead of moving the playhead.
+    let selecting = session.state.tool == Tool::Select && !session.tools.selection().is_empty();
+    let (select, escape, delete, shift) = ctx.input(|i| {
+        (
+            i.modifiers.is_none() && i.key_pressed(Key::V),
+            i.key_pressed(Key::Escape),
+            i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace),
+            i.modifiers.shift,
+        )
+    });
+    if escape && !gesture {
+        session.clear_selection();
+    }
+    if delete && selecting && !gesture {
+        session.delete_selection();
+    }
     let (brush, eraser, fill, left, right, up, down, space_down, space_up) = ctx.input_mut(|i| {
         let plain = i.modifiers.is_none();
         let space = |want_pressed: bool| {
@@ -87,8 +109,8 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
             plain && i.key_pressed(Key::K),
             i.num_presses(Key::ArrowLeft),
             i.num_presses(Key::ArrowRight),
-            i.key_pressed(Key::ArrowUp),
-            i.key_pressed(Key::ArrowDown),
+            i.num_presses(Key::ArrowUp),
+            i.num_presses(Key::ArrowDown),
             space(true),
             space(false),
         );
@@ -105,6 +127,9 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
         result
     });
     if !gesture {
+        if select {
+            session.state.tool = Tool::Select;
+        }
         if brush {
             session.state.tool = Tool::Brush;
         }
@@ -115,21 +140,34 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
             session.state.tool = Tool::Fill;
         }
     }
+    if selecting {
+        let step = if shift { 10.0 } else { 1.0 };
+        let dx = right as f32 - left as f32;
+        let dy = down as f32 - up as f32;
+        if !gesture && (dx != 0.0 || dy != 0.0) {
+            session.nudge_selection(document::animation_core::Vec2::new(dx, dy) * step);
+        }
+        return finish_space(session, space_down, space_up, gesture);
+    }
     let steps = right as i64 - left as i64;
     if steps != 0 && !gesture {
         session.playback.pause();
         session.step(steps);
     }
-    if up && !gesture {
+    if up > 0 && !gesture {
         session.playback.pause();
         session.jump_to_key(false);
     }
-    if down && !gesture {
+    if down > 0 && !gesture {
         session.playback.pause();
         session.jump_to_key(true);
     }
-    // Space is also "hold to pan" on the canvas: toggle playback on release,
-    // unless the canvas used it for panning.
+    finish_space(session, space_down, space_up, gesture);
+}
+
+/// Space is also "hold to pan" on the canvas: toggle playback on release,
+/// unless the canvas used it for panning.
+fn finish_space(session: &mut Session, space_down: bool, space_up: bool, gesture: bool) {
     if space_down {
         session.space_panned = false;
     }

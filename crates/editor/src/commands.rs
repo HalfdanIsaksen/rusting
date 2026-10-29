@@ -1,7 +1,9 @@
 //! Concrete document commands.
 
 mod fill;
+mod select;
 pub use fill::{AddFill, RemoveFill};
+pub use select::{TranslateItems, remove_items};
 
 use crate::{Command, CommandError};
 use animation_core::{DrawingId, Fps, FrameIndex, LayerId, StrokeId};

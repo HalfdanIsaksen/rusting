@@ -13,6 +13,8 @@ pub enum Tool {
     Eraser,
     /// Fill the area enclosed by strokes (fill bucket).
     Fill,
+    /// Select strokes and fills, then move or delete them.
+    Select,
 }
 
 /// Session state of the editor: active tool, layer and frame.
