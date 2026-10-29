@@ -72,6 +72,8 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
             Tool::Brush => {
                 brush_size(ui, session);
                 ui.separator();
+                brush_smoothing(ui, session);
+                ui.separator();
                 paint_settings(ui, session);
             }
             Tool::Fill => {
@@ -119,6 +121,19 @@ fn brush_size(ui: &mut egui::Ui, session: &mut Session) {
             .logarithmic(true)
             .max_decimals(1),
     );
+}
+
+const SMOOTHING_HINT: &str = "Irons out wobble from your hand or tablet. 0 keeps the line \
+                              exactly as drawn; higher values give smoother, rounder curves.";
+
+fn brush_smoothing(ui: &mut egui::Ui, session: &mut Session) {
+    ui.label("Smoothing").on_hover_text(SMOOTHING_HINT);
+    ui.add(
+        egui::Slider::new(&mut session.tools.brush_smoothing, 0.0..=100.0)
+            .max_decimals(0)
+            .suffix("%"),
+    )
+    .on_hover_text(SMOOTHING_HINT);
 }
 
 fn eraser_size(ui: &mut egui::Ui, session: &mut Session) {

@@ -31,6 +31,13 @@ use editor::commands::{
 /// Smallest distance between recorded brush points, in screen points.
 const MIN_POINT_SPACING_SCREEN: f32 = 0.75;
 
+/// Brush smoothing sigma at 100 % smoothing, in screen points. Scaled by
+/// zoom so the same setting feels the same at any zoom level.
+const MAX_SMOOTHING_SCREEN: f32 = 15.0;
+
+/// Default brush smoothing, in percent.
+pub const DEFAULT_BRUSH_SMOOTHING: f32 = 50.0;
+
 /// How far outside a stroke a click still selects it, in screen points.
 const SELECT_TOLERANCE_SCREEN: f32 = 4.0;
 
@@ -99,6 +106,9 @@ pub enum EraserMode {
 /// Tool settings and the gesture in progress.
 #[derive(Clone, Debug)]
 pub struct ToolController {
+    /// Brush smoothing in percent (`0.0..=100.0`). Higher irons out more of
+    /// the hand and tablet wobble.
+    pub brush_smoothing: f32,
     /// Eraser radius in document units.
     pub eraser_radius: f32,
     /// Partial or whole-stroke erasing.
@@ -115,6 +125,7 @@ pub struct ToolController {
 impl Default for ToolController {
     fn default() -> Self {
         Self {
+            brush_smoothing: DEFAULT_BRUSH_SMOOTHING,
             eraser_radius: 12.0,
             eraser_mode: EraserMode::default(),
             fill_gap: GapClosing::default(),
@@ -201,7 +212,7 @@ impl ToolController {
                 *layer,
                 Stroke {
                     id: *preview_id,
-                    points: builder.points().to_vec(),
+                    points: builder.smoothed_points(),
                     style: *builder.style(),
                 },
             )),
@@ -289,8 +300,14 @@ impl Session {
                     width: self.state.brush.width.max(0.1),
                     ..self.state.brush
                 };
-                let min_distance = MIN_POINT_SPACING_SCREEN / zoom.max(f32::EPSILON);
-                let mut builder = StrokeBuilder::begin(style).with_min_distance(min_distance);
+                let zoom = zoom.max(f32::EPSILON);
+                let min_distance = MIN_POINT_SPACING_SCREEN / zoom;
+                let smoothing = self.tools.brush_smoothing.clamp(0.0, 100.0) / 100.0
+                    * MAX_SMOOTHING_SCREEN
+                    / zoom;
+                let mut builder = StrokeBuilder::begin(style)
+                    .with_min_distance(min_distance)
+                    .with_smoothing(smoothing);
                 builder.add_point(StrokePoint::new(pos));
                 Gesture::Brush {
                     layer,
