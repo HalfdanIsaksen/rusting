@@ -94,9 +94,10 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
     }
     // With a selection, arrows nudge it instead of moving the playhead.
     let selecting = session.state.tool.uses_selection() && !session.tools.selection().is_empty();
-    let (select, transform, escape, delete, shift) = ctx.input(|i| {
+    let (select, lasso, transform, escape, delete, shift) = ctx.input(|i| {
         (
             i.modifiers.is_none() && i.key_pressed(Key::V),
+            i.modifiers.is_none() && i.key_pressed(Key::L),
             i.modifiers.is_none() && i.key_pressed(Key::Q),
             i.key_pressed(Key::Escape),
             i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace),
@@ -146,6 +147,9 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
     if !gesture {
         if select {
             session.state.tool = Tool::Select;
+        }
+        if lasso {
+            session.state.tool = Tool::Lasso;
         }
         if transform {
             session.state.tool = Tool::Transform;

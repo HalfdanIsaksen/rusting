@@ -8,7 +8,7 @@
 use animation_core::{FillId, StrokeId, Vec2};
 pub use glam::Affine2;
 
-use crate::fill::Fill;
+use crate::fill::{Fill, FillShape};
 use crate::stroke::{Stroke, VectorDrawing};
 
 /// One selectable thing in a drawing.
@@ -201,14 +201,32 @@ impl VectorDrawing {
             .or_else(|| self.fill_at(point).map(ItemId::Fill))
     }
 
-    /// Items whose bounds intersect the rectangle `(min, max)`, in the order
-    /// of [`Self::all_items`].
-    pub fn items_in_rect(&self, rect: (Vec2, Vec2)) -> Vec<ItemId> {
+    /// Items with any point (stroke point or fill contour point) inside
+    /// `polygon`, in the order of [`Self::all_items`]. A fill the polygon
+    /// lies entirely within is not hit, so a box drawn over a background
+    /// fill leaves it alone.
+    // ponytail: tests points only, so a box can miss a sparse stroke segment
+    // passing through it; add a segment-crossing test if that bites.
+    pub fn items_in_polygon(&self, polygon: &[Vec2]) -> Vec<ItemId> {
+        let shape = FillShape {
+            contours: vec![polygon.to_vec()],
+        };
+        let Some(area) = shape.bounds() else {
+            return Vec::new();
+        };
         self.all_items()
             .into_iter()
             .filter(|&item| {
                 self.item_bounds(item)
-                    .is_some_and(|b| rects_intersect(b, rect))
+                    .is_some_and(|b| rects_intersect(b, area))
+            })
+            .filter(|&item| match item {
+                ItemId::Stroke(id) => self
+                    .stroke(id)
+                    .is_some_and(|s| s.points.iter().any(|p| shape.contains(p.pos))),
+                ItemId::Fill(id) => self
+                    .fill(id)
+                    .is_some_and(|f| f.contours.iter().flatten().any(|&p| shape.contains(p))),
             })
             .collect()
     }
@@ -217,7 +235,6 @@ impl VectorDrawing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fill::FillShape;
     use crate::stroke::{BrushStyle, StrokePoint};
     use animation_core::Rgba;
 
@@ -398,25 +415,33 @@ mod tests {
     }
 
     #[test]
-    fn items_in_rect_uses_bounds() {
+    fn items_in_polygon_needs_a_point_inside() {
         let (d, fill, across, far) = scene();
+        let rect = |min: Vec2, max: Vec2| [min, v(max.x, min.y), max, v(min.x, max.y)];
         assert_eq!(
-            d.items_in_rect((v(-50.0, 40.0), v(-5.0, 60.0))),
+            d.items_in_polygon(&rect(v(-50.0, 40.0), v(-5.0, 60.0))),
             vec![across]
         );
-        assert_eq!(
-            d.items_in_rect((v(20.0, 20.0), v(30.0, 30.0))),
-            vec![fill],
-            "inside the fill only"
+        assert!(
+            d.items_in_polygon(&rect(v(20.0, 20.0), v(30.0, 30.0)))
+                .is_empty(),
+            "inside the fill, but none of its points"
         );
         assert_eq!(
-            d.items_in_rect((v(0.0, 0.0), v(400.0, 400.0))),
+            d.items_in_polygon(&rect(v(-5.0, -5.0), v(5.0, 5.0))),
+            vec![fill],
+            "a fill corner"
+        );
+        assert_eq!(
+            d.items_in_polygon(&rect(v(-20.0, -20.0), v(400.0, 400.0))),
             vec![fill, across, far]
         );
-        assert!(
-            d.items_in_rect((v(150.0, 150.0), v(200.0, 200.0)))
-                .is_empty()
+        // A triangle around the far line's start only.
+        assert_eq!(
+            d.items_in_polygon(&[v(290.0, 290.0), v(310.0, 295.0), v(290.0, 310.0)]),
+            vec![far]
         );
+        assert!(d.items_in_polygon(&[]).is_empty());
     }
 
     #[test]

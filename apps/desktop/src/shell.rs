@@ -265,7 +265,7 @@ fn paint_overlays(
         ui.ctx().set_cursor_icon(icon);
         return;
     }
-    if session.state.tool == Tool::Select {
+    if matches!(session.state.tool, Tool::Select | Tool::Lasso) {
         let pos = viewport.screen_to_canvas(Vec2::new(hover.x - rect.min.x, hover.y - rect.min.y));
         let over_selection = session
             .item_under(pos, zoom)
@@ -284,7 +284,7 @@ fn paint_overlays(
     let radius = match session.state.tool {
         Tool::Brush => session.state.brush.width * 0.5 * zoom,
         Tool::Eraser => session.tools.eraser_radius * zoom,
-        Tool::Fill | Tool::Select | Tool::Transform => 0.0,
+        Tool::Fill | Tool::Select | Tool::Lasso | Tool::Transform => 0.0,
     };
     if radius >= 2.0 {
         painter.circle_stroke(
@@ -304,7 +304,7 @@ fn paint_overlays(
 const SELECTION_COLOR: egui::Color32 = egui::Color32::from_rgb(30, 144, 255);
 
 /// The selection (an outline on each selected item and a box around them
-/// all, moved by the drag in progress) and the marquee. Line widths are in
+/// all, moved by the drag in progress) and the marquee or lasso loop. Line widths are in
 /// screen points, so they don't change with zoom.
 fn paint_selection(
     painter: &egui::Painter,
@@ -401,6 +401,14 @@ fn paint_selection(
             egui::Stroke::new(1.0, SELECTION_COLOR),
             egui::StrokeKind::Inside,
         );
+    }
+    if let Some(lasso) = session.tools.lasso() {
+        // Outline only: egui fills convex shapes only.
+        let points = lasso.iter().map(|&p| to_screen(p)).collect();
+        painter.add(egui::Shape::closed_line(
+            points,
+            egui::Stroke::new(1.0, SELECTION_COLOR),
+        ));
     }
 }
 

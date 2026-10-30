@@ -47,7 +47,8 @@ The tool strip runs down the side of the canvas:
 
 | Tool | Key | What it does |
 |---|---|---|
-| Selection | `V` | Select strokes and fills, then move or delete them |
+| Selection | `V` | Select strokes and fills (click, or drag a box from anywhere), then move or delete them |
+| Lasso | `L` | Select strokes and fills by drawing a loop around them |
 | Transform | `Q` | Scale and rotate the selection with box handles |
 | Brush | `B` | Vector strokes with size, opacity, colour and a 0–100% smoothing slider |
 | Eraser | `E` | Erase part of a stroke or whole strokes |

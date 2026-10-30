@@ -284,16 +284,19 @@ enum Gesture {
         zoom: f32,
         dragged: bool,
     },
-    /// Dragging a selection box.
+    /// Dragging a selection box, or a lasso loop.
     Marquee {
         layer: LayerId,
         frame: FrameIndex,
-        start: Vec2,
-        end: Vec2,
+        /// Box: the press and the latest position. Lasso: every position.
+        path: Vec<Vec2>,
+        lasso: bool,
         zoom: f32,
         dragged: bool,
         /// The selection to add to (Shift), or empty.
         base: Vec<ItemId>,
+        /// The item under the press; a click without a drag selects it.
+        hit: Option<ItemId>,
     },
     /// Scaling or rotating the selection with the transform tool.
     Transform {
@@ -463,11 +466,24 @@ impl ToolController {
     pub fn marquee(&self) -> Option<(Vec2, Vec2)> {
         match &self.gesture {
             Some(Gesture::Marquee {
-                start,
-                end,
+                path,
+                lasso: false,
                 dragged: true,
                 ..
-            }) => Some(rect_from_corners(*start, *end)),
+            }) => Some(rect_from_corners(path[0], path[path.len() - 1])),
+            _ => None,
+        }
+    }
+
+    /// The lasso loop being drawn, in document coordinates.
+    pub fn lasso(&self) -> Option<&[Vec2]> {
+        match &self.gesture {
+            Some(Gesture::Marquee {
+                path,
+                lasso: true,
+                dragged: true,
+                ..
+            }) => Some(path),
             _ => None,
         }
     }
@@ -580,10 +596,13 @@ impl Session {
                 self.fill_at(layer, frame, pos);
                 return true;
             }
-            Tool::Select => match self.select_press(layer, frame, pos, zoom, shift) {
-                Some(gesture) => gesture,
-                None => return true,
-            },
+            Tool::Select | Tool::Lasso => {
+                let lasso = self.state.tool == Tool::Lasso;
+                match self.select_press(layer, frame, pos, zoom, shift, lasso) {
+                    Some(gesture) => gesture,
+                    None => return true,
+                }
+            }
             Tool::Transform => match self.transform_press(layer, frame, pos, zoom, shift) {
                 Some(gesture) => gesture,
                 None => return true,
@@ -653,18 +672,29 @@ impl Session {
             Some(Gesture::Marquee {
                 layer,
                 frame,
-                start,
-                end,
+                path,
+                lasso,
                 zoom,
                 dragged,
                 base,
+                ..
             }) => {
-                *end = pos;
-                *dragged |= past_drag_threshold(*start, pos, *zoom);
+                if !*lasso && path.len() == 2 {
+                    path[1] = pos;
+                } else if path.last() != Some(&pos) {
+                    path.push(pos);
+                }
+                *dragged |= past_drag_threshold(path[0], pos, *zoom);
                 if *dragged {
+                    let polygon = if *lasso {
+                        path.clone()
+                    } else {
+                        let (min, max) = rect_from_corners(path[0], pos);
+                        vec![min, Vec2::new(max.x, min.y), max, Vec2::new(min.x, max.y)]
+                    };
                     let mut items = base.clone();
                     if let Some(drawing) = vector_at(&self.document, *layer, *frame) {
-                        for item in drawing.items_in_rect(rect_from_corners(*start, *end)) {
+                        for item in drawing.items_in_polygon(&polygon) {
                             if !items.contains(&item) {
                                 items.push(item);
                             }
@@ -785,8 +815,9 @@ impl Session {
         }
     }
 
-    /// Select tool press: picks or toggles the item under `pos`, and returns
-    /// the drag gesture to start, if any.
+    /// Select and lasso tool press: toggles the item under `pos` with Shift,
+    /// starts moving the selection when `pos` is on it, and otherwise starts
+    /// a box (or a lasso loop). Returns the drag gesture to start, if any.
     fn select_press(
         &mut self,
         layer: LayerId,
@@ -794,6 +825,7 @@ impl Session {
         pos: Vec2,
         zoom: f32,
         shift: bool,
+        lasso: bool,
     ) -> Option<Gesture> {
         self.sync_selection();
         let at = (layer, frame);
@@ -810,20 +842,17 @@ impl Session {
                 self.tools.set_selection(at, items);
                 None
             }
-            Some(item) => {
-                if !self.tools.selection.contains(&item) {
-                    self.tools.set_selection(at, vec![item]);
-                }
-                Some(Gesture::Move {
-                    layer,
-                    frame,
-                    start: pos,
-                    delta: Vec2::ZERO,
-                    zoom,
-                    dragged: false,
-                })
-            }
-            None => {
+            Some(item) if self.tools.selection.contains(&item) => Some(Gesture::Move {
+                layer,
+                frame,
+                start: pos,
+                delta: Vec2::ZERO,
+                zoom,
+                dragged: false,
+            }),
+            // Unselected item or empty canvas: dragging draws a box, so a
+            // background fill doesn't get dragged around by accident.
+            hit => {
                 let base = if shift {
                     self.tools.selection.clone()
                 } else {
@@ -833,11 +862,12 @@ impl Session {
                 Some(Gesture::Marquee {
                     layer,
                     frame,
-                    start: pos,
-                    end: pos,
+                    path: vec![pos],
+                    lasso,
                     zoom,
                     dragged: false,
                     base,
+                    hit,
                 })
             }
         }
@@ -891,7 +921,7 @@ impl Session {
                     dragged: false,
                 });
             }
-            _ => return self.select_press(layer, frame, pos, zoom, shift),
+            _ => return self.select_press(layer, frame, pos, zoom, shift, false),
         };
         Some(Gesture::Transform {
             layer,
@@ -1031,6 +1061,13 @@ impl Session {
                 let command = TransformItems::new(layer, frame, items, transform).with_label(label);
                 let _ = self.execute(Box::new(command));
             }
+            Some(Gesture::Marquee {
+                layer,
+                frame,
+                dragged: false,
+                hit: Some(item),
+                ..
+            }) => self.tools.set_selection((layer, frame), vec![item]),
             Some(Gesture::Move { .. } | Gesture::Marquee { .. } | Gesture::Transform { .. }) => {}
             Some(Gesture::Brush {
                 layer,
@@ -1397,6 +1434,88 @@ mod tests {
         drag(&mut s, Vec2::new(50.0, 0.0), Vec2::new(51.0, 1.0), false);
         assert_eq!(s.history.undo_len(), undo_len);
         assert_eq!(s.tools.selection().len(), 1);
+    }
+
+    #[test]
+    fn dragging_from_an_unselected_item_draws_a_box() {
+        let (mut s, ids) = select_scene();
+        let before = strokes(&s);
+        let undo_len = s.history.undo_len();
+        drag(&mut s, Vec2::new(50.0, 0.0), Vec2::new(120.0, 60.0), false);
+        assert_eq!(strokes(&s), before, "nothing moved");
+        assert_eq!(s.history.undo_len(), undo_len);
+        assert_eq!(s.tools.selection(), [ids[0], ids[1]]);
+
+        // Now on the selection: the same drag moves it.
+        drag(&mut s, Vec2::new(50.0, 0.0), Vec2::new(60.0, 0.0), false);
+        assert_eq!(s.history.undo_label(), Some("Move"));
+        assert_eq!(s.tools.selection(), [ids[0], ids[1]]);
+    }
+
+    #[test]
+    fn box_over_a_background_fill_leaves_it_alone() {
+        let (mut s, ids) = select_scene();
+        let layer = s.state.active_layer.unwrap();
+        let background = Fill::new(
+            document::drawing::FillShape {
+                contours: vec![vec![
+                    Vec2::new(-500.0, -500.0),
+                    Vec2::new(500.0, -500.0),
+                    Vec2::new(500.0, 500.0),
+                    Vec2::new(-500.0, 500.0),
+                ]],
+            },
+            document::animation_core::Rgba::BLACK,
+            1.0,
+        );
+        s.execute(Box::new(AddFill::new(layer, FrameIndex(0), background)))
+            .unwrap();
+        drag(
+            &mut s,
+            Vec2::new(-20.0, 40.0),
+            Vec2::new(120.0, 60.0),
+            false,
+        );
+        assert_eq!(s.tools.selection(), [ids[1]]);
+    }
+
+    #[test]
+    fn lasso_selects_what_the_loop_goes_around() {
+        let (mut s, ids) = select_scene();
+        s.state.tool = Tool::Lasso;
+        assert!(s.tools.lasso().is_none());
+        // A loop around the start of the first two lines only.
+        let path = [
+            Vec2::new(-10.0, -10.0),
+            Vec2::new(20.0, -10.0),
+            Vec2::new(20.0, 60.0),
+            Vec2::new(-10.0, 60.0),
+        ];
+        assert!(s.pointer_down_with(path[0], 1.0, false));
+        for p in &path[1..] {
+            s.pointer_move(*p);
+        }
+        assert_eq!(s.tools.lasso().map(<[Vec2]>::len), Some(4));
+        assert!(s.tools.marquee().is_none(), "no box with the lasso");
+        s.pointer_up();
+        assert_eq!(s.tools.selection(), [ids[0], ids[1]]);
+        assert!(s.tools.lasso().is_none(), "loop gone after release");
+
+        // Shift adds; a loop around the end of the third line.
+        assert!(s.pointer_down_with(Vec2::new(90.0, 190.0), 1.0, true));
+        s.pointer_move(Vec2::new(150.0, 190.0));
+        s.pointer_move(Vec2::new(150.0, 250.0));
+        s.pointer_up();
+        assert_eq!(s.tools.selection(), [ids[0], ids[1], ids[2]]);
+
+        // A straight drag encloses nothing.
+        drag(
+            &mut s,
+            Vec2::new(-10.0, 25.0),
+            Vec2::new(120.0, 25.0),
+            false,
+        );
+        assert!(s.tools.selection().is_empty());
     }
 
     #[test]
