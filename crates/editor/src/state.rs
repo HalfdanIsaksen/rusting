@@ -15,6 +15,8 @@ pub enum Tool {
     Fill,
     /// Select strokes and fills, then move or delete them.
     Select,
+    /// Select by drawing a loop around strokes and fills.
+    Lasso,
     /// Scale and rotate the selection with box handles.
     Transform,
 }
@@ -22,7 +24,7 @@ pub enum Tool {
 impl Tool {
     /// Whether the tool works on the selection (and keeps it alive).
     pub fn uses_selection(self) -> bool {
-        matches!(self, Self::Select | Self::Transform)
+        matches!(self, Self::Select | Self::Lasso | Self::Transform)
     }
 }
 

@@ -88,6 +88,13 @@ pub const TOOLS: &[ToolEntry] = &[
         ToolGroup::Selection,
     ),
     ToolEntry::new(
+        Tool::Lasso,
+        icons::lasso,
+        "Lasso",
+        "L",
+        ToolGroup::Selection,
+    ),
+    ToolEntry::new(
         Tool::Transform,
         icons::transform,
         "Transform",

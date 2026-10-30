@@ -65,8 +65,14 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
         match session.state.tool {
             Tool::Select => {
                 ui.weak(
-                    "Click or drag a box to select (Shift adds). Drag to move, arrows nudge \
-                     (Shift ×10), Delete removes, ⌘A selects all, Esc deselects.",
+                    "Click or drag a box to select (Shift adds). Drag a selected item to move, \
+                     arrows nudge (Shift ×10), Delete removes, ⌘A selects all, Esc deselects.",
+                );
+            }
+            Tool::Lasso => {
+                ui.weak(
+                    "Draw a loop around strokes and fills to select them (Shift adds). Drag a \
+                     selected item to move, Delete removes, Esc deselects.",
                 );
             }
             Tool::Transform => {

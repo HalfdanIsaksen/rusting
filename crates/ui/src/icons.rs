@@ -64,6 +64,21 @@ pub fn arrow(painter: &Painter, rect: Rect, color: Color32) {
     );
 }
 
+/// Lasso tool: a loop with a rope end hanging from it.
+pub fn lasso(painter: &Painter, rect: Rect, color: Color32) {
+    let w = line_width(rect);
+    painter.add(PathShape::closed_line(
+        arc(rect, (0.52, 0.38), (0.34, 0.22), 0.0, std::f32::consts::TAU),
+        Stroke::new(w, color),
+    ));
+    curve(
+        painter,
+        rect,
+        color,
+        [(0.30, 0.56), (0.20, 0.74), (0.34, 0.90)],
+    );
+}
+
 /// Transform tool: a box with corner handles and a curved rotate arrow.
 pub fn transform(painter: &Painter, rect: Rect, color: Color32) {
     let w = line_width(rect);
