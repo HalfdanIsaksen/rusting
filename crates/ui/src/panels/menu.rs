@@ -108,6 +108,12 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
                 &mut view.timeline,
                 Some(&shortcuts::TOGGLE_TIMELINE),
             );
+            toggle(
+                ui,
+                "Tool Settings",
+                &mut view.tool_settings,
+                Some(&shortcuts::TOGGLE_TOOL_SETTINGS),
+            );
             ui.separator();
             ui.checkbox(&mut session.onion.enabled, "Onion skin");
             let mut preview = session.preview.is_open();

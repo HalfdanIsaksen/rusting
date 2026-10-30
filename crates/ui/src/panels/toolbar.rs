@@ -1,7 +1,7 @@
 //! The tool strip: a narrow column of icon buttons, two per row, in groups.
 //!
-//! The strip only picks the tool. Per-tool settings live in the tool options
-//! bar ([`super::tool_options`]); tools with extra options show a corner
+//! The strip only picks the tool. Per-tool settings live in the tool settings
+//! panel ([`super::tool_options`]); tools with extra options show a corner
 //! triangle and open a small popup on right-click or press-and-hold.
 
 use super::tool_options;

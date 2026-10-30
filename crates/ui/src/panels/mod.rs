@@ -55,11 +55,14 @@ pub fn show(
             )
             .show(ui, |ui| toolbar::panel(ui, session));
     }
-    // Added after the side panels so it spans only the canvas.
-    egui::Panel::top("tool_options")
-        .resizable(false)
-        .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(8, 4)))
-        .show(ui, |ui| tool_options::bar(ui, session));
+    if session.view.tool_settings {
+        egui::Panel::right("tool_settings")
+            .resizable(true)
+            .default_size(220.0)
+            .min_size(180.0)
+            .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::same(8)))
+            .show(ui, |ui| tool_options::panel(ui, session));
+    }
     egui::CentralPanel::no_frame().show(ui, |ui| canvas(ui, session));
 
     dialogs::show(ui.ctx(), session);

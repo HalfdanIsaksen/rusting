@@ -138,6 +138,8 @@ pub struct ViewSettings {
     pub toolbar: bool,
     /// The timeline at the bottom, with its layer column.
     pub timeline: bool,
+    /// The tool settings panel on the right.
+    pub tool_settings: bool,
 }
 
 impl Default for ViewSettings {
@@ -145,6 +147,7 @@ impl Default for ViewSettings {
         Self {
             toolbar: true,
             timeline: true,
+            tool_settings: true,
         }
     }
 }
@@ -812,7 +815,7 @@ mod tests {
     fn view_shows_all_panels_by_default_and_survives_opening_a_file() {
         let mut s = Session::new();
         assert_eq!(s.view, ViewSettings::default());
-        assert!(s.view.toolbar && s.view.timeline);
+        assert!(s.view.toolbar && s.view.timeline && s.view.tool_settings);
 
         let path = temp_path("view.rusting");
         assert!(s.save_to(&path));
