@@ -62,7 +62,8 @@ The tool strip runs down the side of the canvas:
 - Frame-by-frame keys with stepped exposure: new blank drawing, end exposure, remove key.
 - **Duplicate frame** (button, Edit → Duplicate Frame, or `Cmd/Ctrl+D`) inserts a copy of the current frame right after it on every layer.
 - Playback with loop, first/previous/next/last frame, and `←/→` and `↑/↓` to step frames and keys.
-- Layer controls in the timeline's layer column: add, remove, rename (`F2` or double-click), drag to reorder, show/hide and lock/unlock, per layer or all at once.
+- Layer controls in the timeline's layer column: add, duplicate, remove, rename (`F2` or double-click), drag to reorder, show/hide and lock/unlock, per layer or all at once.
+- Select several layers with `Cmd/Ctrl`+click (toggle) or `Shift`+click (range); duplicate and remove act on the whole selection.
 - Onion skin (View → Onion skin).
 
 ### View menu

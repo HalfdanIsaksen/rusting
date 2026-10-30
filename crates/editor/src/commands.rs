@@ -3,10 +3,12 @@
 mod canvas;
 mod fill;
 mod frames;
+mod layers;
 mod select;
 pub use canvas::ResizeCanvas;
 pub use fill::{AddFill, RemoveFill};
 pub use frames::DuplicateFrame;
+pub use layers::DuplicateLayer;
 pub use select::{TransformItems, TranslateItems, remove_items};
 
 use crate::{Command, CommandError};

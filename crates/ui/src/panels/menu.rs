@@ -129,6 +129,7 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
                 ("Wheel / pinch", "Zoom about the cursor"),
                 ("F", "Fit canvas"),
                 ("F2 / double-click", "Rename the active layer"),
+                ("Cmd/Ctrl/Shift+click", "Select several layers"),
             ] {
                 ui.horizontal(|ui| {
                     ui.strong(keys);

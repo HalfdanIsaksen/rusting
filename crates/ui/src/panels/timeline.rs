@@ -352,7 +352,8 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
         }
     }
 
-    // Scrub: press or drag anywhere; pressing on a row also selects its layer.
+    // Scrub: press or drag anywhere; pressing on a row also makes its layer
+    // active (keeping the layer selection if it is part of it).
     if dragged_key.is_none()
         && response.is_pointer_button_down_on()
         && let Some(pos) = response.interact_pointer_pos()
@@ -367,7 +368,11 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
         if ui.input(|i| i.pointer.primary_pressed())
             && let Some(row) = row_at(rows, pos.y - rect.top())
         {
-            session.select_layer(row);
+            if session.is_layer_selected(row) {
+                session.set_active_layer(row);
+            } else {
+                session.select_layer(row);
+            }
         }
     }
 
@@ -482,6 +487,8 @@ fn paint_frames(ui: &egui::Ui, session: &Session, rows: &[Row], rect: Rect, cell
         let row_rect = Rect::from_x_y_ranges(rect.x_range(), top..=top + ROW_HEIGHT);
         if session.state.active_layer == Some(row.id) {
             painter.rect_filled(row_rect, 0.0, accent.gamma_multiply(0.18));
+        } else if session.is_layer_selected(row.id) {
+            painter.rect_filled(row_rect, 0.0, accent.gamma_multiply(0.1));
         }
         painter.hline(rect.x_range(), top + ROW_HEIGHT, line);
         let alpha = if row.visible { 1.0 } else { 0.4 };
