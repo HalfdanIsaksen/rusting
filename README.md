@@ -67,7 +67,7 @@ The tool strip runs down the side of the canvas:
 - Onion skin (View → Onion skin).
 
 ### View menu
-- Toggle the **Toolbar** (`Cmd/Ctrl+1`) and **Timeline** (`Cmd/Ctrl+2`) to free up space for the canvas.
+- Toggle the **Toolbar** (`Cmd/Ctrl+1`), **Timeline** (`Cmd/Ctrl+2`) and **Tool Settings** (`Cmd/Ctrl+3`) to free up space for the canvas.
 - **Preview**: a smaller floating window that shows only the canvas at the current frame. It has a close button and a Play button that loops the animation without moving the editor's playhead.
 
 ### Files and export

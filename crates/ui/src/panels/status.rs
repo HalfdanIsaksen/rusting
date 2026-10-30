@@ -20,6 +20,13 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
                 ui.weak("Ready");
             }
         }
+        // The tool settings panel shows this warning; keep it visible when that panel is hidden.
+        if !session.view.tool_settings
+            && let Some(reason) = session.draw_block_reason()
+        {
+            ui.separator();
+            ui.colored_label(ui.visuals().warn_fg_color, format!("⚠ {reason}"));
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let doc = &session.document;
             let layer = session
