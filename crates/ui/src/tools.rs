@@ -700,8 +700,10 @@ impl Session {
                             }
                         }
                     }
+                    // An empty selection with a place would make the
+                    // per-frame `sync_selection` clear it, ending the drag.
+                    self.tools.selection_at = (!items.is_empty()).then_some((*layer, *frame));
                     self.tools.selection = items;
-                    self.tools.selection_at = Some((*layer, *frame));
                 }
             }
             Some(Gesture::Brush { builder, .. }) => {
@@ -1353,6 +1355,8 @@ mod tests {
         assert!(s.pointer_down_with(from, 1.0, shift));
         for i in 1..=5 {
             s.pointer_move(from.lerp(to, i as f32 / 5.0));
+            // The app syncs once per UI frame, mid-drag too.
+            s.sync_selection();
         }
         s.pointer_up();
     }
@@ -1494,6 +1498,7 @@ mod tests {
         assert!(s.pointer_down_with(path[0], 1.0, false));
         for p in &path[1..] {
             s.pointer_move(*p);
+            s.sync_selection();
         }
         assert_eq!(s.tools.lasso().map(<[Vec2]>::len), Some(4));
         assert!(s.tools.marquee().is_none(), "no box with the lasso");
