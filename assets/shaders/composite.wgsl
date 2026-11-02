@@ -23,6 +23,10 @@ fn blend(cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
         case 1u: {
             return cb * cs;
         }
+        // Screen.
+        case 2u: {
+            return cb + cs - cb * cs;
+        }
         default: {
             return cs;
         }

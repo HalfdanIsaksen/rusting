@@ -250,6 +250,7 @@ fn blend(mode: BlendMode, cb: f32, cs: f32) -> f32 {
     match mode {
         BlendMode::Normal => cs,
         BlendMode::Multiply => cb * cs,
+        BlendMode::Screen => cb + cs - cb * cs,
     }
 }
 
