@@ -51,16 +51,19 @@ pub enum BlendMode {
     Overlay,
     /// Overlay with the layers swapped: the layer's darks multiply, its lights screen.
     HardLight,
+    /// A gentler Hard Light: darkens or lightens the backdrop a little.
+    SoftLight,
 }
 
 impl BlendMode {
     /// Every mode, in menu order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Normal,
         Self::Multiply,
         Self::Screen,
         Self::Overlay,
         Self::HardLight,
+        Self::SoftLight,
     ];
 
     /// Name shown in the UI.
@@ -71,6 +74,7 @@ impl BlendMode {
             Self::Screen => "Screen",
             Self::Overlay => "Overlay",
             Self::HardLight => "Hard Light",
+            Self::SoftLight => "Soft Light",
         }
     }
 }

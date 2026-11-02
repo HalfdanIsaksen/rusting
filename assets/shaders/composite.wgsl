@@ -23,6 +23,14 @@ fn hard_light(cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
     return select(screen, multiply, cs <= vec3<f32>(0.5));
 }
 
+// Soft Light (W3C formula): darkens or lightens the backdrop by the source.
+fn soft_light(cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
+    let d = select(sqrt(cb), ((16.0 * cb - 12.0) * cb + 4.0) * cb, cb <= vec3<f32>(0.25));
+    let darken = cb - (1.0 - 2.0 * cs) * cb * (1.0 - cb);
+    let lighten = cb + (2.0 * cs - 1.0) * (d - cb);
+    return select(lighten, darken, cs <= vec3<f32>(0.5));
+}
+
 // The blend function B(cb, cs) of straight backdrop and source colours
 // (W3C Compositing and Blending, separable modes).
 fn blend(cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
@@ -42,6 +50,10 @@ fn blend(cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
         // Hard Light.
         case 4u: {
             return hard_light(cb, cs);
+        }
+        // Soft Light.
+        case 5u: {
+            return soft_light(cb, cs);
         }
         default: {
             return cs;

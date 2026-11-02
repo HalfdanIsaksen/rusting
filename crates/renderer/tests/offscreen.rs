@@ -254,6 +254,20 @@ fn hard_light(cb: f32, cs: f32) -> f32 {
     }
 }
 
+/// Soft Light (W3C formula): darkens or lightens the backdrop by the source.
+fn soft_light(cb: f32, cs: f32) -> f32 {
+    if cs <= 0.5 {
+        cb - (1.0 - 2.0 * cs) * cb * (1.0 - cb)
+    } else {
+        let d = if cb <= 0.25 {
+            ((16.0 * cb - 12.0) * cb + 4.0) * cb
+        } else {
+            cb.sqrt()
+        };
+        cb + (2.0 * cs - 1.0) * (d - cb)
+    }
+}
+
 /// The blend function B(cb, cs) of one straight linear channel, as the W3C
 /// compositing spec defines it.
 fn blend(mode: BlendMode, cb: f32, cs: f32) -> f32 {
@@ -263,6 +277,7 @@ fn blend(mode: BlendMode, cb: f32, cs: f32) -> f32 {
         BlendMode::Screen => cb + cs - cb * cs,
         BlendMode::Overlay => hard_light(cs, cb),
         BlendMode::HardLight => hard_light(cb, cs),
+        BlendMode::SoftLight => soft_light(cb, cs),
     }
 }
 
