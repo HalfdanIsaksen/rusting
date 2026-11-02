@@ -3,7 +3,7 @@
 use crate::Document;
 use animation_core::{FrameIndex, LayerId};
 use drawing::VectorDrawing;
-use scene::Transform2D;
+use scene::{BlendMode, Transform2D};
 
 /// One layer's visible content at a frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -12,6 +12,8 @@ pub struct RenderLayer<'a> {
     pub layer_id: LayerId,
     /// Layer opacity.
     pub opacity: f32,
+    /// How the layer combines with the layers below it.
+    pub blend: BlendMode,
     /// Layer-to-document transform.
     pub transform: Transform2D,
     /// The drawing exposed at this frame.
@@ -39,6 +41,7 @@ impl Document {
                 Some(RenderLayer {
                     layer_id: layer.id,
                     opacity: layer.opacity,
+                    blend: layer.blend,
                     transform: layer.transform,
                     drawing,
                 })

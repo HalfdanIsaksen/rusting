@@ -3,11 +3,13 @@
 
 use document::animation_core::{Fps, FrameIndex, LayerId, StrokeId, Vec2};
 use document::drawing::{BrushStyle, DrawingContent, Stroke, StrokePoint, VectorDrawing};
+use document::scene::BlendMode;
 use document::timeline::Keyframe;
 use document::{CanvasSize, Document};
 use editor::commands::{
     AddKeyframe, AddLayer, AddStroke, KeyframeKind, MoveLayer, RemoveKeyframe, RemoveLayer,
-    RemoveStroke, RenameLayer, SetFps, SetFrameCount, SetLayerLocked, SetLayerVisible,
+    RemoveStroke, RenameLayer, SetFps, SetFrameCount, SetLayerBlend, SetLayerLocked,
+    SetLayerVisible,
 };
 use editor::{Command, History};
 
@@ -115,6 +117,9 @@ fn every_command_is_exactly_invertible() {
     });
     check("SetLayerLocked", doc, || {
         Box::new(SetLayerLocked::new(t, true))
+    });
+    check("SetLayerBlend", doc, || {
+        Box::new(SetLayerBlend::new(t, BlendMode::Multiply))
     });
 
     let s = stroke(5.0);

@@ -1,22 +1,25 @@
 //! The layer column on the left of the timeline: one row per layer with
-//! show/hide, lock and the name (click to select, Cmd/Ctrl+click or
+//! show/hide, lock, the name (click to select, Cmd/Ctrl+click or
 //! Shift+click to select several, double-click or F2 to rename, drag to
-//! reorder), and a header with add, duplicate, remove, move up/down and
+//! reorder) and the blend mode, and a header with add, duplicate, remove, move up/down and
 //! show/lock-all toggles.
 
 use super::timeline::{ROW_HEIGHT, RULER_HEIGHT, Row};
 use crate::icons::{self, IconFn};
 use crate::session::Session;
 use document::animation_core::LayerId;
+use document::scene::BlendMode;
 use editor::Command;
 use editor::commands::{
-    AddLayer, Batch, DuplicateLayer, MoveLayer, RemoveLayer, RenameLayer, SetLayerLocked,
-    SetLayerVisible,
+    AddLayer, Batch, DuplicateLayer, MoveLayer, RemoveLayer, RenameLayer, SetLayerBlend,
+    SetLayerLocked, SetLayerVisible,
 };
 use egui::{Pos2, Rect, Sense, Stroke, vec2};
 
 /// Width of the layer column.
-pub(super) const COLUMN_WIDTH: f32 = 190.0;
+pub(super) const COLUMN_WIDTH: f32 = 270.0;
+/// Width of the blend mode dropdown.
+const BLEND_WIDTH: f32 = 90.0;
 /// Width of the eye and lock cells.
 const TOGGLE_WIDTH: f32 = 22.0;
 /// Width of a header button.
@@ -99,8 +102,32 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
         }
         let eye_rect = Rect::from_min_size(row_rect.min, vec2(TOGGLE_WIDTH, ROW_HEIGHT));
         let lock_rect = eye_rect.translate(vec2(TOGGLE_WIDTH, 0.0));
+        let blend_rect = Rect::from_x_y_ranges(
+            row_rect.right() - BLEND_WIDTH..=row_rect.right(),
+            row_rect.y_range(),
+        );
         let name_rect =
-            Rect::from_x_y_ranges(lock_rect.right()..=row_rect.right(), row_rect.y_range());
+            Rect::from_x_y_ranges(lock_rect.right()..=blend_rect.left(), row_rect.y_range());
+
+        let mut blend = row.blend;
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(blend_rect.shrink2(vec2(3.0, 1.0))),
+            |ui| {
+                egui::ComboBox::from_id_salt(("layer_blend", row.id))
+                    .selected_text(blend.label())
+                    .width(BLEND_WIDTH - 6.0)
+                    .show_ui(ui, |ui| {
+                        for mode in BlendMode::ALL {
+                            ui.selectable_value(&mut blend, mode, mode.label());
+                        }
+                    })
+                    .response
+                    .on_hover_text("Blend mode");
+            },
+        );
+        if blend != row.blend {
+            commands.push(Box::new(SetLayerBlend::new(row.id, blend)));
+        }
 
         let (eye, eye_tip, eye_strong) = if row.visible {
             (icons::eye as IconFn, "Hide layer", true)
@@ -222,6 +249,7 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
         }
         painter.vline(eye_rect.right(), row_rect.y_range(), line);
         painter.vline(lock_rect.right(), row_rect.y_range(), line);
+        painter.vline(blend_rect.left(), row_rect.y_range(), line);
         painter.hline(rect.x_range(), row_rect.bottom(), line);
     }
     painter.hline(rect.x_range(), header.bottom(), line);

@@ -9,6 +9,7 @@ use crate::onion::MAX_ONION_RANGE;
 use crate::session::{Session, TimelineView};
 use document::Document;
 use document::animation_core::{Fps, FrameIndex, LayerId};
+use document::scene::BlendMode;
 use document::timeline::Keyframe;
 use editor::commands::{
     AddKeyframe, KeyframeKind, MoveKeyframe, RemoveKeyframe, SetFps, SetFrameCount,
@@ -244,6 +245,7 @@ pub(super) struct Row {
     pub(super) name: String,
     pub(super) visible: bool,
     pub(super) locked: bool,
+    pub(super) blend: BlendMode,
 }
 
 fn rows(doc: &Document) -> Vec<Row> {
@@ -255,6 +257,7 @@ fn rows(doc: &Document) -> Vec<Row> {
             name: l.name.clone(),
             visible: l.visible,
             locked: l.locked,
+            blend: l.blend,
         })
         .collect()
 }

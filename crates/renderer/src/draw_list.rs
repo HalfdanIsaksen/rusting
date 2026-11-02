@@ -6,9 +6,10 @@
 
 use crate::canvas::{StrokeDraw, transform_matrix};
 use crate::stroke_cache::{StrokeCache, StrokeKey};
-use animation_core::Rgba;
 use animation_core::glam::Mat4;
+use animation_core::{LayerId, Rgba};
 use document::RenderList;
+use document::scene::BlendMode;
 use drawing::{Fill, Gradient, Stroke, tessellate, tessellate_fill};
 
 /// Draw colour of a stroke on a layer: its colour with brush and layer
@@ -41,6 +42,8 @@ pub struct DrawListBuilder<'a> {
     device: &'a wgpu::Device,
     cache: &'a mut StrokeCache,
     draws: Vec<StrokeDraw>,
+    layer: Option<LayerId>,
+    blend: BlendMode,
 }
 
 impl<'a> DrawListBuilder<'a> {
@@ -50,7 +53,16 @@ impl<'a> DrawListBuilder<'a> {
             device,
             cache,
             draws: Vec::new(),
+            layer: None,
+            blend: BlendMode::Normal,
         }
+    }
+
+    /// Strokes and fills added from now on belong to `layer` and blend with
+    /// `blend` (initially no layer, Normal).
+    pub fn set_layer(&mut self, layer: Option<LayerId>, blend: BlendMode) {
+        self.layer = layer;
+        self.blend = blend;
     }
 
     /// Adds a stroke drawn in `color` through `transform`.
@@ -64,6 +76,8 @@ impl<'a> DrawListBuilder<'a> {
             color,
             gradient: None,
             transform,
+            layer: self.layer,
+            blend: self.blend,
         });
     }
 
@@ -79,6 +93,8 @@ impl<'a> DrawListBuilder<'a> {
             color,
             gradient,
             transform,
+            layer: self.layer,
+            blend: self.blend,
         });
     }
 
@@ -102,6 +118,7 @@ impl<'a> DrawListBuilder<'a> {
     /// Hidden layers are already left out of `list`.
     pub fn render_list(&mut self, list: &RenderList<'_>) {
         for layer in &list.layers {
+            self.set_layer(Some(layer.layer_id), layer.blend);
             let transform = transform_matrix(&layer.transform);
             for fill in layer.drawing.fills() {
                 self.fill(

@@ -13,7 +13,9 @@ pub const CANVAS_SAMPLE_COUNT: u32 = 4;
 pub const CANVAS_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// A 4x MSAA colour buffer (plus depth) and the single-sample texture it
-/// resolves into.
+/// resolves into, plus two single-sample textures for compositing layers
+/// with blend modes: one a layer resolves into, and a scratch copy of the
+/// canvas to ping-pong with the resolved texture.
 #[derive(Debug)]
 pub struct CanvasTarget {
     size: (u32, u32),
@@ -22,6 +24,8 @@ pub struct CanvasTarget {
     resolved: wgpu::Texture,
     resolve_view: wgpu::TextureView,
     display_view: wgpu::TextureView,
+    layer_view: wgpu::TextureView,
+    scratch_view: wgpu::TextureView,
 }
 
 impl CanvasTarget {
@@ -65,6 +69,28 @@ impl CanvasTarget {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
+        // Sampled by the composite pass; same layout as `resolved`.
+        let single = |label| {
+            device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: extent,
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: CANVAS_DISPLAY_FORMAT,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[CANVAS_RENDER_FORMAT],
+                })
+                .create_view(&wgpu::TextureViewDescriptor {
+                    label: Some(label),
+                    format: Some(CANVAS_RENDER_FORMAT),
+                    ..Default::default()
+                })
+        };
+        let layer_view = single("canvas-layer");
+        let scratch_view = single("canvas-scratch");
         let msaa_view = msaa.create_view(&wgpu::TextureViewDescriptor::default());
         let depth_view = depth.create_view(&wgpu::TextureViewDescriptor::default());
         let resolve_view = resolved.create_view(&wgpu::TextureViewDescriptor {
@@ -84,6 +110,8 @@ impl CanvasTarget {
             resolved,
             resolve_view,
             display_view,
+            layer_view,
+            scratch_view,
         }
     }
 
@@ -124,6 +152,14 @@ impl CanvasTarget {
 
     pub(crate) fn resolve_view(&self) -> &wgpu::TextureView {
         &self.resolve_view
+    }
+
+    pub(crate) fn layer_view(&self) -> &wgpu::TextureView {
+        &self.layer_view
+    }
+
+    pub(crate) fn scratch_view(&self) -> &wgpu::TextureView {
+        &self.scratch_view
     }
 }
 
