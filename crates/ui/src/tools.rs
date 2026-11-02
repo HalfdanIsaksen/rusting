@@ -355,6 +355,9 @@ pub struct ToolController {
     pub fill_style: FillStyle,
     /// Colour a gradient fill blends into from the brush colour.
     pub gradient_color: Rgba,
+    /// Gradient fill: the first click, waiting for the second, which sets
+    /// where `gradient_color` is reached.
+    gradient_start: Option<(LayerId, FrameIndex, Vec2)>,
     gesture: Option<Gesture>,
     /// Selected items, bottom to top as selected.
     selection: Vec<ItemId>,
@@ -375,6 +378,7 @@ impl Default for ToolController {
             fill_gap: GapClosing::default(),
             fill_style: FillStyle::default(),
             gradient_color: Rgba::WHITE,
+            gradient_start: None,
             gesture: None,
             selection: Vec::new(),
             selection_at: None,
@@ -388,6 +392,12 @@ impl ToolController {
     /// Drops the gesture in progress without changing the document.
     pub fn cancel(&mut self) {
         self.gesture = None;
+    }
+
+    /// Where a gradient fill starts, while waiting for the click that sets
+    /// its end (document coordinates).
+    pub fn gradient_start(&self) -> Option<Vec2> {
+        self.gradient_start.map(|(_, _, pos)| pos)
     }
 
     /// Whether a gesture is in progress.
@@ -607,10 +617,22 @@ impl Session {
             self.playback.pause();
         }
         let frame = self.current_frame();
+        let gradient_start = self.tools.gradient_start.take();
         self.tools.gesture = Some(match self.state.tool {
             // A click, not a drag: fill right away, no gesture.
-            Tool::Fill => {
+            Tool::Fill if self.tools.fill_style == FillStyle::Normal => {
                 self.fill_at(layer, frame, pos);
+                return true;
+            }
+            // Gradient: the first click sets the start, the second the end
+            // and fills the area under the first.
+            Tool::Fill => {
+                match gradient_start {
+                    Some((l, f, start)) if (l, f) == (layer, frame) => {
+                        self.fill_with(layer, frame, start, Some(pos));
+                    }
+                    _ => self.tools.gradient_start = Some((layer, frame, pos)),
+                }
                 return true;
             }
             Tool::Select | Tool::Lasso => {
@@ -794,6 +816,18 @@ impl Session {
     /// recolours it (one undo step). Explains in the status bar when nothing
     /// can be filled.
     pub fn fill_at(&mut self, layer: LayerId, frame: FrameIndex, pos: Vec2) {
+        self.fill_with(layer, frame, pos, None);
+    }
+
+    /// Like [`Self::fill_at`]; with `gradient_to`, the fill blends from the
+    /// brush colour at `pos` to the gradient colour at `gradient_to`.
+    fn fill_with(
+        &mut self,
+        layer: LayerId,
+        frame: FrameIndex,
+        pos: Vec2,
+        gradient_to: Option<Vec2>,
+    ) {
         let doc = &self.document;
         let canvas = Vec2::new(doc.canvas.width as f32, doc.canvas.height as f32);
         let drawing = doc
@@ -802,13 +836,12 @@ impl Session {
             .and_then(|d| d.as_vector());
         let color = self.state.brush.color;
         let opacity = self.state.brush.opacity;
-        let paint = |shape: FillShape| {
-            let gradient = match self.tools.fill_style {
-                FillStyle::Normal => None,
-                FillStyle::Gradient => Gradient::vertical(&shape, self.tools.gradient_color),
-            };
-            Fill::new(shape, color, opacity).with_gradient(gradient)
-        };
+        let gradient = gradient_to.map(|end| Gradient {
+            start: pos,
+            end,
+            end_color: self.tools.gradient_color,
+        });
+        let paint = |shape: FillShape| Fill::new(shape, color, opacity).with_gradient(gradient);
         if let Some(existing) = drawing
             .and_then(|d| d.fill_at(pos))
             .and_then(|id| drawing.and_then(|d| d.fill(id)).cloned())
@@ -999,9 +1032,10 @@ impl Session {
         self.tools.set_selection((layer, frame), items);
     }
 
-    /// Deselects everything.
+    /// Deselects everything and drops a gradient fill waiting for its end.
     pub fn clear_selection(&mut self) {
         self.tools.clear_selection();
+        self.tools.gradient_start = None;
     }
 
     /// Moves the selection by `delta` (document units) as one undo step.

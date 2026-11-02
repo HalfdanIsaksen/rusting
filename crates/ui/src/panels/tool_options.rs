@@ -21,6 +21,9 @@ const SWATCHES: [[f32; 3]; 8] = [
     [0.02, 0.15, 0.75],
 ];
 
+const GRADIENT_HINT: &str = "Click where the gradient starts (the brush colour), then where it \
+                             ends (this colour). The area under the first click is filled. \
+                             Esc cancels.";
 const PARTIAL_HINT: &str =
     "Cuts away the part of each stroke it passes over on the active layer and frame.";
 const STROKE_HINT: &str = "Removes every stroke it touches on the active layer and frame.";
@@ -105,10 +108,10 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
             ui.horizontal(|ui| fill_style_choices(ui, session));
             if session.tools.fill_style == FillStyle::Gradient {
                 ui.horizontal(|ui| {
-                    ui.label("Gradient to")
-                        .on_hover_text("Blends top to bottom from the colour below into this one.");
+                    ui.label("Gradient to").on_hover_text(GRADIENT_HINT);
                     color_button(ui, &mut session.tools.gradient_color);
                 });
+                ui.weak(GRADIENT_HINT);
             }
             ui.separator();
             ui.label("Close gaps").on_hover_text(FILL_HINT);

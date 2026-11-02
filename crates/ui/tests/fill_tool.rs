@@ -141,10 +141,23 @@ fn gradient_fill_spans_the_area_and_survives_save() {
     );
     s.tools.fill_style = FillStyle::Gradient;
     s.tools.gradient_color = Rgba::rgb(0.0, 0.0, 1.0);
-    click_fill(&mut s, Vec2::new(150.0, 150.0));
+    // The first click only sets the start; the second sets the end and fills.
+    click_fill(&mut s, Vec2::new(120.0, 150.0));
+    assert_eq!(fills(&s), 0);
+    assert_eq!(s.tools.gradient_start(), Some(Vec2::new(120.0, 150.0)));
+    click_fill(&mut s, Vec2::new(180.0, 150.0));
+    assert_eq!(s.tools.gradient_start(), None);
     let g = drawing(&s).unwrap().fills()[0].gradient.unwrap();
     assert_eq!(g.end_color, Rgba::rgb(0.0, 0.0, 1.0));
-    assert!(g.start.y < 110.0 && g.end.y > 190.0, "{g:?}");
+    assert_eq!(
+        (g.start, g.end),
+        (Vec2::new(120.0, 150.0), Vec2::new(180.0, 150.0))
+    );
+
+    // Esc drops a pending start.
+    click_fill(&mut s, Vec2::new(150.0, 150.0));
+    s.clear_selection();
+    assert_eq!(s.tools.gradient_start(), None);
 
     // Clicking it with a normal fill makes it solid again.
     s.tools.fill_style = FillStyle::Normal;

@@ -203,7 +203,11 @@ fn renders_gradient_fill() {
     );
     // Red at the top, blending to blue at the bottom.
     let fill = rect_fill(Vec2::ZERO, Vec2::new(100.0, 50.0), Rgba::rgb(1.0, 0.0, 0.0));
-    let gradient = Gradient::vertical(&fill.shape(), Rgba::rgb(0.0, 0.0, 1.0));
+    let gradient = Some(Gradient {
+        start: Vec2::new(50.0, 0.0),
+        end: Vec2::new(50.0, 50.0),
+        end_color: Rgba::rgb(0.0, 0.0, 1.0),
+    });
     let layer = doc.add_layer("L");
     let mut drawing = VectorDrawing::new();
     drawing.push_fill(fill.with_gradient(gradient));

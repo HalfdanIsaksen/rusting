@@ -281,6 +281,20 @@ fn paint_overlays(
         return;
     }
     ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    // Gradient fill waiting for its end: a dashed line from the start.
+    if session.state.tool == Tool::Fill
+        && let Some(start) = session.tools.gradient_start()
+    {
+        let s = viewport.canvas_to_screen(start);
+        let start = egui::pos2(s.x + rect.min.x, s.y + rect.min.y);
+        for stroke in [
+            egui::Stroke::new(3.0, egui::Color32::from_black_alpha(140)),
+            egui::Stroke::new(1.5, egui::Color32::WHITE),
+        ] {
+            painter.extend(egui::Shape::dashed_line(&[start, hover], stroke, 6.0, 4.0));
+            painter.circle_stroke(start, 4.0, stroke);
+        }
+    }
     let radius = match session.state.tool {
         Tool::Brush => session.state.brush.width * 0.5 * zoom,
         Tool::Eraser => session.tools.eraser_radius * zoom,
