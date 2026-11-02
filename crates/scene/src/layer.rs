@@ -37,6 +37,26 @@ impl Default for Transform2D {
     }
 }
 
+/// How a layer's colours combine with the layers below it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum BlendMode {
+    /// Paints over what is below.
+    #[default]
+    Normal,
+}
+
+impl BlendMode {
+    /// Every mode, in menu order.
+    pub const ALL: [Self; 1] = [Self::Normal];
+
+    /// Name shown in the UI.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "Normal",
+        }
+    }
+}
+
 /// A layer in the scene.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Layer {
@@ -50,6 +70,9 @@ pub struct Layer {
     pub locked: bool,
     /// Layer opacity in `0.0..=1.0`.
     pub opacity: f32,
+    /// How the layer combines with the layers below it.
+    #[serde(default)]
+    pub blend: BlendMode,
     /// Layer-local to document transform.
     pub transform: Transform2D,
 }
@@ -63,6 +86,7 @@ impl Layer {
             visible: true,
             locked: false,
             opacity: 1.0,
+            blend: BlendMode::Normal,
             transform: Transform2D::IDENTITY,
         }
     }

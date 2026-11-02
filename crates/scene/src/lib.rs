@@ -4,4 +4,4 @@
 
 pub mod layer;
 
-pub use layer::{Layer, LayerStack, Transform2D};
+pub use layer::{BlendMode, Layer, LayerStack, Transform2D};

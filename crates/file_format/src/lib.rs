@@ -33,7 +33,9 @@ use std::path::{Path, PathBuf};
 /// - 2: vector drawings have a `fills` list (fill bucket, ADR-007).
 /// - 3: fills may have a `gradient` (absent means solid, so v2 needs no
 ///   migration).
-pub const FORMAT_VERSION: u32 = 3;
+/// - 4: layers have a `blend` mode (absent means Normal, so v3 needs no
+///   migration).
+pub const FORMAT_VERSION: u32 = 4;
 
 /// File extension for project files (without the dot).
 pub const FILE_EXTENSION: &str = "rusting";

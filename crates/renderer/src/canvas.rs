@@ -1,4 +1,8 @@
 //! Drawing the canvas: workspace, drop shadow and outline, background, strokes.
+//!
+//! Strokes are drawn in groups: each run of Normal layers, and each layer
+//! with another blend mode, is drawn into its own texture and composited
+//! onto the canvas below it (`composite.wgsl`).
 
 use crate::canvas_target::{
     CANVAS_DEPTH_FORMAT, CANVAS_RENDER_FORMAT, CANVAS_SAMPLE_COUNT, CanvasTarget,
@@ -7,15 +11,17 @@ use crate::draw_list::{fill_color, fill_gradient, stroke_color};
 use crate::mesh::MeshSource;
 use crate::stroke_cache::{DEFAULT_MAX_UNUSED_RENDERS, MeshId, StrokeCache, StrokeKey};
 use crate::viewport::Viewport;
-use animation_core::Rgba;
 use animation_core::glam::{Mat4, Quat, Vec2};
+use animation_core::{LayerId, Rgba};
 use document::RenderList;
-use document::scene::Transform2D;
+use document::scene::{BlendMode, Transform2D};
 use drawing::{Fill, Gradient, Stroke};
+use std::ops::Range;
 
 const BACKGROUND_WGSL: &str = include_str!("../../../assets/shaders/background.wgsl");
 const FRAME_WGSL: &str = include_str!("../../../assets/shaders/canvas_frame.wgsl");
 const STROKE_WGSL: &str = include_str!("../../../assets/shaders/stroke.wgsl");
+const COMPOSITE_WGSL: &str = include_str!("../../../assets/shaders/composite.wgsl");
 
 /// Byte size of `Background` in `background.wgsl`.
 const BACKGROUND_UNIFORM_SIZE: u64 = 144;
@@ -76,6 +82,11 @@ pub struct StrokeDraw {
     pub gradient: Option<Gradient>,
     /// Layer-to-document transform.
     pub transform: Mat4,
+    /// The layer drawn, if any; consecutive draws of one layer are
+    /// composited together.
+    pub layer: Option<LayerId>,
+    /// How the draw's layer combines with what is below it.
+    pub blend: BlendMode,
 }
 
 /// Everything drawn on the canvas for one render.
@@ -127,6 +138,9 @@ pub struct CanvasRenderer {
     draw_stride: u64,
     /// How many per-stroke uniforms fit in `draw_buffer`.
     draw_capacity: u64,
+    composite_layout: wgpu::BindGroupLayout,
+    /// One pipeline per mode, indexed like [`BlendMode::ALL`].
+    composite: Vec<wgpu::RenderPipeline>,
     strokes: StrokeCache,
     /// Colours and sizes of the workspace, outline, shadow and checkerboard.
     pub style: CanvasStyle,
@@ -183,6 +197,23 @@ impl CanvasRenderer {
             true,
         );
 
+        let composite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("composite"),
+            entries: &[0, 1].map(|binding| wgpu::BindGroupLayoutEntry {
+                binding,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }),
+        });
+        let composite = (0..BlendMode::ALL.len())
+            .map(|mode| create_composite_pipeline(device, &composite_layout, mode))
+            .collect();
+
         let alignment = u64::from(device.limits().min_uniform_buffer_offset_alignment).max(1);
         let draw_stride = STROKE_DRAW_SIZE.div_ceil(alignment) * alignment;
         let draw_capacity = 64;
@@ -217,6 +248,8 @@ impl CanvasRenderer {
             draw_bind_group,
             draw_stride,
             draw_capacity,
+            composite_layout,
+            composite,
             strokes: StrokeCache::new(),
             style: CanvasStyle::default(),
         }
@@ -273,6 +306,8 @@ impl CanvasRenderer {
                     color: fill_color(fill, layer.opacity),
                     gradient: fill_gradient(fill, layer.opacity),
                     transform,
+                    layer: Some(layer.layer_id),
+                    blend: layer.blend,
                 });
             }
             for stroke in layer.drawing.strokes() {
@@ -285,6 +320,8 @@ impl CanvasRenderer {
                     color: stroke_color(stroke, layer.opacity),
                     gradient: None,
                     transform,
+                    layer: Some(layer.layer_id),
+                    blend: layer.blend,
                 });
             }
         }
@@ -395,11 +432,103 @@ impl CanvasRenderer {
             },
             Chrome::Bare => wgpu::Color::TRANSPARENT,
         };
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        // Strokes are clipped to the canvas.
+        let scissor = scissor(rect_min, rect_max, (width, height));
+        let groups = match scissor {
+            Some(_) => blend_groups(frame.strokes),
+            None => Vec::new(),
+        };
+        // Each group composites from one canvas texture into the other;
+        // start where the last composite lands in the resolved texture.
+        let canvases = [self.target.resolve_view(), self.target.scratch_view()];
+        let mut current = groups.len() % 2;
+
+        let mut pass = self.begin_msaa_pass(encoder, canvases[current], clear);
+        if chrome == Chrome::Editor {
+            pass.set_pipeline(&self.frame.pipeline);
+            pass.set_bind_group(0, &self.frame.bind_group, &[]);
+            pass.draw(0..4, 0..1);
+        }
+        if chrome == Chrome::Editor || frame.background.is_some() {
+            pass.set_pipeline(&self.background.pipeline);
+            pass.set_bind_group(0, &self.background.bind_group, &[]);
+            pass.draw(0..4, 0..1);
+        }
+        drop(pass);
+
+        for (range, blend) in groups {
+            let mut pass =
+                self.begin_msaa_pass(encoder, self.target.layer_view(), wgpu::Color::TRANSPARENT);
+            if let Some((sx, sy, sw, sh)) = scissor {
+                pass.set_scissor_rect(sx, sy, sw, sh);
+            }
+            pass.set_pipeline(&self.stroke_globals.pipeline);
+            pass.set_bind_group(0, &self.stroke_globals.bind_group, &[]);
+            for (slot, draw) in (range.start as u64..).zip(&frame.strokes[range]) {
+                let Some(mesh) = self.strokes.get(draw.id) else {
+                    continue;
+                };
+                let Some((vertices, indices)) = &mesh.buffers else {
+                    continue;
+                };
+                let Ok(offset) = u32::try_from(slot * self.draw_stride) else {
+                    break;
+                };
+                pass.set_bind_group(1, &self.draw_bind_group, &[offset]);
+                pass.set_vertex_buffer(0, vertices.slice(..));
+                pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+            }
+            drop(pass);
+
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("composite"),
+                layout: &self.composite_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(canvases[current]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(self.target.layer_view()),
+                    },
+                ],
+            });
+            current = 1 - current;
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("composite"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: canvases[current],
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.composite[blend_index(blend)]);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        self.strokes.evict_unused(DEFAULT_MAX_UNUSED_RENDERS);
+    }
+
+    /// Starts a pass into the MSAA target (cleared to `clear`, depth cleared)
+    /// that resolves into `resolve`.
+    fn begin_msaa_pass<'e>(
+        &self,
+        encoder: &'e mut wgpu::CommandEncoder,
+        resolve: &wgpu::TextureView,
+        clear: wgpu::Color,
+    ) -> wgpu::RenderPass<'e> {
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("canvas"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: self.target.msaa_view(),
-                resolve_target: Some(self.target.resolve_view()),
+                resolve_target: Some(resolve),
                 depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(clear),
@@ -415,43 +544,7 @@ impl CanvasRenderer {
                 stencil_ops: None,
             }),
             ..Default::default()
-        });
-
-        if chrome == Chrome::Editor {
-            pass.set_pipeline(&self.frame.pipeline);
-            pass.set_bind_group(0, &self.frame.bind_group, &[]);
-            pass.draw(0..4, 0..1);
-        }
-
-        if chrome == Chrome::Editor || frame.background.is_some() {
-            pass.set_pipeline(&self.background.pipeline);
-            pass.set_bind_group(0, &self.background.bind_group, &[]);
-            pass.draw(0..4, 0..1);
-        }
-
-        // Strokes are clipped to the canvas.
-        if let Some((sx, sy, sw, sh)) = scissor(rect_min, rect_max, (width, height)) {
-            pass.set_scissor_rect(sx, sy, sw, sh);
-            pass.set_pipeline(&self.stroke_globals.pipeline);
-            pass.set_bind_group(0, &self.stroke_globals.bind_group, &[]);
-            for (slot, draw) in (0u64..).zip(frame.strokes.iter()) {
-                let Some(mesh) = self.strokes.get(draw.id) else {
-                    continue;
-                };
-                let Some((vertices, indices)) = &mesh.buffers else {
-                    continue;
-                };
-                let Ok(offset) = u32::try_from(slot * self.draw_stride) else {
-                    break;
-                };
-                pass.set_bind_group(1, &self.draw_bind_group, &[offset]);
-                pass.set_vertex_buffer(0, vertices.slice(..));
-                pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..mesh.index_count, 0, 0..1);
-            }
-        }
-        drop(pass);
-        self.strokes.evict_unused(DEFAULT_MAX_UNUSED_RENDERS);
+        })
     }
 
     /// Uploads the per-stroke uniforms, growing the buffer if needed.
@@ -498,6 +591,33 @@ impl CanvasRenderer {
         }
         queue.write_buffer(&self.draw_buffer, 0, &bytes);
     }
+}
+
+/// Splits draws into groups composited one at a time: a run of Normal draws
+/// is one group (source-over is associative, so they can share a texture);
+/// a layer with another mode is its own group.
+fn blend_groups(draws: &[StrokeDraw]) -> Vec<(Range<usize>, BlendMode)> {
+    let mut groups: Vec<(Range<usize>, BlendMode)> = Vec::new();
+    for (i, draw) in draws.iter().enumerate() {
+        match groups.last_mut() {
+            Some((range, blend))
+                if *blend == draw.blend
+                    && (draw.blend == BlendMode::Normal || draws[i - 1].layer == draw.layer) =>
+            {
+                range.end = i + 1;
+            }
+            _ => groups.push((i..i + 1, draw.blend)),
+        }
+    }
+    groups
+}
+
+/// Position of `blend` in [`BlendMode::ALL`].
+fn blend_index(blend: BlendMode) -> usize {
+    BlendMode::ALL
+        .iter()
+        .position(|&b| b == blend)
+        .unwrap_or_default()
 }
 
 /// Depth of the `index`-th of `count` strokes: from just under 1 (first,
@@ -578,6 +698,51 @@ fn create_pipeline(
             targets: &[Some(wgpu::ColorTargetState {
                 format: CANVAS_RENDER_FORMAT,
                 blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+fn create_composite_pipeline(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    mode: usize,
+) -> wgpu::RenderPipeline {
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("composite"),
+        source: wgpu::ShaderSource::Wgsl(COMPOSITE_WGSL.into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("composite"),
+        bind_group_layouts: &[Some(layout)],
+        immediate_size: 0,
+    });
+    let constants = [("MODE", mode as f64)];
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("composite"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("fs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &constants,
+                ..Default::default()
+            },
+            targets: &[Some(wgpu::ColorTargetState {
+                format: CANVAS_RENDER_FORMAT,
+                blend: None,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
@@ -676,6 +841,23 @@ impl Std140 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normal_runs_merge_and_other_modes_split_by_layer() {
+        let (a, b) = (LayerId::new(), LayerId::new());
+        let draw = |layer, blend| StrokeDraw {
+            id: crate::MeshId::from(document::animation_core::StrokeId::new()),
+            color: Rgba::WHITE,
+            gradient: None,
+            transform: Mat4::IDENTITY,
+            layer: Some(layer),
+            blend,
+        };
+        let n = BlendMode::Normal;
+        let draws = [draw(a, n), draw(b, n), draw(b, n)];
+        assert_eq!(blend_groups(&draws), [(0..3, n)]);
+        assert_eq!(blend_groups(&[]), []);
+    }
 
     #[test]
     fn scissor_clips_to_target() {

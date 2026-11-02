@@ -11,6 +11,7 @@ use document::animation_core::Rgba;
 use document::animation_core::Vec2;
 use document::animation_core::glam::Mat4;
 use document::drawing::ItemId;
+use document::scene::BlendMode;
 use renderer::{
     CanvasFrame, CanvasRenderer, DrawListBuilder, Gpu, Mesh, OffscreenRenderer, StrokeDraw,
     StrokeKey, Viewport, fill_color, fill_gradient, stroke_color, transform_matrix,
@@ -412,6 +413,7 @@ fn collect_draws(
     let selection_layer = session.tools.selection_at().map(|(layer, _)| layer);
     let selected = session.tools.selection();
     for layer in &doc.evaluate(frame).layers {
+        draws.set_layer(Some(layer.layer_id), layer.blend);
         let transform = transform_matrix(&layer.transform);
         let moved = transform * Mat4::from_translation(offset.extend(0.0));
         let is_selection_layer = selection_layer == Some(layer.layer_id);
@@ -466,6 +468,7 @@ fn collect_draws(
         let layer = doc.layers().get(layer_id);
         let transform = layer.map_or(Mat4::IDENTITY, |l| transform_matrix(&l.transform));
         let opacity = layer.map_or(1.0, |l| l.opacity);
+        draws.set_layer(Some(layer_id), layer.map_or(BlendMode::Normal, |l| l.blend));
         draws.stroke(&stroke, stroke_color(&stroke, opacity), transform);
     }
 
@@ -490,6 +493,8 @@ fn collect_draws(
             color: Rgba::new(0.8, 0.05, 0.1, 0.85),
             gradient: None,
             transform: Mat4::IDENTITY,
+            layer: None,
+            blend: BlendMode::Normal,
         });
     }
     draws.finish()
