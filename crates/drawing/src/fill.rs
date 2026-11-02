@@ -142,20 +142,6 @@ pub struct Gradient {
     pub end_color: Rgba,
 }
 
-impl Gradient {
-    /// A top-to-bottom gradient over `shape`'s bounds, or `None` for an
-    /// empty shape.
-    pub fn vertical(shape: &FillShape, end_color: Rgba) -> Option<Self> {
-        let (lo, hi) = shape.bounds()?;
-        let x = (lo.x + hi.x) * 0.5;
-        Some(Self {
-            start: Vec2::new(x, lo.y),
-            end: Vec2::new(x, hi.y),
-            end_color,
-        })
-    }
-}
-
 /// A filled area of a drawing, drawn under the drawing's strokes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Fill {
