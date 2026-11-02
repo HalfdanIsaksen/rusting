@@ -39,6 +39,10 @@ fn blend(cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
         case 3u: {
             return hard_light(cs, cb);
         }
+        // Hard Light.
+        case 4u: {
+            return hard_light(cb, cs);
+        }
         default: {
             return cs;
         }

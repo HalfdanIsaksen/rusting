@@ -262,6 +262,7 @@ fn blend(mode: BlendMode, cb: f32, cs: f32) -> f32 {
         BlendMode::Multiply => cb * cs,
         BlendMode::Screen => cb + cs - cb * cs,
         BlendMode::Overlay => hard_light(cs, cb),
+        BlendMode::HardLight => hard_light(cb, cs),
     }
 }
 
