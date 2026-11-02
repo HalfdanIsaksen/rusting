@@ -123,6 +123,12 @@ fn eraser_popup(ui: &mut egui::Ui, session: &mut Session) {
 }
 
 fn fill_popup(ui: &mut egui::Ui, session: &mut Session) {
+    ui.strong("Fill type");
+    if tool_options::fill_style_choices(ui, session) {
+        session.state.tool = Tool::Fill;
+        ui.close();
+    }
+    ui.separator();
     ui.strong("Close gaps");
     if tool_options::gap_choices(ui, session) {
         session.state.tool = Tool::Fill;
@@ -204,12 +210,19 @@ fn tool_button(ui: &mut egui::Ui, session: &mut Session, entry: &ToolEntry) {
             ui.ctx()
                 .request_repaint_after_secs((HOLD_SECS - pressed_for) as f32);
         }
-        let open = response.secondary_clicked() || held;
+        // A click on the corner triangle opens the options too.
+        let marker =
+            egui::Rect::from_min_max(rect.right_bottom() - egui::vec2(10.0, 10.0), rect.max);
+        let marker_clicked = response.clicked()
+            && response
+                .interact_pointer_pos()
+                .is_some_and(|p| marker.contains(p));
+        let open = response.secondary_clicked() || held || marker_clicked;
         egui::Popup::from_response(&response)
             .id(response.id.with("options"))
             .open_memory(open.then_some(egui::SetOpenCommand::Bool(true)))
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-            .align(egui::RectAlign::RIGHT_START)
+            .align(egui::RectAlign::BOTTOM_START)
             .gap(4.0)
             .show(|ui| options(ui, session));
     }

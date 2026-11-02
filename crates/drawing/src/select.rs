@@ -110,6 +110,10 @@ impl Fill {
                 contour.reverse();
             }
         }
+        if let Some(g) = &mut self.gradient {
+            g.start = transform.transform_point2(g.start);
+            g.end = transform.transform_point2(g.end);
+        }
     }
 
     /// A transformed copy, keeping the same ID.
@@ -123,6 +127,10 @@ impl Fill {
     pub fn translate(&mut self, delta: Vec2) {
         for point in self.contours.iter_mut().flatten() {
             *point += delta;
+        }
+        if let Some(g) = &mut self.gradient {
+            g.start += delta;
+            g.end += delta;
         }
     }
 

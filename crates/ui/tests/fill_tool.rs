@@ -4,7 +4,7 @@
 use document::animation_core::{FrameIndex, Rgba, Vec2};
 use document::drawing::{GapClosing, VectorDrawing};
 use editor::Tool;
-use ui::Session;
+use ui::{FillStyle, Session};
 
 fn drawing(s: &Session) -> Option<&VectorDrawing> {
     let layer = s.state.active_layer?;
@@ -123,4 +123,36 @@ fn fill_on_empty_frame_does_nothing() {
     assert_eq!(fills(&s), 0);
     assert!(!s.history.can_undo());
     assert!(s.status().unwrap().is_error);
+}
+
+#[test]
+fn gradient_fill_spans_the_area_and_survives_save() {
+    let mut s = Session::new();
+    s.state.brush.width = 4.0;
+    draw(
+        &mut s,
+        &[
+            (100.0, 100.0),
+            (200.0, 100.0),
+            (200.0, 200.0),
+            (100.0, 200.0),
+            (100.0, 100.0),
+        ],
+    );
+    s.tools.fill_style = FillStyle::Gradient;
+    s.tools.gradient_color = Rgba::rgb(0.0, 0.0, 1.0);
+    click_fill(&mut s, Vec2::new(150.0, 150.0));
+    let g = drawing(&s).unwrap().fills()[0].gradient.unwrap();
+    assert_eq!(g.end_color, Rgba::rgb(0.0, 0.0, 1.0));
+    assert!(g.start.y < 110.0 && g.end.y > 190.0, "{g:?}");
+
+    // Clicking it with a normal fill makes it solid again.
+    s.tools.fill_style = FillStyle::Normal;
+    click_fill(&mut s, Vec2::new(150.0, 150.0));
+    assert_eq!(drawing(&s).unwrap().fills()[0].gradient, None);
+    s.undo();
+
+    let text = file_format::to_string(&s.document).unwrap();
+    assert!(text.contains("gradient"));
+    assert_eq!(file_format::from_str(&text).unwrap(), s.document);
 }

@@ -13,7 +13,7 @@ use document::animation_core::glam::Mat4;
 use document::drawing::ItemId;
 use renderer::{
     CanvasFrame, CanvasRenderer, DrawListBuilder, Gpu, Mesh, OffscreenRenderer, StrokeDraw,
-    StrokeKey, Viewport, fill_color, stroke_color, transform_matrix,
+    StrokeKey, Viewport, fill_color, fill_gradient, stroke_color, transform_matrix,
 };
 use shell::Shell;
 use std::path::{Path, PathBuf};
@@ -391,7 +391,7 @@ fn collect_draws(
     for skin in session.onion.collect(doc, frame) {
         let transform = transform_matrix(&skin.transform);
         for fill in skin.drawing.fills() {
-            draws.fill(fill, skin.color.with_opacity(fill.opacity), transform);
+            draws.fill(fill, skin.color.with_opacity(fill.opacity), None, transform);
         }
         for stroke in skin.drawing.strokes() {
             draws.stroke(
@@ -429,9 +429,19 @@ fn collect_draws(
             let item = ItemId::Fill(fill.id);
             if let Some(t) = reshaping(item) {
                 let fill = fill.transformed(&t);
-                draws.fill(&fill, fill_color(&fill, layer.opacity), transform);
+                draws.fill(
+                    &fill,
+                    fill_color(&fill, layer.opacity),
+                    fill_gradient(&fill, layer.opacity),
+                    transform,
+                );
             } else {
-                draws.fill(fill, fill_color(fill, layer.opacity), place(item));
+                draws.fill(
+                    fill,
+                    fill_color(fill, layer.opacity),
+                    fill_gradient(fill, layer.opacity),
+                    place(item),
+                );
             }
         }
         for stroke in layer.drawing.strokes() {
@@ -478,6 +488,7 @@ fn collect_draws(
         draws.push(StrokeDraw {
             id: id.into(),
             color: Rgba::new(0.8, 0.05, 0.1, 0.85),
+            gradient: None,
             transform: Mat4::IDENTITY,
         });
     }

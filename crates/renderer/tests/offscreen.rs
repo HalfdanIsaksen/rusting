@@ -4,7 +4,7 @@
 #![allow(clippy::unwrap_used)]
 
 use animation_core::{FrameIndex, Rgba, Vec2};
-use document::drawing::{DrawingContent, Fill, FillShape, VectorDrawing};
+use document::drawing::{DrawingContent, Fill, FillShape, Gradient, VectorDrawing};
 use document::timeline::Keyframe;
 use document::{CanvasAnchor, CanvasSize, Document};
 use renderer::{DrawListBuilder, OffscreenFrame, OffscreenRenderer, headless_device};
@@ -186,4 +186,55 @@ fn renders_resized_canvas_with_moved_artwork() {
     assert_eq!(pixel(&pixels, 20, 25)[3], 0, "new area is empty");
     assert!(close(pixel(&pixels, 120, 25), [255, 0, 0, 255]));
     assert!(close(pixel(&pixels, 180, 25), [0, 0, 255, 128]));
+}
+
+#[test]
+fn renders_gradient_fill() {
+    let Ok((device, queue)) = pollster::block_on(headless_device()) else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut doc = Document::new(
+        "T",
+        CanvasSize {
+            width: 100,
+            height: 50,
+        },
+    );
+    // Red at the top, blending to blue at the bottom.
+    let fill = rect_fill(Vec2::ZERO, Vec2::new(100.0, 50.0), Rgba::rgb(1.0, 0.0, 0.0));
+    let gradient = Gradient::vertical(&fill.shape(), Rgba::rgb(0.0, 0.0, 1.0));
+    let layer = doc.add_layer("L");
+    let mut drawing = VectorDrawing::new();
+    drawing.push_fill(fill.with_gradient(gradient));
+    let id = doc.add_drawing(DrawingContent::Vector(drawing));
+    doc.track_mut(layer)
+        .unwrap()
+        .set_key(FrameIndex(0), Keyframe::Drawing(id));
+
+    let mut offscreen = OffscreenRenderer::new(&device);
+    let mut builder = DrawListBuilder::new(&device, offscreen.stroke_cache_mut());
+    builder.render_list(&doc.evaluate(FrameIndex(0)));
+    let draws = builder.finish();
+    let pixels = offscreen
+        .render(
+            &device,
+            &queue,
+            &OffscreenFrame {
+                canvas_size: (100, 50),
+                scale: 1.0,
+                background: None,
+                strokes: &draws,
+            },
+        )
+        .unwrap();
+    let (top, mid, bottom) = (
+        pixel(&pixels, 50, 0),
+        pixel(&pixels, 50, 25),
+        pixel(&pixels, 50, 49),
+    );
+    assert!(top[0] > 240 && top[2] < 30, "{top:?}");
+    assert!(bottom[2] > 240 && bottom[0] < 30, "{bottom:?}");
+    // Linear 0.5 encodes to sRGB 188.
+    assert!(close(mid, [188, 0, 188, 255]), "{mid:?}");
 }

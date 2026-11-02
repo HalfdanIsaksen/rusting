@@ -25,10 +25,11 @@
 //! press anywhere else selects, like the select tool.
 
 use crate::session::Session;
-use document::animation_core::{FrameIndex, LayerId, StrokeId, Vec2};
+use document::animation_core::{FrameIndex, LayerId, Rgba, StrokeId, Vec2};
 use document::drawing::select::{Affine2, rect_from_corners, scale_rotate_about};
 use document::drawing::{
-    BrushStyle, Fill, GapClosing, ItemId, Stroke, StrokeBuilder, StrokePoint, VectorDrawing,
+    BrushStyle, Fill, FillShape, GapClosing, Gradient, ItemId, Stroke, StrokeBuilder, StrokePoint,
+    VectorDrawing,
 };
 use editor::Tool;
 use editor::commands::{
@@ -328,6 +329,16 @@ pub enum EraserMode {
     Stroke,
 }
 
+/// What the fill bucket paints an area with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FillStyle {
+    /// One solid colour.
+    #[default]
+    Normal,
+    /// A colour gradient.
+    Gradient,
+}
+
 /// Tool settings and the gesture in progress.
 #[derive(Clone, Debug)]
 pub struct ToolController {
@@ -340,6 +351,10 @@ pub struct ToolController {
     pub eraser_mode: EraserMode,
     /// How hard the fill bucket closes gaps in the line art.
     pub fill_gap: GapClosing,
+    /// Normal or gradient fill.
+    pub fill_style: FillStyle,
+    /// Colour a gradient fill blends into from the brush colour.
+    pub gradient_color: Rgba,
     gesture: Option<Gesture>,
     /// Selected items, bottom to top as selected.
     selection: Vec<ItemId>,
@@ -358,6 +373,8 @@ impl Default for ToolController {
             eraser_radius: 12.0,
             eraser_mode: EraserMode::default(),
             fill_gap: GapClosing::default(),
+            fill_style: FillStyle::default(),
+            gradient_color: Rgba::WHITE,
             gesture: None,
             selection: Vec::new(),
             selection_at: None,
@@ -785,14 +802,23 @@ impl Session {
             .and_then(|d| d.as_vector());
         let color = self.state.brush.color;
         let opacity = self.state.brush.opacity;
+        let paint = |shape: FillShape| {
+            let gradient = match self.tools.fill_style {
+                FillStyle::Normal => None,
+                FillStyle::Gradient => Gradient::vertical(&shape, self.tools.gradient_color),
+            };
+            Fill::new(shape, color, opacity).with_gradient(gradient)
+        };
         if let Some(existing) = drawing
             .and_then(|d| d.fill_at(pos))
             .and_then(|id| drawing.and_then(|d| d.fill(id)).cloned())
         {
-            if existing.color == color && existing.opacity == opacity {
+            let recoloured = paint(existing.shape());
+            if (existing.color, existing.opacity, existing.gradient)
+                == (color, opacity, recoloured.gradient)
+            {
                 return;
             }
-            let recoloured = Fill::new(existing.shape(), color, opacity);
             let commands: Vec<Box<dyn editor::Command>> = vec![
                 Box::new(RemoveFill::new(layer, frame, existing.id)),
                 Box::new(AddFill::new(layer, frame, recoloured)),
@@ -804,7 +830,7 @@ impl Session {
         let drawing = drawing.unwrap_or(&empty);
         match document::drawing::fill_region(drawing, pos, self.tools.fill_gap, canvas) {
             Ok(shape) => {
-                let fill = Fill::new(shape, color, opacity);
+                let fill = paint(shape);
                 let _ = self.execute(Box::new(AddFill::new(layer, frame, fill)));
             }
             Err(err) => {

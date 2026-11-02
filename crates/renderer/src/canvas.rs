@@ -3,7 +3,7 @@
 use crate::canvas_target::{
     CANVAS_DEPTH_FORMAT, CANVAS_RENDER_FORMAT, CANVAS_SAMPLE_COUNT, CanvasTarget,
 };
-use crate::draw_list::{fill_color, stroke_color};
+use crate::draw_list::{fill_color, fill_gradient, stroke_color};
 use crate::mesh::MeshSource;
 use crate::stroke_cache::{DEFAULT_MAX_UNUSED_RENDERS, MeshId, StrokeCache, StrokeKey};
 use crate::viewport::Viewport;
@@ -11,7 +11,7 @@ use animation_core::Rgba;
 use animation_core::glam::{Mat4, Quat, Vec2};
 use document::RenderList;
 use document::scene::Transform2D;
-use drawing::{Fill, Stroke};
+use drawing::{Fill, Gradient, Stroke};
 
 const BACKGROUND_WGSL: &str = include_str!("../../../assets/shaders/background.wgsl");
 const FRAME_WGSL: &str = include_str!("../../../assets/shaders/canvas_frame.wgsl");
@@ -24,7 +24,7 @@ const FRAME_UNIFORM_SIZE: u64 = 80;
 /// Byte size of `Globals` in `stroke.wgsl`.
 const STROKE_GLOBALS_SIZE: u64 = 64;
 /// Byte size of `Draw` in `stroke.wgsl`.
-const STROKE_DRAW_SIZE: u64 = 96;
+const STROKE_DRAW_SIZE: u64 = 128;
 
 /// Colours and sizes of the canvas chrome. Colours are linear RGBA; sizes are
 /// logical points (scaled by the DPI factor when drawn).
@@ -71,6 +71,9 @@ pub struct StrokeDraw {
     pub id: MeshId,
     /// Straight-alpha linear colour (opacity already applied).
     pub color: Rgba,
+    /// Blends `color` into a second colour (opacity already applied);
+    /// `None` draws flat.
+    pub gradient: Option<Gradient>,
     /// Layer-to-document transform.
     pub transform: Mat4,
 }
@@ -268,6 +271,7 @@ impl CanvasRenderer {
                 draws.push(StrokeDraw {
                     id: fill.id.into(),
                     color: fill_color(fill, layer.opacity),
+                    gradient: fill_gradient(fill, layer.opacity),
                     transform,
                 });
             }
@@ -279,6 +283,7 @@ impl CanvasRenderer {
                 draws.push(StrokeDraw {
                     id: stroke.id.into(),
                     color: stroke_color(stroke, layer.opacity),
+                    gradient: None,
                     transform,
                 });
             }
@@ -473,6 +478,17 @@ impl CanvasRenderer {
             let mut u = Std140::default();
             u.floats(&draw.transform.to_cols_array());
             u.color(draw.color);
+            match draw.gradient {
+                Some(g) => {
+                    u.color(g.end_color);
+                    u.vec2(g.start);
+                    u.vec2(g.end);
+                }
+                None => {
+                    u.color(draw.color);
+                    u.floats(&[0.0; 4]);
+                }
+            }
             // Later strokes are nearer, so they pass the depth test over
             // earlier ones; a stroke's own overlapping triangles don't.
             u.float(stroke_depth(i, count));

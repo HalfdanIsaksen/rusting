@@ -9,7 +9,7 @@ use crate::stroke_cache::{StrokeCache, StrokeKey};
 use animation_core::Rgba;
 use animation_core::glam::Mat4;
 use document::RenderList;
-use drawing::{Fill, Stroke, tessellate, tessellate_fill};
+use drawing::{Fill, Gradient, Stroke, tessellate, tessellate_fill};
 
 /// Draw colour of a stroke on a layer: its colour with brush and layer
 /// opacity applied.
@@ -24,6 +24,15 @@ pub fn stroke_color(stroke: &Stroke, layer_opacity: f32) -> Rgba {
 /// applied.
 pub fn fill_color(fill: &Fill, layer_opacity: f32) -> Rgba {
     fill.color.with_opacity(fill.opacity * layer_opacity)
+}
+
+/// Draw gradient of a fill on a layer: its gradient with fill and layer
+/// opacity applied to the end colour.
+pub fn fill_gradient(fill: &Fill, layer_opacity: f32) -> Option<Gradient> {
+    fill.gradient.map(|g| Gradient {
+        end_color: g.end_color.with_opacity(fill.opacity * layer_opacity),
+        ..g
+    })
 }
 
 /// Collects [`StrokeDraw`]s bottom to top, tessellating and caching each
@@ -53,12 +62,14 @@ impl<'a> DrawListBuilder<'a> {
         self.draws.push(StrokeDraw {
             id: stroke.id.into(),
             color,
+            gradient: None,
             transform,
         });
     }
 
-    /// Adds a fill drawn in `color` through `transform`.
-    pub fn fill(&mut self, fill: &Fill, color: Rgba, transform: Mat4) {
+    /// Adds a fill drawn in `color` (blending into `gradient`, if any)
+    /// through `transform`.
+    pub fn fill(&mut self, fill: &Fill, color: Rgba, gradient: Option<Gradient>, transform: Mat4) {
         self.cache
             .ensure(self.device, fill.id, StrokeKey::of_fill(fill), || {
                 Some(tessellate_fill(fill))
@@ -66,6 +77,7 @@ impl<'a> DrawListBuilder<'a> {
         self.draws.push(StrokeDraw {
             id: fill.id.into(),
             color,
+            gradient,
             transform,
         });
     }
@@ -92,7 +104,12 @@ impl<'a> DrawListBuilder<'a> {
         for layer in &list.layers {
             let transform = transform_matrix(&layer.transform);
             for fill in layer.drawing.fills() {
-                self.fill(fill, fill_color(fill, layer.opacity), transform);
+                self.fill(
+                    fill,
+                    fill_color(fill, layer.opacity),
+                    fill_gradient(fill, layer.opacity),
+                    transform,
+                );
             }
             for stroke in layer.drawing.strokes() {
                 self.stroke(stroke, stroke_color(stroke, layer.opacity), transform);

@@ -31,7 +31,9 @@ use std::path::{Path, PathBuf};
 ///
 /// - 1: first format.
 /// - 2: vector drawings have a `fills` list (fill bucket, ADR-007).
-pub const FORMAT_VERSION: u32 = 2;
+/// - 3: fills may have a `gradient` (absent means solid, so v2 needs no
+///   migration).
+pub const FORMAT_VERSION: u32 = 3;
 
 /// File extension for project files (without the dot).
 pub const FILE_EXTENSION: &str = "rusting";

@@ -4,7 +4,7 @@
 
 use super::toolbar::TOOLS;
 use crate::session::Session;
-use crate::tools::EraserMode;
+use crate::tools::{EraserMode, FillStyle};
 use document::animation_core::Rgba;
 use document::drawing::GapClosing;
 use editor::Tool;
@@ -43,6 +43,15 @@ pub(crate) fn eraser_mode_choices(ui: &mut egui::Ui, session: &mut Session) -> b
         partial.clicked() || stroke.clicked()
     })
     .inner
+}
+
+/// Normal or gradient fill as selectable labels. Returns whether the user
+/// picked one.
+pub(crate) fn fill_style_choices(ui: &mut egui::Ui, session: &mut Session) -> bool {
+    let style = &mut session.tools.fill_style;
+    let normal = ui.selectable_value(style, FillStyle::Normal, "Normal fill");
+    let gradient = ui.selectable_value(style, FillStyle::Gradient, "Gradient fill");
+    normal.clicked() || gradient.clicked()
 }
 
 /// Gap closing choices as selectable labels. Returns whether the user picked
@@ -92,6 +101,16 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
             paint_settings(ui, session);
         }
         Tool::Fill => {
+            ui.label("Fill type");
+            ui.horizontal(|ui| fill_style_choices(ui, session));
+            if session.tools.fill_style == FillStyle::Gradient {
+                ui.horizontal(|ui| {
+                    ui.label("Gradient to")
+                        .on_hover_text("Blends top to bottom from the colour below into this one.");
+                    color_button(ui, &mut session.tools.gradient_color);
+                });
+            }
+            ui.separator();
             ui.label("Close gaps").on_hover_text(FILL_HINT);
             gap_choices(ui, session);
             ui.separator();
@@ -161,11 +180,7 @@ fn paint_settings(ui: &mut egui::Ui, session: &mut Session) {
     ));
     ui.horizontal(|ui| {
         ui.label("Colour");
-        let Rgba { r, g, b, a } = session.state.brush.color;
-        let mut rgb = [r, g, b];
-        if ui.color_edit_button_rgb(&mut rgb).changed() {
-            session.state.brush.color = Rgba::new(rgb[0], rgb[1], rgb[2], a);
-        }
+        color_button(ui, &mut session.state.brush.color);
     });
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);
@@ -185,4 +200,13 @@ fn paint_settings(ui: &mut egui::Ui, session: &mut Session) {
             }
         }
     });
+}
+
+/// A colour picker button for an RGB colour, keeping its alpha.
+fn color_button(ui: &mut egui::Ui, color: &mut Rgba) {
+    let Rgba { r, g, b, a } = *color;
+    let mut rgb = [r, g, b];
+    if ui.color_edit_button_rgb(&mut rgb).changed() {
+        *color = Rgba::new(rgb[0], rgb[1], rgb[2], a);
+    }
 }
