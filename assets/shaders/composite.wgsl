@@ -15,6 +15,14 @@ fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(corner * 2.0 - 1.0, 0.0, 1.0);
 }
 
+// Hard Light: Multiply or Screen by twice the source.
+fn hard_light(cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
+    let multiply = cb * 2.0 * cs;
+    let s = 2.0 * cs - 1.0;
+    let screen = cb + s - cb * s;
+    return select(screen, multiply, cs <= vec3<f32>(0.5));
+}
+
 // The blend function B(cb, cs) of straight backdrop and source colours
 // (W3C Compositing and Blending, separable modes).
 fn blend(cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
@@ -26,6 +34,10 @@ fn blend(cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
         // Screen.
         case 2u: {
             return cb + cs - cb * cs;
+        }
+        // Overlay.
+        case 3u: {
+            return hard_light(cs, cb);
         }
         default: {
             return cs;

@@ -244,6 +244,16 @@ fn renders_gradient_fill() {
     assert!(close(mid, [188, 0, 188, 255]), "{mid:?}");
 }
 
+/// Hard Light: Multiply or Screen by twice the source.
+fn hard_light(cb: f32, cs: f32) -> f32 {
+    if cs <= 0.5 {
+        cb * 2.0 * cs
+    } else {
+        let s = 2.0 * cs - 1.0;
+        cb + s - cb * s
+    }
+}
+
 /// The blend function B(cb, cs) of one straight linear channel, as the W3C
 /// compositing spec defines it.
 fn blend(mode: BlendMode, cb: f32, cs: f32) -> f32 {
@@ -251,6 +261,7 @@ fn blend(mode: BlendMode, cb: f32, cs: f32) -> f32 {
         BlendMode::Normal => cs,
         BlendMode::Multiply => cb * cs,
         BlendMode::Screen => cb + cs - cb * cs,
+        BlendMode::Overlay => hard_light(cs, cb),
     }
 }
 

@@ -47,11 +47,13 @@ pub enum BlendMode {
     Multiply,
     /// Inverse of Multiply: always lighter, black leaves the backdrop.
     Screen,
+    /// Multiply in the backdrop's darks, Screen in its lights: more contrast.
+    Overlay,
 }
 
 impl BlendMode {
     /// Every mode, in menu order.
-    pub const ALL: [Self; 3] = [Self::Normal, Self::Multiply, Self::Screen];
+    pub const ALL: [Self; 4] = [Self::Normal, Self::Multiply, Self::Screen, Self::Overlay];
 
     /// Name shown in the UI.
     pub fn label(self) -> &'static str {
@@ -59,6 +61,7 @@ impl BlendMode {
             Self::Normal => "Normal",
             Self::Multiply => "Multiply",
             Self::Screen => "Screen",
+            Self::Overlay => "Overlay",
         }
     }
 }
