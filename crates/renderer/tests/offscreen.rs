@@ -246,9 +246,10 @@ fn renders_gradient_fill() {
 
 /// The blend function B(cb, cs) of one straight linear channel, as the W3C
 /// compositing spec defines it.
-fn blend(mode: BlendMode, _cb: f32, cs: f32) -> f32 {
+fn blend(mode: BlendMode, cb: f32, cs: f32) -> f32 {
     match mode {
         BlendMode::Normal => cs,
+        BlendMode::Multiply => cb * cs,
     }
 }
 

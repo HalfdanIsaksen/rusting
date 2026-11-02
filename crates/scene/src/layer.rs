@@ -43,16 +43,19 @@ pub enum BlendMode {
     /// Paints over what is below.
     #[default]
     Normal,
+    /// Multiplies the colours: always darker, white leaves the backdrop.
+    Multiply,
 }
 
 impl BlendMode {
     /// Every mode, in menu order.
-    pub const ALL: [Self; 1] = [Self::Normal];
+    pub const ALL: [Self; 2] = [Self::Normal, Self::Multiply];
 
     /// Name shown in the UI.
     pub fn label(self) -> &'static str {
         match self {
             Self::Normal => "Normal",
+            Self::Multiply => "Multiply",
         }
     }
 }

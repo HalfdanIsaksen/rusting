@@ -856,6 +856,9 @@ mod tests {
         let n = BlendMode::Normal;
         let draws = [draw(a, n), draw(b, n), draw(b, n)];
         assert_eq!(blend_groups(&draws), [(0..3, n)]);
+        let m = BlendMode::Multiply;
+        let draws = [draw(a, m), draw(a, m), draw(b, m), draw(b, n), draw(a, n)];
+        assert_eq!(blend_groups(&draws), [(0..2, m), (2..3, m), (3..5, n)]);
         assert_eq!(blend_groups(&[]), []);
     }
 

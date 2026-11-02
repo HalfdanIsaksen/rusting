@@ -19,6 +19,10 @@ fn vs_main(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
 // (W3C Compositing and Blending, separable modes).
 fn blend(cb: vec3<f32>, cs: vec3<f32>) -> vec3<f32> {
     switch MODE {
+        // Multiply.
+        case 1u: {
+            return cb * cs;
+        }
         default: {
             return cs;
         }
