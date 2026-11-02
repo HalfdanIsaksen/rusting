@@ -4,6 +4,19 @@ Open-source 2D animation software written in Rust. It is vector-first and frame-
 
 > Status: **Phase 0**, the workspace foundation. The app opens a window and clears it with wgpu. See [docs/roadmap.md](docs/roadmap.md).
 
+## Install
+
+macOS, with Homebrew:
+
+```bash
+brew tap HalfdanIsaksen/rusting https://github.com/HalfdanIsaksen/rusting
+brew install HalfdanIsaksen/rusting/rusting
+```
+
+Then run `rusting`. `brew upgrade rusting` updates it.
+
+Windows and Linux: download the zip or tarball from [Releases](https://github.com/HalfdanIsaksen/rusting/releases).
+
 ## Build and run
 
 Requires stable Rust ≥ 1.95. `rust-toolchain.toml` selects stable automatically when you use rustup.

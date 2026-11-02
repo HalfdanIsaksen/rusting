@@ -1,0 +1,116 @@
+name: Release
+
+# Push a tag like v0.2.0 (matching the version in Cargo.toml) to build the
+# app for macOS, Windows and Linux, publish a GitHub Release, and update the
+# Homebrew formula in Formula/rusting.rb. See docs/releasing.md.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-version:
+    name: Check tag matches Cargo.toml
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          if [[ "v${version}" != "${GITHUB_REF_NAME}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${version}" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: check-version
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # One binary for Apple Silicon and Intel, merged with lipo.
+          - { target: universal-apple-darwin, os: macos-latest }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest }
+    env:
+      VERSION: ${{ needs.check-version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Install Linux windowing deps
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev
+      - name: Build
+        shell: bash
+        run: |
+          if [[ "${{ matrix.target }}" == "universal-apple-darwin" ]]; then
+            rustup target add aarch64-apple-darwin x86_64-apple-darwin
+            cargo build --release --locked -p desktop --target aarch64-apple-darwin
+            cargo build --release --locked -p desktop --target x86_64-apple-darwin
+            mkdir -p target/universal-apple-darwin/release
+            lipo -create -output target/universal-apple-darwin/release/rusting \
+              target/aarch64-apple-darwin/release/rusting \
+              target/x86_64-apple-darwin/release/rusting
+          else
+            rustup target add "${{ matrix.target }}"
+            cargo build --release --locked -p desktop --target "${{ matrix.target }}"
+          fi
+      - name: Package
+        shell: bash
+        run: |
+          name="rusting-${VERSION}-${{ matrix.target }}"
+          mkdir -p dist stage
+          cp LICENSE README.md stage/
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cp "target/${{ matrix.target }}/release/rusting.exe" stage/
+            (cd stage && 7z a "../dist/${name}.zip" .)
+          else
+            cp "target/${{ matrix.target }}/release/rusting" stage/
+            tar -czf "dist/${name}.tar.gz" -C stage .
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+
+  release:
+    name: Publish release and Homebrew formula
+    needs: [check-version, build]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.check-version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: Create GitHub Release
+        run: gh release create "v${VERSION}" dist/* --verify-tag --generate-notes --title "Rusting ${VERSION}"
+      - name: Update Homebrew formula
+        run: |
+          sha="$(sha256sum "dist/rusting-${VERSION}-universal-apple-darwin.tar.gz" | cut -d' ' -f1)"
+          scripts/homebrew-formula.sh "${VERSION}" "${sha}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/rusting.rb
+          git commit -m "Homebrew: rusting ${VERSION} [skip ci]"
+          git push origin HEAD:main
