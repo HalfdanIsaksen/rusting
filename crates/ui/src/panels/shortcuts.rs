@@ -31,6 +31,9 @@ pub const QUIT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key
 pub const TOGGLE_TOOLBAR: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Num1);
 /// Show or hide the timeline.
 pub const TOGGLE_TIMELINE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Num2);
+/// Show or hide the tool settings panel.
+pub const TOGGLE_TOOL_SETTINGS: KeyboardShortcut =
+    KeyboardShortcut::new(Modifiers::COMMAND, Key::Num3);
 
 /// Handles global shortcuts. Plain-key shortcuts are skipped while a text
 /// field has keyboard focus.
@@ -39,7 +42,7 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
     let modal_open = session.dialog().is_some() || session.resize_canvas.is_some();
 
     // Most specific first: Shift+Cmd+S before Cmd+S (egui ignores extra Shift).
-    let (save_as, save, new, open, quit, toolbar, timeline) = ctx.input_mut(|i| {
+    let (save_as, save, new, open, quit, toolbar, timeline, tool_settings) = ctx.input_mut(|i| {
         (
             i.consume_shortcut(&SAVE_AS),
             i.consume_shortcut(&SAVE),
@@ -48,11 +51,13 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
             i.consume_shortcut(&QUIT),
             i.consume_shortcut(&TOGGLE_TOOLBAR),
             i.consume_shortcut(&TOGGLE_TIMELINE),
+            i.consume_shortcut(&TOGGLE_TOOL_SETTINGS),
         )
     });
     if !modal_open {
         session.view.toolbar ^= toolbar;
         session.view.timeline ^= timeline;
+        session.view.tool_settings ^= tool_settings;
         if save_as {
             session.save_as();
         } else if save {
@@ -94,9 +99,10 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
     }
     // With a selection, arrows nudge it instead of moving the playhead.
     let selecting = session.state.tool.uses_selection() && !session.tools.selection().is_empty();
-    let (select, transform, escape, delete, shift) = ctx.input(|i| {
+    let (select, lasso, transform, escape, delete, shift) = ctx.input(|i| {
         (
             i.modifiers.is_none() && i.key_pressed(Key::V),
+            i.modifiers.is_none() && i.key_pressed(Key::L),
             i.modifiers.is_none() && i.key_pressed(Key::Q),
             i.key_pressed(Key::Escape),
             i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace),
@@ -146,6 +152,9 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
     if !gesture {
         if select {
             session.state.tool = Tool::Select;
+        }
+        if lasso {
+            session.state.tool = Tool::Lasso;
         }
         if transform {
             session.state.tool = Tool::Transform;
@@ -226,8 +235,11 @@ mod tests {
         assert!(s.view.timeline);
         press(&mut s, TOGGLE_TIMELINE);
         assert!(!s.view.timeline);
+        press(&mut s, TOGGLE_TOOL_SETTINGS);
+        assert!(!s.view.tool_settings);
         press(&mut s, TOGGLE_TOOLBAR);
         press(&mut s, TOGGLE_TIMELINE);
+        press(&mut s, TOGGLE_TOOL_SETTINGS);
         assert_eq!(s.view, crate::session::ViewSettings::default());
     }
 

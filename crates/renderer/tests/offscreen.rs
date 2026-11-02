@@ -4,7 +4,8 @@
 #![allow(clippy::unwrap_used)]
 
 use animation_core::{FrameIndex, Rgba, Vec2};
-use document::drawing::{DrawingContent, Fill, FillShape, VectorDrawing};
+use document::drawing::{DrawingContent, Fill, FillShape, Gradient, VectorDrawing};
+use document::scene::BlendMode;
 use document::timeline::Keyframe;
 use document::{CanvasAnchor, CanvasSize, Document};
 use renderer::{DrawListBuilder, OffscreenFrame, OffscreenRenderer, headless_device};
@@ -186,4 +187,171 @@ fn renders_resized_canvas_with_moved_artwork() {
     assert_eq!(pixel(&pixels, 20, 25)[3], 0, "new area is empty");
     assert!(close(pixel(&pixels, 120, 25), [255, 0, 0, 255]));
     assert!(close(pixel(&pixels, 180, 25), [0, 0, 255, 128]));
+}
+
+#[test]
+fn renders_gradient_fill() {
+    let Ok((device, queue)) = pollster::block_on(headless_device()) else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut doc = Document::new(
+        "T",
+        CanvasSize {
+            width: 100,
+            height: 50,
+        },
+    );
+    // Red at the top, blending to blue at the bottom.
+    let fill = rect_fill(Vec2::ZERO, Vec2::new(100.0, 50.0), Rgba::rgb(1.0, 0.0, 0.0));
+    let gradient = Some(Gradient {
+        start: Vec2::new(50.0, 0.0),
+        end: Vec2::new(50.0, 50.0),
+        end_color: Rgba::rgb(0.0, 0.0, 1.0),
+    });
+    let layer = doc.add_layer("L");
+    let mut drawing = VectorDrawing::new();
+    drawing.push_fill(fill.with_gradient(gradient));
+    let id = doc.add_drawing(DrawingContent::Vector(drawing));
+    doc.track_mut(layer)
+        .unwrap()
+        .set_key(FrameIndex(0), Keyframe::Drawing(id));
+
+    let mut offscreen = OffscreenRenderer::new(&device);
+    let mut builder = DrawListBuilder::new(&device, offscreen.stroke_cache_mut());
+    builder.render_list(&doc.evaluate(FrameIndex(0)));
+    let draws = builder.finish();
+    let pixels = offscreen
+        .render(
+            &device,
+            &queue,
+            &OffscreenFrame {
+                canvas_size: (100, 50),
+                scale: 1.0,
+                background: None,
+                strokes: &draws,
+            },
+        )
+        .unwrap();
+    let (top, mid, bottom) = (
+        pixel(&pixels, 50, 0),
+        pixel(&pixels, 50, 25),
+        pixel(&pixels, 50, 49),
+    );
+    assert!(top[0] > 240 && top[2] < 30, "{top:?}");
+    assert!(bottom[2] > 240 && bottom[0] < 30, "{bottom:?}");
+    // Linear 0.5 encodes to sRGB 188.
+    assert!(close(mid, [188, 0, 188, 255]), "{mid:?}");
+}
+
+/// Hard Light: Multiply or Screen by twice the source.
+fn hard_light(cb: f32, cs: f32) -> f32 {
+    if cs <= 0.5 {
+        cb * 2.0 * cs
+    } else {
+        let s = 2.0 * cs - 1.0;
+        cb + s - cb * s
+    }
+}
+
+/// Soft Light (W3C formula): darkens or lightens the backdrop by the source.
+fn soft_light(cb: f32, cs: f32) -> f32 {
+    if cs <= 0.5 {
+        cb - (1.0 - 2.0 * cs) * cb * (1.0 - cb)
+    } else {
+        let d = if cb <= 0.25 {
+            ((16.0 * cb - 12.0) * cb + 4.0) * cb
+        } else {
+            cb.sqrt()
+        };
+        cb + (2.0 * cs - 1.0) * (d - cb)
+    }
+}
+
+/// The blend function B(cb, cs) of one straight linear channel, as the W3C
+/// compositing spec defines it.
+fn blend(mode: BlendMode, cb: f32, cs: f32) -> f32 {
+    match mode {
+        BlendMode::Normal => cs,
+        BlendMode::Multiply => cb * cs,
+        BlendMode::Screen => cb + cs - cb * cs,
+        BlendMode::Overlay => hard_light(cs, cb),
+        BlendMode::HardLight => hard_light(cb, cs),
+        BlendMode::SoftLight => soft_light(cb, cs),
+    }
+}
+
+fn srgb_byte(linear: f32) -> u8 {
+    let c = if linear <= 0.003_130_8 {
+        linear * 12.92
+    } else {
+        1.055 * linear.powf(1.0 / 2.4) - 0.055
+    };
+    (c * 255.0).round() as u8
+}
+
+#[test]
+fn blend_modes_match_their_formulas() {
+    let Ok((device, queue)) = pollster::block_on(headless_device()) else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let backdrop = Rgba::rgb(0.2, 0.5, 0.8);
+    let source = Rgba::rgb(0.7, 0.3, 0.6);
+    let mut offscreen = OffscreenRenderer::new(&device);
+    for mode in BlendMode::ALL {
+        // Backdrop on the left half, the blended layer over everything.
+        let mut doc = Document::new(
+            "T",
+            CanvasSize {
+                width: 20,
+                height: 10,
+            },
+        );
+        for (fill, blend) in [
+            (
+                rect_fill(Vec2::ZERO, Vec2::new(10.0, 10.0), backdrop),
+                BlendMode::Normal,
+            ),
+            (rect_fill(Vec2::ZERO, Vec2::new(20.0, 10.0), source), mode),
+        ] {
+            let layer = doc.add_layer("L");
+            let mut drawing = VectorDrawing::new();
+            drawing.push_fill(fill);
+            let id = doc.add_drawing(DrawingContent::Vector(drawing));
+            doc.track_mut(layer)
+                .unwrap()
+                .set_key(FrameIndex(0), Keyframe::Drawing(id));
+            doc.layer_mut(layer).unwrap().blend = blend;
+        }
+        let mut builder = DrawListBuilder::new(&device, offscreen.stroke_cache_mut());
+        builder.render_list(&doc.evaluate(FrameIndex(0)));
+        let draws = builder.finish();
+        let pixels = offscreen
+            .render(
+                &device,
+                &queue,
+                &OffscreenFrame {
+                    canvas_size: (20, 10),
+                    scale: 1.0,
+                    background: None,
+                    strokes: &draws,
+                },
+            )
+            .unwrap();
+
+        let [br, bg, bb, _] = backdrop.to_array();
+        let [sr, sg, sb, _] = source.to_array();
+        let over = [(br, sr), (bg, sg), (bb, sb)].map(|(b, s)| srgb_byte(blend(mode, b, s)));
+        let alone = [sr, sg, sb].map(srgb_byte);
+        let (left, right) = (pixel(&pixels, 5, 5), pixel(&pixels, 15, 5));
+        assert!(
+            close(left, [over[0], over[1], over[2], 255]),
+            "{mode:?} over backdrop: {left:?} != {over:?}"
+        );
+        assert!(
+            close(right, [alone[0], alone[1], alone[2], 255]),
+            "{mode:?} over transparent: {right:?} != {alone:?}"
+        );
+    }
 }

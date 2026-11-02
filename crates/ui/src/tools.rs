@@ -25,10 +25,11 @@
 //! press anywhere else selects, like the select tool.
 
 use crate::session::Session;
-use document::animation_core::{FrameIndex, LayerId, StrokeId, Vec2};
+use document::animation_core::{FrameIndex, LayerId, Rgba, StrokeId, Vec2};
 use document::drawing::select::{Affine2, rect_from_corners, scale_rotate_about};
 use document::drawing::{
-    BrushStyle, Fill, GapClosing, ItemId, Stroke, StrokeBuilder, StrokePoint, VectorDrawing,
+    BrushStyle, Fill, FillShape, GapClosing, Gradient, ItemId, Stroke, StrokeBuilder, StrokePoint,
+    VectorDrawing,
 };
 use editor::Tool;
 use editor::commands::{
@@ -284,16 +285,19 @@ enum Gesture {
         zoom: f32,
         dragged: bool,
     },
-    /// Dragging a selection box.
+    /// Dragging a selection box, or a lasso loop.
     Marquee {
         layer: LayerId,
         frame: FrameIndex,
-        start: Vec2,
-        end: Vec2,
+        /// Box: the press and the latest position. Lasso: every position.
+        path: Vec<Vec2>,
+        lasso: bool,
         zoom: f32,
         dragged: bool,
         /// The selection to add to (Shift), or empty.
         base: Vec<ItemId>,
+        /// The item under the press; a click without a drag selects it.
+        hit: Option<ItemId>,
     },
     /// Scaling or rotating the selection with the transform tool.
     Transform {
@@ -325,6 +329,16 @@ pub enum EraserMode {
     Stroke,
 }
 
+/// What the fill bucket paints an area with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FillStyle {
+    /// One solid colour.
+    #[default]
+    Normal,
+    /// A colour gradient.
+    Gradient,
+}
+
 /// Tool settings and the gesture in progress.
 #[derive(Clone, Debug)]
 pub struct ToolController {
@@ -337,6 +351,13 @@ pub struct ToolController {
     pub eraser_mode: EraserMode,
     /// How hard the fill bucket closes gaps in the line art.
     pub fill_gap: GapClosing,
+    /// Normal or gradient fill.
+    pub fill_style: FillStyle,
+    /// Colour a gradient fill blends into from the brush colour.
+    pub gradient_color: Rgba,
+    /// Gradient fill: the first click, waiting for the second, which sets
+    /// where `gradient_color` is reached.
+    gradient_start: Option<(LayerId, FrameIndex, Vec2)>,
     gesture: Option<Gesture>,
     /// Selected items, bottom to top as selected.
     selection: Vec<ItemId>,
@@ -355,6 +376,9 @@ impl Default for ToolController {
             eraser_radius: 12.0,
             eraser_mode: EraserMode::default(),
             fill_gap: GapClosing::default(),
+            fill_style: FillStyle::default(),
+            gradient_color: Rgba::WHITE,
+            gradient_start: None,
             gesture: None,
             selection: Vec::new(),
             selection_at: None,
@@ -368,6 +392,12 @@ impl ToolController {
     /// Drops the gesture in progress without changing the document.
     pub fn cancel(&mut self) {
         self.gesture = None;
+    }
+
+    /// Where a gradient fill starts, while waiting for the click that sets
+    /// its end (document coordinates).
+    pub fn gradient_start(&self) -> Option<Vec2> {
+        self.gradient_start.map(|(_, _, pos)| pos)
     }
 
     /// Whether a gesture is in progress.
@@ -463,11 +493,24 @@ impl ToolController {
     pub fn marquee(&self) -> Option<(Vec2, Vec2)> {
         match &self.gesture {
             Some(Gesture::Marquee {
-                start,
-                end,
+                path,
+                lasso: false,
                 dragged: true,
                 ..
-            }) => Some(rect_from_corners(*start, *end)),
+            }) => Some(rect_from_corners(path[0], path[path.len() - 1])),
+            _ => None,
+        }
+    }
+
+    /// The lasso loop being drawn, in document coordinates.
+    pub fn lasso(&self) -> Option<&[Vec2]> {
+        match &self.gesture {
+            Some(Gesture::Marquee {
+                path,
+                lasso: true,
+                dragged: true,
+                ..
+            }) => Some(path),
             _ => None,
         }
     }
@@ -574,16 +617,31 @@ impl Session {
             self.playback.pause();
         }
         let frame = self.current_frame();
+        let gradient_start = self.tools.gradient_start.take();
         self.tools.gesture = Some(match self.state.tool {
             // A click, not a drag: fill right away, no gesture.
-            Tool::Fill => {
+            Tool::Fill if self.tools.fill_style == FillStyle::Normal => {
                 self.fill_at(layer, frame, pos);
                 return true;
             }
-            Tool::Select => match self.select_press(layer, frame, pos, zoom, shift) {
-                Some(gesture) => gesture,
-                None => return true,
-            },
+            // Gradient: the first click sets the start, the second the end
+            // and fills the area under the first.
+            Tool::Fill => {
+                match gradient_start {
+                    Some((l, f, start)) if (l, f) == (layer, frame) => {
+                        self.fill_with(layer, frame, start, Some(pos));
+                    }
+                    _ => self.tools.gradient_start = Some((layer, frame, pos)),
+                }
+                return true;
+            }
+            Tool::Select | Tool::Lasso => {
+                let lasso = self.state.tool == Tool::Lasso;
+                match self.select_press(layer, frame, pos, zoom, shift, lasso) {
+                    Some(gesture) => gesture,
+                    None => return true,
+                }
+            }
             Tool::Transform => match self.transform_press(layer, frame, pos, zoom, shift) {
                 Some(gesture) => gesture,
                 None => return true,
@@ -653,25 +711,38 @@ impl Session {
             Some(Gesture::Marquee {
                 layer,
                 frame,
-                start,
-                end,
+                path,
+                lasso,
                 zoom,
                 dragged,
                 base,
+                ..
             }) => {
-                *end = pos;
-                *dragged |= past_drag_threshold(*start, pos, *zoom);
+                if !*lasso && path.len() == 2 {
+                    path[1] = pos;
+                } else if path.last() != Some(&pos) {
+                    path.push(pos);
+                }
+                *dragged |= past_drag_threshold(path[0], pos, *zoom);
                 if *dragged {
+                    let polygon = if *lasso {
+                        path.clone()
+                    } else {
+                        let (min, max) = rect_from_corners(path[0], pos);
+                        vec![min, Vec2::new(max.x, min.y), max, Vec2::new(min.x, max.y)]
+                    };
                     let mut items = base.clone();
                     if let Some(drawing) = vector_at(&self.document, *layer, *frame) {
-                        for item in drawing.items_in_rect(rect_from_corners(*start, *end)) {
+                        for item in drawing.items_in_polygon(&polygon) {
                             if !items.contains(&item) {
                                 items.push(item);
                             }
                         }
                     }
+                    // An empty selection with a place would make the
+                    // per-frame `sync_selection` clear it, ending the drag.
+                    self.tools.selection_at = (!items.is_empty()).then_some((*layer, *frame));
                     self.tools.selection = items;
-                    self.tools.selection_at = Some((*layer, *frame));
                 }
             }
             Some(Gesture::Brush { builder, .. }) => {
@@ -745,6 +816,18 @@ impl Session {
     /// recolours it (one undo step). Explains in the status bar when nothing
     /// can be filled.
     pub fn fill_at(&mut self, layer: LayerId, frame: FrameIndex, pos: Vec2) {
+        self.fill_with(layer, frame, pos, None);
+    }
+
+    /// Like [`Self::fill_at`]; with `gradient_to`, the fill blends from the
+    /// brush colour at `pos` to the gradient colour at `gradient_to`.
+    fn fill_with(
+        &mut self,
+        layer: LayerId,
+        frame: FrameIndex,
+        pos: Vec2,
+        gradient_to: Option<Vec2>,
+    ) {
         let doc = &self.document;
         let canvas = Vec2::new(doc.canvas.width as f32, doc.canvas.height as f32);
         let drawing = doc
@@ -753,14 +836,22 @@ impl Session {
             .and_then(|d| d.as_vector());
         let color = self.state.brush.color;
         let opacity = self.state.brush.opacity;
+        let gradient = gradient_to.map(|end| Gradient {
+            start: pos,
+            end,
+            end_color: self.tools.gradient_color,
+        });
+        let paint = |shape: FillShape| Fill::new(shape, color, opacity).with_gradient(gradient);
         if let Some(existing) = drawing
             .and_then(|d| d.fill_at(pos))
             .and_then(|id| drawing.and_then(|d| d.fill(id)).cloned())
         {
-            if existing.color == color && existing.opacity == opacity {
+            let recoloured = paint(existing.shape());
+            if (existing.color, existing.opacity, existing.gradient)
+                == (color, opacity, recoloured.gradient)
+            {
                 return;
             }
-            let recoloured = Fill::new(existing.shape(), color, opacity);
             let commands: Vec<Box<dyn editor::Command>> = vec![
                 Box::new(RemoveFill::new(layer, frame, existing.id)),
                 Box::new(AddFill::new(layer, frame, recoloured)),
@@ -772,7 +863,7 @@ impl Session {
         let drawing = drawing.unwrap_or(&empty);
         match document::drawing::fill_region(drawing, pos, self.tools.fill_gap, canvas) {
             Ok(shape) => {
-                let fill = Fill::new(shape, color, opacity);
+                let fill = paint(shape);
                 let _ = self.execute(Box::new(AddFill::new(layer, frame, fill)));
             }
             Err(err) => {
@@ -785,8 +876,9 @@ impl Session {
         }
     }
 
-    /// Select tool press: picks or toggles the item under `pos`, and returns
-    /// the drag gesture to start, if any.
+    /// Select and lasso tool press: toggles the item under `pos` with Shift,
+    /// starts moving the selection when `pos` is on it, and otherwise starts
+    /// a box (or a lasso loop). Returns the drag gesture to start, if any.
     fn select_press(
         &mut self,
         layer: LayerId,
@@ -794,6 +886,7 @@ impl Session {
         pos: Vec2,
         zoom: f32,
         shift: bool,
+        lasso: bool,
     ) -> Option<Gesture> {
         self.sync_selection();
         let at = (layer, frame);
@@ -810,20 +903,17 @@ impl Session {
                 self.tools.set_selection(at, items);
                 None
             }
-            Some(item) => {
-                if !self.tools.selection.contains(&item) {
-                    self.tools.set_selection(at, vec![item]);
-                }
-                Some(Gesture::Move {
-                    layer,
-                    frame,
-                    start: pos,
-                    delta: Vec2::ZERO,
-                    zoom,
-                    dragged: false,
-                })
-            }
-            None => {
+            Some(item) if self.tools.selection.contains(&item) => Some(Gesture::Move {
+                layer,
+                frame,
+                start: pos,
+                delta: Vec2::ZERO,
+                zoom,
+                dragged: false,
+            }),
+            // Unselected item or empty canvas: dragging draws a box, so a
+            // background fill doesn't get dragged around by accident.
+            hit => {
                 let base = if shift {
                     self.tools.selection.clone()
                 } else {
@@ -833,11 +923,12 @@ impl Session {
                 Some(Gesture::Marquee {
                     layer,
                     frame,
-                    start: pos,
-                    end: pos,
+                    path: vec![pos],
+                    lasso,
                     zoom,
                     dragged: false,
                     base,
+                    hit,
                 })
             }
         }
@@ -891,7 +982,7 @@ impl Session {
                     dragged: false,
                 });
             }
-            _ => return self.select_press(layer, frame, pos, zoom, shift),
+            _ => return self.select_press(layer, frame, pos, zoom, shift, false),
         };
         Some(Gesture::Transform {
             layer,
@@ -941,9 +1032,10 @@ impl Session {
         self.tools.set_selection((layer, frame), items);
     }
 
-    /// Deselects everything.
+    /// Deselects everything and drops a gradient fill waiting for its end.
     pub fn clear_selection(&mut self) {
         self.tools.clear_selection();
+        self.tools.gradient_start = None;
     }
 
     /// Moves the selection by `delta` (document units) as one undo step.
@@ -1031,6 +1123,13 @@ impl Session {
                 let command = TransformItems::new(layer, frame, items, transform).with_label(label);
                 let _ = self.execute(Box::new(command));
             }
+            Some(Gesture::Marquee {
+                layer,
+                frame,
+                dragged: false,
+                hit: Some(item),
+                ..
+            }) => self.tools.set_selection((layer, frame), vec![item]),
             Some(Gesture::Move { .. } | Gesture::Marquee { .. } | Gesture::Transform { .. }) => {}
             Some(Gesture::Brush {
                 layer,
@@ -1316,6 +1415,8 @@ mod tests {
         assert!(s.pointer_down_with(from, 1.0, shift));
         for i in 1..=5 {
             s.pointer_move(from.lerp(to, i as f32 / 5.0));
+            // The app syncs once per UI frame, mid-drag too.
+            s.sync_selection();
         }
         s.pointer_up();
     }
@@ -1397,6 +1498,89 @@ mod tests {
         drag(&mut s, Vec2::new(50.0, 0.0), Vec2::new(51.0, 1.0), false);
         assert_eq!(s.history.undo_len(), undo_len);
         assert_eq!(s.tools.selection().len(), 1);
+    }
+
+    #[test]
+    fn dragging_from_an_unselected_item_draws_a_box() {
+        let (mut s, ids) = select_scene();
+        let before = strokes(&s);
+        let undo_len = s.history.undo_len();
+        drag(&mut s, Vec2::new(50.0, 0.0), Vec2::new(120.0, 60.0), false);
+        assert_eq!(strokes(&s), before, "nothing moved");
+        assert_eq!(s.history.undo_len(), undo_len);
+        assert_eq!(s.tools.selection(), [ids[0], ids[1]]);
+
+        // Now on the selection: the same drag moves it.
+        drag(&mut s, Vec2::new(50.0, 0.0), Vec2::new(60.0, 0.0), false);
+        assert_eq!(s.history.undo_label(), Some("Move"));
+        assert_eq!(s.tools.selection(), [ids[0], ids[1]]);
+    }
+
+    #[test]
+    fn box_over_a_background_fill_leaves_it_alone() {
+        let (mut s, ids) = select_scene();
+        let layer = s.state.active_layer.unwrap();
+        let background = Fill::new(
+            document::drawing::FillShape {
+                contours: vec![vec![
+                    Vec2::new(-500.0, -500.0),
+                    Vec2::new(500.0, -500.0),
+                    Vec2::new(500.0, 500.0),
+                    Vec2::new(-500.0, 500.0),
+                ]],
+            },
+            document::animation_core::Rgba::BLACK,
+            1.0,
+        );
+        s.execute(Box::new(AddFill::new(layer, FrameIndex(0), background)))
+            .unwrap();
+        drag(
+            &mut s,
+            Vec2::new(-20.0, 40.0),
+            Vec2::new(120.0, 60.0),
+            false,
+        );
+        assert_eq!(s.tools.selection(), [ids[1]]);
+    }
+
+    #[test]
+    fn lasso_selects_what_the_loop_goes_around() {
+        let (mut s, ids) = select_scene();
+        s.state.tool = Tool::Lasso;
+        assert!(s.tools.lasso().is_none());
+        // A loop around the start of the first two lines only.
+        let path = [
+            Vec2::new(-10.0, -10.0),
+            Vec2::new(20.0, -10.0),
+            Vec2::new(20.0, 60.0),
+            Vec2::new(-10.0, 60.0),
+        ];
+        assert!(s.pointer_down_with(path[0], 1.0, false));
+        for p in &path[1..] {
+            s.pointer_move(*p);
+            s.sync_selection();
+        }
+        assert_eq!(s.tools.lasso().map(<[Vec2]>::len), Some(4));
+        assert!(s.tools.marquee().is_none(), "no box with the lasso");
+        s.pointer_up();
+        assert_eq!(s.tools.selection(), [ids[0], ids[1]]);
+        assert!(s.tools.lasso().is_none(), "loop gone after release");
+
+        // Shift adds; a loop around the end of the third line.
+        assert!(s.pointer_down_with(Vec2::new(90.0, 190.0), 1.0, true));
+        s.pointer_move(Vec2::new(150.0, 190.0));
+        s.pointer_move(Vec2::new(150.0, 250.0));
+        s.pointer_up();
+        assert_eq!(s.tools.selection(), [ids[0], ids[1], ids[2]]);
+
+        // A straight drag encloses nothing.
+        drag(
+            &mut s,
+            Vec2::new(-10.0, 25.0),
+            Vec2::new(120.0, 25.0),
+            false,
+        );
+        assert!(s.tools.selection().is_empty());
     }
 
     #[test]

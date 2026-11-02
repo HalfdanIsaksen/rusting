@@ -108,6 +108,12 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
                 &mut view.timeline,
                 Some(&shortcuts::TOGGLE_TIMELINE),
             );
+            toggle(
+                ui,
+                "Tool Settings",
+                &mut view.tool_settings,
+                Some(&shortcuts::TOGGLE_TOOL_SETTINGS),
+            );
             ui.separator();
             ui.checkbox(&mut session.onion.enabled, "Onion skin");
             let mut preview = session.preview.is_open();
@@ -129,6 +135,7 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
                 ("Wheel / pinch", "Zoom about the cursor"),
                 ("F", "Fit canvas"),
                 ("F2 / double-click", "Rename the active layer"),
+                ("Cmd/Ctrl/Shift+click", "Select several layers"),
             ] {
                 ui.horizontal(|ui| {
                     ui.strong(keys);

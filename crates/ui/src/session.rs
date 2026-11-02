@@ -12,6 +12,7 @@ use document::animation_core::{FrameIndex, LayerId};
 use document::{CanvasAnchor, CanvasSize, Document, NewDocumentSettings, SettingsError};
 use editor::commands::{DuplicateFrame, ResizeCanvas};
 use editor::{Command, CommandError, EditorState, History};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -137,6 +138,8 @@ pub struct ViewSettings {
     pub toolbar: bool,
     /// The timeline at the bottom, with its layer column.
     pub timeline: bool,
+    /// The tool settings panel on the right.
+    pub tool_settings: bool,
 }
 
 impl Default for ViewSettings {
@@ -144,6 +147,7 @@ impl Default for ViewSettings {
         Self {
             toolbar: true,
             timeline: true,
+            tool_settings: true,
         }
     }
 }
@@ -206,6 +210,8 @@ pub struct Session {
     pub space_panned: bool,
     /// The open "Resize Canvas" dialog, if any.
     pub resize_canvas: Option<ResizeCanvasDialog>,
+    /// Layers selected in the timeline besides the active one.
+    layer_selection: BTreeSet<LayerId>,
     status: Option<Status>,
     dialog: Option<Dialog>,
     requests: Vec<Request>,
@@ -242,6 +248,7 @@ impl Session {
             view: ViewSettings::default(),
             space_panned: false,
             resize_canvas: None,
+            layer_selection: BTreeSet::new(),
             status: None,
             dialog: None,
             requests: Vec::new(),
@@ -255,6 +262,7 @@ impl Session {
         let tool = self.state.tool;
         let brush = self.state.brush;
         self.state = EditorState::for_document(&document);
+        self.layer_selection.clear();
         self.state.tool = tool;
         self.state.brush = brush;
         self.playback = Playback::new(&document);
@@ -319,6 +327,7 @@ impl Session {
         {
             self.state.active_layer = layers.iter().next_back().map(|l| l.id);
         }
+        self.layer_selection.retain(|&id| layers.get(id).is_some());
         let frame = self.state.current_frame();
         self.state.set_current_frame(&self.document, frame);
         self.playback.sync(&self.document);
@@ -407,13 +416,79 @@ impl Session {
         }
     }
 
-    /// Makes `layer` the layer drawing tools act on.
+    /// Selects only `layer` and makes it the layer drawing tools act on.
     pub fn select_layer(&mut self, layer: LayerId) {
+        if self.document.layers().get(layer).is_some() {
+            self.layer_selection.clear();
+            self.set_active_layer(layer);
+        }
+    }
+
+    /// Makes `layer` the layer drawing tools act on, keeping the rest of the
+    /// layer selection.
+    pub fn set_active_layer(&mut self, layer: LayerId) {
         if self.document.layers().get(layer).is_some() {
             self.tools.cancel();
             self.state.active_layer = Some(layer);
             self.sync_selection();
         }
+    }
+
+    /// Selects `layers` with `active` as the active one.
+    pub fn select_layers(&mut self, active: LayerId, layers: impl IntoIterator<Item = LayerId>) {
+        self.select_layer(active);
+        self.layer_selection.extend(layers);
+    }
+
+    /// Whether `layer` is selected in the timeline (the active layer always is).
+    pub fn is_layer_selected(&self, layer: LayerId) -> bool {
+        self.state.active_layer == Some(layer) || self.layer_selection.contains(&layer)
+    }
+
+    /// The selected layers, top of the stack first.
+    pub fn selected_layers(&self) -> Vec<LayerId> {
+        self.document
+            .layers()
+            .iter()
+            .rev()
+            .map(|l| l.id)
+            .filter(|&id| self.is_layer_selected(id))
+            .collect()
+    }
+
+    /// Cmd/Ctrl+click: adds `layer` to the selection and makes it active, or
+    /// takes it out again. The last selected layer stays selected.
+    pub fn toggle_layer_selected(&mut self, layer: LayerId) {
+        if !self.is_layer_selected(layer) {
+            self.layer_selection.extend(self.state.active_layer);
+            self.layer_selection.insert(layer);
+            self.set_active_layer(layer);
+            return;
+        }
+        self.layer_selection.remove(&layer);
+        if self.state.active_layer == Some(layer)
+            && let Some(other) = self.selected_layers().into_iter().find(|&id| id != layer)
+        {
+            self.set_active_layer(other);
+        }
+    }
+
+    /// Shift+click: selects every layer from the active one to `layer`. The
+    /// active layer stays the anchor.
+    pub fn select_layer_range(&mut self, layer: LayerId) {
+        let layers = self.document.layers();
+        let (Some(to), Some(from)) = (
+            layers.index_of(layer),
+            self.state.active_layer.and_then(|id| layers.index_of(id)),
+        ) else {
+            return self.select_layer(layer);
+        };
+        self.layer_selection = layers
+            .iter()
+            .skip(from.min(to))
+            .take(from.abs_diff(to) + 1)
+            .map(|l| l.id)
+            .collect();
     }
 
     /// Advances playback. Call once per frame before drawing the UI.
@@ -740,7 +815,7 @@ mod tests {
     fn view_shows_all_panels_by_default_and_survives_opening_a_file() {
         let mut s = Session::new();
         assert_eq!(s.view, ViewSettings::default());
-        assert!(s.view.toolbar && s.view.timeline);
+        assert!(s.view.toolbar && s.view.timeline && s.view.tool_settings);
 
         let path = temp_path("view.rusting");
         assert!(s.save_to(&path));
@@ -776,6 +851,40 @@ mod tests {
         assert_eq!(s.state.active_layer, Some(bottom));
         s.redo();
         assert_eq!(s.document.layers().len(), 2);
+    }
+
+    #[test]
+    fn layer_selection_toggles_ranges_and_survives_removal() {
+        let mut s = Session::new();
+        let a = s.state.active_layer.unwrap();
+        let [b, c] = ["B", "C"].map(|name| {
+            let add = AddLayer::new(name);
+            let id = add.layer_id();
+            s.execute(Box::new(add)).unwrap();
+            id
+        });
+        // Stack bottom to top: a, b, c.
+        s.select_layer(a);
+        s.toggle_layer_selected(c);
+        assert_eq!(s.state.active_layer, Some(c));
+        assert_eq!(s.selected_layers(), [c, a]);
+        s.toggle_layer_selected(c);
+        assert_eq!(s.state.active_layer, Some(a));
+        assert_eq!(s.selected_layers(), [a]);
+        s.toggle_layer_selected(a);
+        assert_eq!(s.selected_layers(), [a], "the last layer stays selected");
+
+        s.select_layer_range(c);
+        assert_eq!(s.selected_layers(), [c, b, a]);
+        assert_eq!(s.state.active_layer, Some(a));
+        s.select_layer(b);
+        assert_eq!(s.selected_layers(), [b]);
+
+        s.select_layers(c, [a]);
+        s.execute(Box::new(RemoveLayer::new(a))).unwrap();
+        assert_eq!(s.selected_layers(), [c]);
+        s.undo();
+        assert_eq!(s.selected_layers(), [c], "undo does not reselect");
     }
 
     #[test]

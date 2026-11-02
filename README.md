@@ -60,7 +60,8 @@ The tool strip runs down the side of the canvas:
 
 | Tool | Key | What it does |
 |---|---|---|
-| Selection | `V` | Select strokes and fills, then move or delete them |
+| Selection | `V` | Select strokes and fills (click, or drag a box from anywhere), then move or delete them |
+| Lasso | `L` | Select strokes and fills by drawing a loop around them |
 | Transform | `Q` | Scale and rotate the selection with box handles |
 | Brush | `B` | Vector strokes with size, opacity, colour and a 0–100% smoothing slider |
 | Eraser | `E` | Erase part of a stroke or whole strokes |
@@ -74,11 +75,12 @@ The tool strip runs down the side of the canvas:
 - Frame-by-frame keys with stepped exposure: new blank drawing, end exposure, remove key.
 - **Duplicate frame** (button, Edit → Duplicate Frame, or `Cmd/Ctrl+D`) inserts a copy of the current frame right after it on every layer.
 - Playback with loop, first/previous/next/last frame, and `←/→` and `↑/↓` to step frames and keys.
-- Layer controls in the timeline's layer column: add, remove, rename (`F2` or double-click), drag to reorder, show/hide and lock/unlock, per layer or all at once.
+- Layer controls in the timeline's layer column: add, duplicate, remove, rename (`F2` or double-click), drag to reorder, show/hide and lock/unlock, per layer or all at once.
+- Select several layers with `Cmd/Ctrl`+click (toggle) or `Shift`+click (range); duplicate and remove act on the whole selection.
 - Onion skin (View → Onion skin).
 
 ### View menu
-- Toggle the **Toolbar** (`Cmd/Ctrl+1`) and **Timeline** (`Cmd/Ctrl+2`) to free up space for the canvas.
+- Toggle the **Toolbar** (`Cmd/Ctrl+1`), **Timeline** (`Cmd/Ctrl+2`) and **Tool Settings** (`Cmd/Ctrl+3`) to free up space for the canvas.
 - **Preview**: a smaller floating window that shows only the canvas at the current frame. It has a close button and a Play button that loops the animation without moving the editor's playhead.
 
 ### Files and export

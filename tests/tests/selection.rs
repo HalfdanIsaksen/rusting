@@ -78,7 +78,12 @@ fn select_move_undo_redo() {
     let d = drawing(&doc, layer, 0);
     let clicked = d.item_at(Vec2::new(50.0, 12.0), 2.0).unwrap();
     assert!(matches!(clicked, ItemId::Stroke(_)));
-    let boxed = d.items_in_rect((Vec2::new(190.0, 190.0), Vec2::new(210.0, 210.0)));
+    let boxed = d.items_in_polygon(&[
+        Vec2::new(190.0, 190.0),
+        Vec2::new(210.0, 190.0),
+        Vec2::new(210.0, 210.0),
+        Vec2::new(190.0, 210.0),
+    ]);
     assert_eq!(boxed.len(), 1);
     assert!(matches!(boxed[0], ItemId::Fill(_)));
     let selection = vec![clicked, boxed[0]];

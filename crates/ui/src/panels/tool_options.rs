@@ -1,10 +1,10 @@
-//! The tool options bar along the top of the canvas: settings for the active
-//! tool (size, opacity, colour, eraser mode, gap closing) and the "drawing is
-//! blocked" warning.
+//! The tool settings panel on the right of the canvas: settings for the
+//! active tool (size, opacity, colour, eraser mode, gap closing) and the
+//! "drawing is blocked" warning.
 
 use super::toolbar::TOOLS;
 use crate::session::Session;
-use crate::tools::EraserMode;
+use crate::tools::{EraserMode, FillStyle};
 use document::animation_core::Rgba;
 use document::drawing::GapClosing;
 use editor::Tool;
@@ -21,6 +21,9 @@ const SWATCHES: [[f32; 3]; 8] = [
     [0.02, 0.15, 0.75],
 ];
 
+const GRADIENT_HINT: &str = "Click where the gradient starts (the brush colour), then where it \
+                             ends (this colour). The area under the first click is filled. \
+                             Esc cancels.";
 const PARTIAL_HINT: &str =
     "Cuts away the part of each stroke it passes over on the active layer and frame.";
 const STROKE_HINT: &str = "Removes every stroke it touches on the active layer and frame.";
@@ -45,6 +48,15 @@ pub(crate) fn eraser_mode_choices(ui: &mut egui::Ui, session: &mut Session) -> b
     .inner
 }
 
+/// Normal or gradient fill as selectable labels. Returns whether the user
+/// picked one.
+pub(crate) fn fill_style_choices(ui: &mut egui::Ui, session: &mut Session) -> bool {
+    let style = &mut session.tools.fill_style;
+    let normal = ui.selectable_value(style, FillStyle::Normal, "Normal fill");
+    let gradient = ui.selectable_value(style, FillStyle::Gradient, "Gradient fill");
+    normal.clicked() || gradient.clicked()
+}
+
 /// Gap closing choices as selectable labels. Returns whether the user picked
 /// one.
 pub(crate) fn gap_choices(ui: &mut egui::Ui, session: &mut Session) -> bool {
@@ -56,59 +68,63 @@ pub(crate) fn gap_choices(ui: &mut egui::Ui, session: &mut Session) -> bool {
     picked
 }
 
-/// Draws the tool options bar.
-pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
-    ui.spacing_mut().slider_width = 110.0;
-    ui.horizontal(|ui| {
-        active_tool_label(ui, session);
-        ui.separator();
-        match session.state.tool {
-            Tool::Select => {
-                ui.weak(
-                    "Click or drag a box to select (Shift adds). Drag to move, arrows nudge \
-                     (Shift ×10), Delete removes, ⌘A selects all, Esc deselects.",
-                );
-            }
-            Tool::Transform => {
-                ui.weak(
-                    "Drag a corner or edge to scale (Shift keeps proportions, Alt scales from \
-                     the centre). Drag the knob or just outside a corner to rotate (Shift snaps \
-                     to 15°). Drag inside to move; click elsewhere to select.",
-                );
-            }
-            Tool::Brush => {
-                brush_size(ui, session);
-                ui.separator();
-                brush_smoothing(ui, session);
-                ui.separator();
-                paint_settings(ui, session);
-            }
-            Tool::Fill => {
-                ui.label("Close gaps").on_hover_text(FILL_HINT);
-                let gap = session.tools.fill_gap;
-                egui::ComboBox::from_id_salt("fill_gap")
-                    .selected_text(gap.label())
-                    .show_ui(ui, |ui| {
-                        gap_choices(ui, session);
-                    })
-                    .response
-                    .on_hover_text(FILL_HINT);
-                ui.separator();
-                paint_settings(ui, session);
-            }
-            Tool::Eraser => {
-                eraser_size(ui, session);
-                ui.separator();
-                eraser_mode_choices(ui, session);
-            }
+/// Draws the tool settings panel.
+pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
+    // Leave room for the value box beside each slider.
+    ui.spacing_mut().slider_width = (ui.available_width() - 60.0).max(60.0);
+    ui.horizontal(|ui| active_tool_label(ui, session));
+    if let Some(reason) = session.draw_block_reason() {
+        ui.colored_label(ui.visuals().warn_fg_color, format!("⚠ {reason}"));
+    }
+    ui.separator();
+    match session.state.tool {
+        Tool::Select => {
+            ui.weak(
+                "Click or drag a box to select (Shift adds). Drag a selected item to move, \
+                 arrows nudge (Shift ×10), Delete removes, ⌘A selects all, Esc deselects.",
+            );
         }
-
-        if let Some(reason) = session.draw_block_reason() {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.colored_label(ui.visuals().warn_fg_color, format!("⚠ {reason}"));
-            });
+        Tool::Lasso => {
+            ui.weak(
+                "Draw a loop around strokes and fills to select them (Shift adds). Drag a \
+                 selected item to move, Delete removes, Esc deselects.",
+            );
         }
-    });
+        Tool::Transform => {
+            ui.weak(
+                "Drag a corner or edge to scale (Shift keeps proportions, Alt scales from \
+                 the centre). Drag the knob or just outside a corner to rotate (Shift snaps \
+                 to 15°). Drag inside to move; click elsewhere to select.",
+            );
+        }
+        Tool::Brush => {
+            brush_size(ui, session);
+            brush_smoothing(ui, session);
+            ui.separator();
+            paint_settings(ui, session);
+        }
+        Tool::Fill => {
+            ui.label("Fill type");
+            ui.horizontal(|ui| fill_style_choices(ui, session));
+            if session.tools.fill_style == FillStyle::Gradient {
+                ui.horizontal(|ui| {
+                    ui.label("Gradient to").on_hover_text(GRADIENT_HINT);
+                    color_button(ui, &mut session.tools.gradient_color);
+                });
+                ui.weak(GRADIENT_HINT);
+            }
+            ui.separator();
+            ui.label("Close gaps").on_hover_text(FILL_HINT);
+            gap_choices(ui, session);
+            ui.separator();
+            paint_settings(ui, session);
+        }
+        Tool::Eraser => {
+            eraser_size(ui, session);
+            ui.separator();
+            eraser_mode_choices(ui, session);
+        }
+    }
 }
 
 /// The active tool's icon and name, so the bar reads as belonging to it.
@@ -165,14 +181,11 @@ fn paint_settings(ui: &mut egui::Ui, session: &mut Session) {
         &mut session.state.brush.opacity,
         0.05..=1.0,
     ));
-    ui.separator();
-    ui.label("Colour");
-    let Rgba { r, g, b, a } = session.state.brush.color;
-    let mut rgb = [r, g, b];
-    if ui.color_edit_button_rgb(&mut rgb).changed() {
-        session.state.brush.color = Rgba::new(rgb[0], rgb[1], rgb[2], a);
-    }
-    ui.scope(|ui| {
+    ui.horizontal(|ui| {
+        ui.label("Colour");
+        color_button(ui, &mut session.state.brush.color);
+    });
+    ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);
         for [r, g, b] in SWATCHES {
             let color = egui::Rgba::from_rgb(r, g, b);
@@ -190,4 +203,13 @@ fn paint_settings(ui: &mut egui::Ui, session: &mut Session) {
             }
         }
     });
+}
+
+/// A colour picker button for an RGB colour, keeping its alpha.
+fn color_button(ui: &mut egui::Ui, color: &mut Rgba) {
+    let Rgba { r, g, b, a } = *color;
+    let mut rgb = [r, g, b];
+    if ui.color_edit_button_rgb(&mut rgb).changed() {
+        *color = Rgba::new(rgb[0], rgb[1], rgb[2], a);
+    }
 }

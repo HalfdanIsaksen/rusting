@@ -3,17 +3,20 @@
 mod canvas;
 mod fill;
 mod frames;
+mod layers;
 mod select;
 pub use canvas::ResizeCanvas;
 pub use fill::{AddFill, RemoveFill};
 pub use frames::DuplicateFrame;
+pub use layers::DuplicateLayer;
 pub use select::{TransformItems, TranslateItems, remove_items};
 
 use crate::{Command, CommandError};
 use animation_core::{DrawingId, Fps, FrameIndex, LayerId, StrokeId};
 use document::drawing::{DrawingContent, Stroke, VectorDrawing};
+use document::scene::{BlendMode, Layer};
 use document::timeline::Keyframe;
-use document::{Document, RemovedLayer, scene::Layer};
+use document::{Document, RemovedLayer};
 
 /// Adds a new layer on top of the stack.
 #[derive(Debug)]
@@ -466,6 +469,40 @@ impl SetLayerLocked {
 impl Command for SetLayerLocked {
     fn label(&self) -> &str {
         "Set Layer Lock"
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        self.swap(doc)
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        self.swap(doc)
+    }
+}
+
+/// Sets a layer's blend mode.
+#[derive(Debug)]
+pub struct SetLayerBlend {
+    id: LayerId,
+    blend: BlendMode,
+}
+
+impl SetLayerBlend {
+    /// Creates the command.
+    pub fn new(id: LayerId, blend: BlendMode) -> Self {
+        Self { id, blend }
+    }
+
+    fn swap(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        let layer = doc.layer_mut(self.id).ok_or(CommandError::LayerNotFound)?;
+        std::mem::swap(&mut layer.blend, &mut self.blend);
+        Ok(())
+    }
+}
+
+impl Command for SetLayerBlend {
+    fn label(&self) -> &str {
+        "Set Layer Blend Mode"
     }
 
     fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {

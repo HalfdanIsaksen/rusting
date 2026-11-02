@@ -130,6 +130,18 @@ fn contains_even_odd(contours: &[Vec<Vec2>], point: Vec2) -> bool {
     inside
 }
 
+/// A linear gradient across a fill: the fill colour at `start`, blending to
+/// `end_color` at `end`, and constant beyond either point.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Gradient {
+    /// Where the fill colour is, in document coordinates.
+    pub start: Vec2,
+    /// Where `end_color` is reached, in document coordinates.
+    pub end: Vec2,
+    /// Colour at `end`.
+    pub end_color: Rgba,
+}
+
 /// A filled area of a drawing, drawn under the drawing's strokes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Fill {
@@ -141,17 +153,27 @@ pub struct Fill {
     pub color: Rgba,
     /// Opacity multiplier in `0.0..=1.0`.
     pub opacity: f32,
+    /// Blends `color` into a second colour; `None` is a solid fill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gradient: Option<Gradient>,
 }
 
 impl Fill {
-    /// A fill with a fresh ID.
+    /// A solid fill with a fresh ID.
     pub fn new(shape: FillShape, color: Rgba, opacity: f32) -> Self {
         Self {
             id: FillId::new(),
             contours: shape.contours,
             color,
             opacity,
+            gradient: None,
         }
+    }
+
+    /// The same fill with `gradient`.
+    pub fn with_gradient(mut self, gradient: Option<Gradient>) -> Self {
+        self.gradient = gradient;
+        self
     }
 
     /// The fill's geometry.

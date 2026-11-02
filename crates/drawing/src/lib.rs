@@ -30,7 +30,7 @@ pub mod tessellate;
 
 pub use builder::StrokeBuilder;
 pub use erase::EraseResult;
-pub use fill::{Fill, FillError, FillShape, GapClosing, fill_region};
+pub use fill::{Fill, FillError, FillShape, GapClosing, Gradient, fill_region};
 pub use fill_tessellate::tessellate_fill;
 pub use select::ItemId;
 pub use stroke::{BrushStyle, DrawingContent, Stroke, StrokePoint, VectorDrawing};

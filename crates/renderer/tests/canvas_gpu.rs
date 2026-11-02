@@ -89,7 +89,10 @@ fn renders_workspace_background_and_strokes() {
     let draws = [StrokeDraw {
         id: id.into(),
         color: Rgba::rgb(0.0, 0.0, 1.0),
+        gradient: None,
         transform: Mat4::IDENTITY,
+        layer: None,
+        blend: Default::default(),
     }];
     let mut encoder = device.create_command_encoder(&Default::default());
     canvas.render(
@@ -195,12 +198,18 @@ fn translucent_stroke_covers_each_pixel_once() {
         StrokeDraw {
             id: overlapping.into(),
             color: half_blue,
+            gradient: None,
             transform: Mat4::IDENTITY,
+            layer: None,
+            blend: Default::default(),
         },
         StrokeDraw {
             id: on_top.into(),
             color: half_blue,
+            gradient: None,
             transform: Mat4::IDENTITY,
+            layer: None,
+            blend: Default::default(),
         },
     ];
     let mut encoder = device.create_command_encoder(&Default::default());

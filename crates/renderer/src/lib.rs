@@ -21,7 +21,7 @@ pub use canvas_target::{
     CANVAS_DEPTH_FORMAT, CANVAS_DISPLAY_FORMAT, CANVAS_RENDER_FORMAT, CANVAS_SAMPLE_COUNT,
     CanvasTarget,
 };
-pub use draw_list::{DrawListBuilder, fill_color, stroke_color};
+pub use draw_list::{DrawListBuilder, fill_color, fill_gradient, stroke_color};
 pub use gpu::{Gpu, RendererError, headless_device};
 pub use mesh::{Mesh, MeshRef, MeshSource};
 pub use offscreen::{OffscreenFrame, OffscreenRenderer, Pixels, output_size};

@@ -1,20 +1,25 @@
 //! The layer column on the left of the timeline: one row per layer with
-//! show/hide, lock and the name (click to select, double-click or F2 to
-//! rename, drag to reorder), and a header with add, remove, move up/down and
+//! show/hide, lock, the name (click to select, Cmd/Ctrl+click or
+//! Shift+click to select several, double-click or F2 to rename, drag to
+//! reorder) and the blend mode, and a header with add, duplicate, remove, move up/down and
 //! show/lock-all toggles.
 
 use super::timeline::{ROW_HEIGHT, RULER_HEIGHT, Row};
 use crate::icons::{self, IconFn};
 use crate::session::Session;
 use document::animation_core::LayerId;
+use document::scene::BlendMode;
 use editor::Command;
 use editor::commands::{
-    AddLayer, Batch, MoveLayer, RemoveLayer, RenameLayer, SetLayerLocked, SetLayerVisible,
+    AddLayer, Batch, DuplicateLayer, MoveLayer, RemoveLayer, RenameLayer, SetLayerBlend,
+    SetLayerLocked, SetLayerVisible,
 };
 use egui::{Pos2, Rect, Sense, Stroke, vec2};
 
 /// Width of the layer column.
-pub(super) const COLUMN_WIDTH: f32 = 190.0;
+pub(super) const COLUMN_WIDTH: f32 = 270.0;
+/// Width of the blend mode dropdown.
+const BLEND_WIDTH: f32 = 90.0;
 /// Width of the eye and lock cells.
 const TOGGLE_WIDTH: f32 = 22.0;
 /// Width of a header button.
@@ -34,6 +39,7 @@ struct Renaming {
 #[derive(Clone, Copy)]
 enum Action {
     Add,
+    Duplicate,
     Remove,
     Raise,
     Lower,
@@ -85,13 +91,43 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
         let row_rect =
             Rect::from_min_size(Pos2::new(rect.left(), top), vec2(COLUMN_WIDTH, ROW_HEIGHT));
         let active = session.state.active_layer == Some(row.id);
-        if active {
-            painter.rect_filled(row_rect, 0.0, visuals.selection.bg_fill.gamma_multiply(0.5));
+        let selected = session.is_layer_selected(row.id);
+        if selected {
+            let alpha = if active { 0.5 } else { 0.3 };
+            painter.rect_filled(
+                row_rect,
+                0.0,
+                visuals.selection.bg_fill.gamma_multiply(alpha),
+            );
         }
         let eye_rect = Rect::from_min_size(row_rect.min, vec2(TOGGLE_WIDTH, ROW_HEIGHT));
         let lock_rect = eye_rect.translate(vec2(TOGGLE_WIDTH, 0.0));
+        let blend_rect = Rect::from_x_y_ranges(
+            row_rect.right() - BLEND_WIDTH..=row_rect.right(),
+            row_rect.y_range(),
+        );
         let name_rect =
-            Rect::from_x_y_ranges(lock_rect.right()..=row_rect.right(), row_rect.y_range());
+            Rect::from_x_y_ranges(lock_rect.right()..=blend_rect.left(), row_rect.y_range());
+
+        let mut blend = row.blend;
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(blend_rect.shrink2(vec2(3.0, 1.0))),
+            |ui| {
+                egui::ComboBox::from_id_salt(("layer_blend", row.id))
+                    .selected_text(blend.label())
+                    .width(BLEND_WIDTH - 6.0)
+                    .show_ui(ui, |ui| {
+                        for mode in BlendMode::ALL {
+                            ui.selectable_value(&mut blend, mode, mode.label());
+                        }
+                    })
+                    .response
+                    .on_hover_text("Blend mode");
+            },
+        );
+        if blend != row.blend {
+            commands.push(Box::new(SetLayerBlend::new(row.id, blend)));
+        }
 
         let (eye, eye_tip, eye_strong) = if row.visible {
             (icons::eye as IconFn, "Hide layer", true)
@@ -157,8 +193,11 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
                     ui.scope_id().with(("layer_name", row.id)),
                     Sense::click_and_drag(),
                 )
-                .on_hover_text("Double-click or F2 to rename, drag to reorder");
-            if response.hovered() && !active {
+                .on_hover_text(
+                    "Cmd/Ctrl+click or Shift+click to select several, \
+                     double-click or F2 to rename, drag to reorder",
+                );
+            if response.hovered() && !selected {
                 painter.rect_filled(
                     name_rect,
                     0.0,
@@ -166,7 +205,12 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
                 );
             }
             if response.clicked() || response.drag_started() {
-                select = Some(row.id);
+                let modifiers = ui.input(|i| i.modifiers);
+                select = Some(if response.drag_started() {
+                    (row.id, egui::Modifiers::NONE)
+                } else {
+                    (row.id, modifiers)
+                });
             }
             if response.drag_started() {
                 ui.data_mut(|d| d.insert_temp(drag_id, row.id));
@@ -187,7 +231,7 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
                     commands.push(Box::new(MoveLayer::new(row.id, to)));
                 }
             }
-            let mut color = if active {
+            let mut color = if selected {
                 visuals.strong_text_color()
             } else {
                 visuals.text_color()
@@ -205,6 +249,7 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
         }
         painter.vline(eye_rect.right(), row_rect.y_range(), line);
         painter.vline(lock_rect.right(), row_rect.y_range(), line);
+        painter.vline(blend_rect.left(), row_rect.y_range(), line);
         painter.hline(rect.x_range(), row_rect.bottom(), line);
     }
     painter.hline(rect.x_range(), header.bottom(), line);
@@ -229,8 +274,11 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
     }
 
     ui.data_mut(|d| d.insert_temp(rename_id, renaming));
-    if let Some(id) = select {
-        session.select_layer(id);
+    match select {
+        Some((id, m)) if m.command => session.toggle_layer_selected(id),
+        Some((id, m)) if m.shift => session.select_layer_range(id),
+        Some((id, _)) => session.select_layer(id),
+        None => {}
     }
     for command in commands {
         if session.execute(command).is_err() {
@@ -242,9 +290,8 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
     let index = active.and_then(|id| layers.index_of(id));
     match (action, active, index) {
         (Some(Action::Add), _, _) => add_layer(session, index),
-        (Some(Action::Remove), Some(id), _) => {
-            let _ = session.execute(Box::new(RemoveLayer::new(id)));
-        }
+        (Some(Action::Duplicate), _, _) => duplicate_layers(session),
+        (Some(Action::Remove), _, _) => remove_layers(session),
         (Some(Action::Raise), Some(id), Some(i)) => {
             let _ = session.execute(Box::new(MoveLayer::new(id, i + 1)));
         }
@@ -322,7 +369,7 @@ fn header_controls(
         .state
         .active_layer
         .and_then(|id| layers.index_of(id));
-    let buttons: [(IconFn, &str, bool, Action); 4] = [
+    let buttons: [(IconFn, &str, bool, Action); 5] = [
         (
             icons::plus,
             "Add a layer above the active one",
@@ -330,8 +377,14 @@ fn header_controls(
             Action::Add,
         ),
         (
+            icons::duplicate,
+            "Duplicate the selected layers",
+            index.is_some(),
+            Action::Duplicate,
+        ),
+        (
             icons::trash,
-            "Remove the active layer",
+            "Remove the selected layers",
             index.is_some(),
             Action::Remove,
         ),
@@ -431,6 +484,50 @@ fn add_layer(session: &mut Session, above: Option<usize>) {
     }
 }
 
+/// Duplicates every selected layer right above itself, as one undo step,
+/// and selects the copies.
+fn duplicate_layers(session: &mut Session) {
+    let selected = session.selected_layers();
+    let commands: Vec<DuplicateLayer> =
+        selected.iter().map(|&id| DuplicateLayer::new(id)).collect();
+    let copies: Vec<LayerId> = commands.iter().map(DuplicateLayer::layer_id).collect();
+    let active_copy = selected
+        .iter()
+        .position(|&id| Some(id) == session.state.active_layer)
+        .map(|i| copies[i]);
+    let label = if copies.len() == 1 {
+        "Duplicate Layer"
+    } else {
+        "Duplicate Layers"
+    };
+    let batch = commands
+        .into_iter()
+        .map(|c| Box::new(c) as Box<dyn Command>)
+        .collect();
+    if session.execute(Box::new(Batch::new(label, batch))).is_ok()
+        && let Some(active_copy) = active_copy
+    {
+        session.select_layers(active_copy, copies);
+    }
+}
+
+/// Removes every selected layer, as one undo step.
+fn remove_layers(session: &mut Session) {
+    let batch: Vec<Box<dyn Command>> = session
+        .selected_layers()
+        .into_iter()
+        .map(|id| Box::new(RemoveLayer::new(id)) as Box<dyn Command>)
+        .collect();
+    let label = if batch.len() == 1 {
+        "Remove Layer"
+    } else {
+        "Remove Layers"
+    };
+    if !batch.is_empty() {
+        let _ = session.execute(Box::new(Batch::new(label, batch)));
+    }
+}
+
 /// "Layer N" with the smallest N above every existing "Layer N".
 fn unique_name<'a>(names: impl Iterator<Item = &'a str>) -> String {
     let highest = names
@@ -464,6 +561,38 @@ mod tests {
             "Layer 4"
         );
         assert_eq!(unique_name(std::iter::empty()), "Layer 1");
+    }
+
+    #[test]
+    fn duplicate_and_remove_act_on_the_selection_in_one_step() {
+        let mut s = Session::new();
+        let bottom = s.state.active_layer.unwrap();
+        add_layer(&mut s, Some(0));
+        let top = s.state.active_layer.unwrap();
+        s.toggle_layer_selected(bottom);
+        assert_eq!(s.state.active_layer, Some(bottom));
+
+        duplicate_layers(&mut s);
+        let names: Vec<_> = s.document.layers().iter().map(|l| l.name.clone()).collect();
+        assert_eq!(
+            names,
+            ["Layer 1", "Layer 1 copy", "Layer 2", "Layer 2 copy"]
+        );
+        let copies = s.selected_layers();
+        assert_eq!(copies.len(), 2);
+        assert!(!copies.contains(&top) && !copies.contains(&bottom));
+        assert_eq!(
+            s.state.active_layer,
+            s.document.layers().iter().nth(1).map(|l| l.id)
+        );
+
+        remove_layers(&mut s);
+        let order: Vec<_> = s.document.layers().iter().map(|l| l.id).collect();
+        assert_eq!(order, [bottom, top]);
+        s.undo();
+        assert_eq!(s.document.layers().len(), 4);
+        s.undo();
+        assert_eq!(s.document.layers().len(), 2);
     }
 
     #[test]

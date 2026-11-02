@@ -37,6 +37,48 @@ impl Default for Transform2D {
     }
 }
 
+/// How a layer's colours combine with the layers below it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum BlendMode {
+    /// Paints over what is below.
+    #[default]
+    Normal,
+    /// Multiplies the colours: always darker, white leaves the backdrop.
+    Multiply,
+    /// Inverse of Multiply: always lighter, black leaves the backdrop.
+    Screen,
+    /// Multiply in the backdrop's darks, Screen in its lights: more contrast.
+    Overlay,
+    /// Overlay with the layers swapped: the layer's darks multiply, its lights screen.
+    HardLight,
+    /// A gentler Hard Light: darkens or lightens the backdrop a little.
+    SoftLight,
+}
+
+impl BlendMode {
+    /// Every mode, in menu order.
+    pub const ALL: [Self; 6] = [
+        Self::Normal,
+        Self::Multiply,
+        Self::Screen,
+        Self::Overlay,
+        Self::HardLight,
+        Self::SoftLight,
+    ];
+
+    /// Name shown in the UI.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "Normal",
+            Self::Multiply => "Multiply",
+            Self::Screen => "Screen",
+            Self::Overlay => "Overlay",
+            Self::HardLight => "Hard Light",
+            Self::SoftLight => "Soft Light",
+        }
+    }
+}
+
 /// A layer in the scene.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Layer {
@@ -50,6 +92,9 @@ pub struct Layer {
     pub locked: bool,
     /// Layer opacity in `0.0..=1.0`.
     pub opacity: f32,
+    /// How the layer combines with the layers below it.
+    #[serde(default)]
+    pub blend: BlendMode,
     /// Layer-local to document transform.
     pub transform: Transform2D,
 }
@@ -63,6 +108,7 @@ impl Layer {
             visible: true,
             locked: false,
             opacity: 1.0,
+            blend: BlendMode::Normal,
             transform: Transform2D::IDENTITY,
         }
     }
