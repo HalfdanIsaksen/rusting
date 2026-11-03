@@ -1,5 +1,6 @@
-//! H.264 MP4 video: OpenH264 (bundled, built from source) encodes, the
-//! pure-Rust `mp4` crate muxes. See ADR-008.
+//! H.264 MP4 or MOV video: OpenH264 (bundled, built from source) encodes,
+//! the pure-Rust `mp4` crate muxes. A `.mov` path gets QuickTime branding;
+//! the boxes are the same. See ADR-008.
 
 use crate::ExportError;
 use crate::RgbaImage;
@@ -60,7 +61,7 @@ impl VideoSettings {
     }
 }
 
-/// Writes frames to an MP4 file as they arrive. The file is deleted if the
+/// Writes frames to an MP4 (or MOV, by extension) file as they arrive. The file is deleted if the
 /// encoder is dropped (or [`Self::abort`]ed) before [`Self::finish`].
 pub struct Mp4Encoder {
     path: PathBuf,
@@ -109,12 +110,17 @@ impl Mp4Encoder {
             path: path.to_owned(),
             source,
         })?;
-        let brands = ["isom", "iso2", "avc1", "mp41"]
-            .iter()
-            .filter_map(|b| b.parse().ok())
-            .collect();
+        let mov = path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("mov"));
+        let (major, brands): (&str, &[&str]) = if mov {
+            ("qt  ", &["qt  "])
+        } else {
+            ("isom", &["isom", "iso2", "avc1", "mp41"])
+        };
+        let brands = brands.iter().filter_map(|b| b.parse().ok()).collect();
         let config = mp4::Mp4Config {
-            major_brand: "isom".parse()?,
+            major_brand: major.parse()?,
             minor_version: 512,
             compatible_brands: brands,
             // Same as the track, so durations convert exactly.
@@ -371,6 +377,23 @@ mod tests {
         assert_eq!((track.width(), track.height()), (64, 48));
         assert_eq!(track.sample_count(), 12);
         assert_eq!(reader.duration().as_millis(), 500);
+        std::fs::remove_file(out).unwrap();
+    }
+
+    #[test]
+    fn mov_path_gets_quicktime_brand() {
+        let path = temp_path("brand").with_extension("mov");
+        let mut enc = Mp4Encoder::create(&path, settings(16, 16)).unwrap();
+        for _ in 0..3 {
+            enc.push_frame(&RgbaImage::filled(16, 16, [0, 0, 0, 255]))
+                .unwrap();
+        }
+        let out = enc.finish().unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+        assert_eq!(&bytes[4..12], b"ftypqt  ");
+        let reader =
+            mp4::Mp4Reader::read_header(std::io::Cursor::new(&bytes), bytes.len() as u64).unwrap();
+        assert_eq!(reader.tracks().get(&1).unwrap().sample_count(), 3);
         std::fs::remove_file(out).unwrap();
     }
 
