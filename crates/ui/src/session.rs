@@ -42,7 +42,7 @@ pub enum ExportKind {
     Frame,
     /// Every frame (or a range) as numbered PNG or JPEG files.
     Sequence,
-    /// The animation as an H.264 MP4 video.
+    /// The animation as an H.264 MP4 or MOV video.
     Video,
 }
 

@@ -72,7 +72,7 @@ The tool strip runs down the side of the canvas:
 - **Canvas → Resize Canvas…**: set a new width and height and pick an anchor (corners, edge middles or center) to grow or shrink from. The artwork keeps its place relative to the anchor.
 
 ### Timeline and layers
-- Frame-by-frame keys with stepped exposure: new blank drawing, end exposure, remove key.
+- Frame-by-frame keys with stepped exposure. Icon buttons add a drawing key (filled dot), add an empty key that ends the exposure (hollow dot) or remove the key (dot with a cross); hover for a description.
 - **Duplicate frame** (button, Edit → Duplicate Frame, or `Cmd/Ctrl+D`) inserts a copy of the current frame right after it on every layer.
 - Select a range of frames by dragging across the frame cells, or `Shift`+click to select from the playhead. A plain click moves the playhead and clears the selection, `Esc` clears it, and dragging in the frame-number ruler scrubs.
 - Playback with loop, first/previous/next/last frame, and `←/→` and `↑/↓` to step frames and keys.
@@ -87,7 +87,7 @@ The tool strip runs down the side of the canvas:
 ### Files and export
 - Save and open versioned `.rusting` project files.
 - Undo/redo for every edit (up to 500 steps).
-- Export the current frame as PNG/JPG, an image sequence, or an H.264 MP4 video.
+- Export the current frame as PNG/JPG, an image sequence, or an H.264 video as MP4 or MOV (QuickTime).
 
 ## Contributing workflow
 
