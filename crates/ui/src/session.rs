@@ -10,7 +10,9 @@ use crate::preview::Preview;
 use crate::tools::ToolController;
 use document::animation_core::{FrameIndex, FrameRange, LayerId};
 use document::{CanvasAnchor, CanvasSize, Document, FrameTag, NewDocumentSettings, SettingsError};
-use editor::commands::{DuplicateFrame, ResizeCanvas, SetTags};
+use editor::commands::{
+    DuplicateFrame, InsertFrames, MoveFrames, RemoveFrames, ResizeCanvas, SetTags,
+};
 use editor::{Command, CommandError, EditorState, History};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -404,6 +406,60 @@ impl Session {
                 "Duplicated to frame {}",
                 new_frame.display_number()
             ));
+        }
+    }
+
+    /// Inserts a blank frame right after the playhead on every layer and
+    /// moves to it. The drawing at the playhead is held one frame longer.
+    pub fn insert_frame(&mut self) {
+        if self.tools.is_active() {
+            return;
+        }
+        self.tools.cancel();
+        self.playback.pause();
+        let new_frame = FrameIndex(self.current_frame().0 + 1);
+        if self
+            .execute(Box::new(InsertFrames::new(new_frame, 1)))
+            .is_ok()
+        {
+            self.set_frame(new_frame);
+        }
+    }
+
+    /// Removes the selected frames (or the frame under the playhead) on
+    /// every layer.
+    pub fn delete_frames(&mut self) {
+        if self.tools.is_active() {
+            return;
+        }
+        self.tools.cancel();
+        self.playback.pause();
+        let current = self.current_frame();
+        let range = self
+            .frame_selection
+            .unwrap_or(FrameRange::new(current, FrameIndex(current.0 + 1)));
+        if self.execute(Box::new(RemoveFrames::new(range))).is_ok() {
+            self.clear_frame_selection();
+            let last = FrameIndex(self.document.frame_count - 1);
+            self.set_frame(range.start.min(last));
+        }
+    }
+
+    /// Moves the keys in the frame selection so it starts at `to`; the
+    /// selection and the playhead move with them.
+    pub fn move_frame_selection(&mut self, to: FrameIndex) {
+        let Some(range) = self.frame_selection else {
+            return;
+        };
+        if to == range.start {
+            return;
+        }
+        let command = MoveFrames::new(range, to);
+        let target = command.target();
+        let playhead = (self.current_frame().0.saturating_sub(range.start.0)).min(range.len() - 1);
+        if self.execute(Box::new(command)).is_ok() {
+            self.frame_selection = Some(target);
+            self.set_frame(FrameIndex(to.0 + playhead));
         }
     }
 
@@ -932,6 +988,30 @@ mod tests {
         assert_eq!(s.state.active_layer, Some(bottom));
         s.redo();
         assert_eq!(s.document.layers().len(), 2);
+    }
+
+    #[test]
+    fn moving_the_frame_selection_moves_its_keys_and_the_playhead() {
+        let mut s = Session::new();
+        s.execute(Box::new(SetFrameCount::new(10))).unwrap();
+        let layer = s.state.active_layer.unwrap();
+        s.execute(Box::new(editor::commands::AddKeyframe::new(
+            layer,
+            FrameIndex(2),
+            editor::commands::KeyframeKind::Drawing,
+        )))
+        .unwrap();
+        s.set_frame(FrameIndex(2));
+        s.select_frames_to(FrameIndex(3));
+        s.move_frame_selection(FrameIndex(6));
+        assert_eq!(
+            s.frame_selection(),
+            Some(FrameRange::new(FrameIndex(6), FrameIndex(8)))
+        );
+        assert_eq!(s.current_frame(), FrameIndex(6));
+        let track = s.document.track(layer).unwrap();
+        assert!(track.key_at(FrameIndex(6)).is_some());
+        assert!(track.key_at(FrameIndex(2)).is_none());
     }
 
     #[test]

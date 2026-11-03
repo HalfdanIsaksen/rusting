@@ -7,7 +7,7 @@ mod layers;
 mod select;
 pub use canvas::ResizeCanvas;
 pub use fill::{AddFill, RemoveFill};
-pub use frames::DuplicateFrame;
+pub use frames::{DuplicateFrame, InsertFrames, MoveFrames, RemoveFrames};
 pub use layers::DuplicateLayer;
 pub use select::{TransformItems, TranslateItems, remove_items};
 
@@ -633,6 +633,48 @@ impl Command for RemoveKeyframe {
     }
 }
 
+/// Wipes every stroke and fill from the drawing a layer shows at a frame. The
+/// key stays, so the frame keeps its timing; it just shows an empty drawing.
+#[derive(Debug)]
+pub struct ClearFrame {
+    layer: LayerId,
+    frame: FrameIndex,
+    cleared: Option<(DrawingId, DrawingContent)>,
+}
+
+impl ClearFrame {
+    /// Creates the command.
+    pub fn new(layer: LayerId, frame: FrameIndex) -> Self {
+        Self {
+            layer,
+            frame,
+            cleared: None,
+        }
+    }
+}
+
+impl Command for ClearFrame {
+    fn label(&self) -> &str {
+        "Clear Frame"
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        editable_layer(doc, self.layer)?;
+        let id = doc
+            .drawing_at(self.layer, self.frame)
+            .ok_or(CommandError::DrawingNotFound)?;
+        let old = std::mem::take(doc.drawing_mut(id).ok_or(CommandError::DrawingNotFound)?);
+        self.cleared = Some((id, old));
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        let (id, old) = self.cleared.take().ok_or(CommandError::DrawingNotFound)?;
+        doc.insert_drawing(id, old);
+        Ok(())
+    }
+}
+
 /// Moves the keyframe at one frame to another on the same layer.
 ///
 /// Fails with [`CommandError::KeyframeExists`] if the target frame already
@@ -1144,6 +1186,23 @@ mod tests {
             .unwrap();
         assert!(d.drawing(drawing).is_some());
         assert_eq!(d.drawing_at(l, FrameIndex(0)), None);
+        h.undo(&mut d).unwrap();
+        assert_eq!(d, before);
+    }
+
+    #[test]
+    fn clear_frame_wipes_the_exposed_drawing_and_keeps_the_key() {
+        let mut d = doc();
+        let l = d.add_layer("L");
+        let mut h = History::new();
+        h.execute(&mut d, Box::new(AddStroke::new(l, FrameIndex(0), stroke())))
+            .unwrap();
+        let before = d.clone();
+        // Frame 3 shows the drawing keyed at frame 0.
+        h.execute(&mut d, Box::new(ClearFrame::new(l, FrameIndex(3))))
+            .unwrap();
+        let drawing = d.drawing_at(l, FrameIndex(0)).unwrap();
+        assert_eq!(d.drawing(drawing), Some(&DrawingContent::default()));
         h.undo(&mut d).unwrap();
         assert_eq!(d, before);
     }

@@ -88,6 +88,20 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
             {
                 session.duplicate_frame();
             }
+            if ui
+                .add(item(ui, "Insert Frame", &shortcuts::INSERT_FRAME))
+                .on_hover_text("Insert a blank frame after this one, on every layer")
+                .clicked()
+            {
+                session.insert_frame();
+            }
+            if ui
+                .add(item(ui, "Delete Frames", &shortcuts::DELETE_FRAMES))
+                .on_hover_text("Remove the selected frames (or this frame) on every layer")
+                .clicked()
+            {
+                session.delete_frames();
+            }
         });
 
         ui.menu_button("Canvas", |ui| {

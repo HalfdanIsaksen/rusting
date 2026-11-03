@@ -24,6 +24,10 @@ pub const REDO_ALT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND,
 pub const SELECT_ALL: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::A);
 /// Duplicate the frame under the playhead.
 pub const DUPLICATE_FRAME: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::D);
+/// Insert a blank frame after the playhead (F5, as in most animation tools).
+pub const INSERT_FRAME: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F5);
+/// Remove the selected frames, or the frame under the playhead.
+pub const DELETE_FRAMES: KeyboardShortcut = KeyboardShortcut::new(Modifiers::SHIFT, Key::F5);
 /// Quit.
 pub const QUIT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Q);
 
@@ -89,6 +93,18 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
     if ctx.input_mut(|i| i.consume_shortcut(&DUPLICATE_FRAME)) {
         session.duplicate_frame();
     }
+    // Shift+F5 first: egui ignores an extra Shift when matching F5.
+    let (delete_frames, insert_frame) = ctx.input_mut(|i| {
+        (
+            i.consume_shortcut(&DELETE_FRAMES),
+            i.consume_shortcut(&INSERT_FRAME),
+        )
+    });
+    if delete_frames {
+        session.delete_frames();
+    } else if insert_frame {
+        session.insert_frame();
+    }
 
     let gesture = session.tools.is_active();
     if ctx.input_mut(|i| i.consume_shortcut(&SELECT_ALL)) && !gesture {
@@ -114,6 +130,8 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
     }
     if delete && selecting && !gesture {
         session.delete_selection();
+    } else if delete && session.frame_selection().is_some() && !gesture {
+        session.delete_frames();
     }
     let (brush, eraser, fill, left, right, up, down, space_down, space_up) = ctx.input_mut(|i| {
         let plain = i.modifiers.is_none();
@@ -267,6 +285,22 @@ mod tests {
         for view in [TOGGLE_TOOLBAR, TOGGLE_TIMELINE, DUPLICATE_FRAME] {
             assert!(all.iter().all(|s| s.logical_key != view.logical_key));
         }
+    }
+
+    #[test]
+    fn f5_inserts_and_shift_f5_deletes_a_frame() {
+        let mut s = Session::new();
+        let count = s.document.frame_count;
+        s.set_frame(FrameIndex(2));
+        press(&mut s, INSERT_FRAME);
+        assert_eq!(s.document.frame_count, count + 1);
+        assert_eq!(s.current_frame(), FrameIndex(3));
+        press(&mut s, DELETE_FRAMES);
+        assert_eq!(s.document.frame_count, count);
+        s.select_frames_to(FrameIndex(0));
+        press(&mut s, KeyboardShortcut::new(Modifiers::NONE, Key::Delete));
+        assert_eq!(s.document.frame_count, count - 4);
+        assert_eq!(s.frame_selection(), None);
     }
 
     #[test]

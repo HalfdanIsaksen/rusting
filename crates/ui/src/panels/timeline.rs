@@ -9,10 +9,12 @@ use crate::onion::MAX_ONION_RANGE;
 use crate::session::{Session, TimelineView};
 use document::Document;
 use document::animation_core::{Fps, FrameIndex, LayerId};
+use document::drawing::DrawingContent;
 use document::scene::BlendMode;
 use document::timeline::Keyframe;
 use editor::commands::{
-    AddKeyframe, KeyframeKind, MoveKeyframe, RemoveKeyframe, SetFps, SetFrameCount,
+    AddKeyframe, ClearFrame, KeyframeKind, MoveFrames, MoveKeyframe, RemoveKeyframe, SetFps,
+    SetFrameCount,
 };
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, vec2};
 
@@ -181,7 +183,6 @@ fn keys_and_onion(ui: &mut egui::Ui, session: &mut Session) {
         // Off while playing: the key-at-frame state changes every frame.
         let editable = layer.is_some() && !session.playback.is_playing();
         let free = editable && !key_here;
-        let key_here = editable && key_here;
 
         if icon_button(
             ui,
@@ -213,14 +214,24 @@ fn keys_and_onion(ui: &mut egui::Ui, session: &mut Session) {
         ) {
             session.duplicate_frame();
         }
+        let drawn = editable
+            && layer.is_some_and(|id| {
+                let doc = &session.document;
+                doc.layers().get(id).is_some_and(|l| l.is_editable())
+                    && doc
+                        .drawing_at(id, frame)
+                        .and_then(|d| doc.drawing(d))
+                        .is_some_and(|d| *d != DrawingContent::default())
+            });
         if icon_button(
             ui,
             icons::remove_key,
-            key_here,
-            "Remove key: remove the key at this frame on the active layer",
+            drawn,
+            "Clear frame: wipe the drawing shown at this frame, keeping its key \
+             (right-click a key to remove it)",
         ) && let Some(id) = layer
         {
-            let _ = session.execute(Box::new(RemoveKeyframe::new(id, frame)));
+            let _ = session.execute(Box::new(ClearFrame::new(id, frame)));
         }
         let tag_tip = if session.frame_selection().is_some() {
             "Tag the selected frames: playback loops inside a tag"
@@ -392,22 +403,54 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
         (unlocked && keyed).then_some((layer, frame))
     };
 
-    // Drag a key to move it; the drop happens on release.
+    // Drag inside the frame selection to move it, or drag a key to move
+    // that key; the drop happens on release.
+    let selection = session.frame_selection();
+    let in_selection = |pos: Pos2| {
+        pos.y - rect.top() >= RULER_HEIGHT && selection.is_some_and(|r| r.contains(frame_at(pos.x)))
+    };
+    let shift = ui.input(|i| i.modifiers.shift);
+    let selection_drag_id = ui.scope_id().with("selection_drag");
     let drag_id = ui.scope_id().with("key_drag");
     if response.drag_started()
         && let Some(origin) = ui.input(|i| i.pointer.press_origin())
-        && let Some(key) = movable_key(origin)
     {
-        ui.data_mut(|d| d.insert_temp(drag_id, key));
+        if !shift && in_selection(origin) {
+            ui.data_mut(|d| d.insert_temp(selection_drag_id, frame_at(origin.x)));
+        } else if let Some(key) = movable_key(origin) {
+            ui.data_mut(|d| d.insert_temp(drag_id, key));
+        }
     }
+    let selection_grab: Option<FrameIndex> = ui.data(|d| d.get_temp(selection_drag_id));
     let dragged_key: Option<(LayerId, FrameIndex)> = ui.data(|d| d.get_temp(drag_id));
     let drop_target = ui
         .input(|i| i.pointer.latest_pos())
         .map(|pos| frame_at(pos.x));
-    if dragged_key.is_some() {
+    // Where the selection would start if dropped now, kept inside the animation.
+    let selection_to = selection_grab
+        .zip(selection)
+        .zip(drop_target)
+        .map(|((grab, range), at)| {
+            let start = i64::from(range.start.0) + i64::from(at.0) - i64::from(grab.0);
+            FrameIndex(start.clamp(0, i64::from(count - range.len())) as u32)
+        });
+    if dragged_key.is_some() || selection_grab.is_some() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-    } else if response.hover_pos().and_then(movable_key).is_some() {
+    } else if response
+        .hover_pos()
+        .is_some_and(|pos| in_selection(pos) || movable_key(pos).is_some())
+    {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    }
+    let right_clicked_key = response
+        .secondary_clicked()
+        .then(|| response.interact_pointer_pos().and_then(movable_key))
+        .flatten();
+    if response.drag_stopped() && selection_grab.is_some() {
+        ui.data_mut(|d| d.remove::<FrameIndex>(selection_drag_id));
+        if let Some(to) = selection_to {
+            session.move_frame_selection(to);
+        }
     }
     if response.drag_stopped()
         && let Some((layer, from)) = dragged_key
@@ -442,9 +485,13 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
         }
     }
     let menu_tag_id = ui.scope_id().with("menu_tag");
+    let menu_key_id = ui.scope_id().with("menu_key");
     if response.secondary_clicked() {
         let tag = response.interact_pointer_pos().and_then(tag_under);
-        ui.data_mut(|d| d.insert_temp(menu_tag_id, tag));
+        ui.data_mut(|d| {
+            d.insert_temp(menu_tag_id, tag);
+            d.insert_temp(menu_key_id, right_clicked_key);
+        });
     }
     response.context_menu(|ui| {
         match ui
@@ -463,6 +510,13 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
                 }
             }
             None => {
+                if let Some((layer, frame)) = ui
+                    .data(|d| d.get_temp::<Option<(LayerId, FrameIndex)>>(menu_key_id))
+                    .flatten()
+                    && ui.button("Remove Key").clicked()
+                {
+                    let _ = session.execute(Box::new(RemoveKeyframe::new(layer, frame)));
+                }
                 let label = if session.frame_selection().is_some() {
                     "Tag Selected Frames"
                 } else {
@@ -483,6 +537,7 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
     // also makes its layer active (keeping the layer selection if it is part
     // of it).
     if dragged_key.is_none()
+        && selection_grab.is_none()
         && response.is_pointer_button_down_on()
         && let Some(pos) = response.interact_pointer_pos()
     {
@@ -491,7 +546,6 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
             .input(|i| i.pointer.press_origin())
             .is_some_and(|o| o.y - rect.top() < RULER_HEIGHT);
         let pressed = ui.input(|i| i.pointer.primary_pressed());
-        let shift = ui.input(|i| i.modifiers.shift);
         if session.playback.is_playing() {
             session.playback.pause();
         }
@@ -503,6 +557,8 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
             }
         } else if pressed && shift {
             session.select_frames_to(frame);
+        } else if pressed && in_selection(pos) {
+            // Maybe the start of a selection move; a click clears it below.
         } else if pressed {
             session.clear_frame_selection();
             session.set_frame(frame);
@@ -520,6 +576,14 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
             }
         }
     }
+    if response.clicked()
+        && !shift
+        && let Some(pos) = response.interact_pointer_pos()
+        && in_selection(pos)
+    {
+        session.clear_frame_selection();
+        session.set_frame(frame_at(pos.x));
+    }
     if response.hovered() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         session.clear_frame_selection();
     }
@@ -530,6 +594,29 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
         && let Some(to) = drop_target
     {
         paint_key_drop(ui, session, rows, rect, cell, (layer, from), to);
+    }
+    if response.dragged()
+        && let Some(range) = selection
+        && let Some(to) = selection_to
+    {
+        let blocked = MoveFrames::new(range, to)
+            .blocked_by(&session.document)
+            .is_some();
+        let color = if blocked {
+            Color32::from_rgb(230, 70, 60)
+        } else {
+            ui.visuals().selection.stroke.color
+        };
+        let x = rect.left() + to.0 as f32 * cell;
+        ui.painter_at(rect).rect_stroke(
+            Rect::from_x_y_ranges(
+                x..=x + range.len() as f32 * cell,
+                rect.top() + RULER_HEIGHT..=rect.bottom(),
+            ),
+            2.0,
+            Stroke::new(2.0, color),
+            StrokeKind::Inside,
+        );
     }
 
     // Keep the playhead in view when it moves (playback, stepping).
