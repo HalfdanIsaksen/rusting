@@ -9,10 +9,11 @@ use crate::onion::MAX_ONION_RANGE;
 use crate::session::{Session, TimelineView};
 use document::Document;
 use document::animation_core::{Fps, FrameIndex, LayerId};
+use document::drawing::DrawingContent;
 use document::scene::BlendMode;
 use document::timeline::Keyframe;
 use editor::commands::{
-    AddKeyframe, KeyframeKind, MoveKeyframe, RemoveKeyframe, SetFps, SetFrameCount,
+    AddKeyframe, ClearFrame, KeyframeKind, MoveKeyframe, RemoveKeyframe, SetFps, SetFrameCount,
 };
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, vec2};
 
@@ -181,7 +182,6 @@ fn keys_and_onion(ui: &mut egui::Ui, session: &mut Session) {
         // Off while playing: the key-at-frame state changes every frame.
         let editable = layer.is_some() && !session.playback.is_playing();
         let free = editable && !key_here;
-        let key_here = editable && key_here;
 
         if icon_button(
             ui,
@@ -213,14 +213,24 @@ fn keys_and_onion(ui: &mut egui::Ui, session: &mut Session) {
         ) {
             session.duplicate_frame();
         }
+        let drawn = editable
+            && layer.is_some_and(|id| {
+                let doc = &session.document;
+                doc.layers().get(id).is_some_and(|l| l.is_editable())
+                    && doc
+                        .drawing_at(id, frame)
+                        .and_then(|d| doc.drawing(d))
+                        .is_some_and(|d| *d != DrawingContent::default())
+            });
         if icon_button(
             ui,
             icons::remove_key,
-            key_here,
-            "Remove key: remove the key at this frame on the active layer",
+            drawn,
+            "Clear frame: wipe the drawing shown at this frame, keeping its key \
+             (right-click a key to remove it)",
         ) && let Some(id) = layer
         {
-            let _ = session.execute(Box::new(RemoveKeyframe::new(id, frame)));
+            let _ = session.execute(Box::new(ClearFrame::new(id, frame)));
         }
         let tag_tip = if session.frame_selection().is_some() {
             "Tag the selected frames: playback loops inside a tag"
@@ -409,6 +419,10 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
     } else if response.hover_pos().and_then(movable_key).is_some() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
     }
+    let right_clicked_key = response
+        .secondary_clicked()
+        .then(|| response.interact_pointer_pos().and_then(movable_key))
+        .flatten();
     if response.drag_stopped()
         && let Some((layer, from)) = dragged_key
     {
@@ -442,9 +456,13 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
         }
     }
     let menu_tag_id = ui.scope_id().with("menu_tag");
+    let menu_key_id = ui.scope_id().with("menu_key");
     if response.secondary_clicked() {
         let tag = response.interact_pointer_pos().and_then(tag_under);
-        ui.data_mut(|d| d.insert_temp(menu_tag_id, tag));
+        ui.data_mut(|d| {
+            d.insert_temp(menu_tag_id, tag);
+            d.insert_temp(menu_key_id, right_clicked_key);
+        });
     }
     response.context_menu(|ui| {
         match ui
@@ -463,6 +481,13 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
                 }
             }
             None => {
+                if let Some((layer, frame)) = ui
+                    .data(|d| d.get_temp::<Option<(LayerId, FrameIndex)>>(menu_key_id))
+                    .flatten()
+                    && ui.button("Remove Key").clicked()
+                {
+                    let _ = session.execute(Box::new(RemoveKeyframe::new(layer, frame)));
+                }
                 let label = if session.frame_selection().is_some() {
                     "Tag Selected Frames"
                 } else {

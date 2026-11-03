@@ -72,7 +72,7 @@ The tool strip runs down the side of the canvas:
 - **Canvas → Resize Canvas…**: set a new width and height and pick an anchor (corners, edge middles or center) to grow or shrink from. The artwork keeps its place relative to the anchor.
 
 ### Timeline and layers
-- Frame-by-frame keys with stepped exposure. Icon buttons add a drawing key (filled dot), add an empty key that ends the exposure (hollow dot) or remove the key (dot with a cross); hover for a description.
+- Frame-by-frame keys with stepped exposure. Icon buttons add a drawing key (filled dot), add an empty key that ends the exposure (hollow dot) or clear the frame (dot with a cross: wipes the drawing shown at the playhead and keeps its key); hover for a description. Right-click a key to remove it.
 - **Duplicate frame** (button, Edit → Duplicate Frame, or `Cmd/Ctrl+D`) inserts a copy of the current frame right after it on every layer.
 - Select a range of frames by dragging across the frame cells, or `Shift`+click to select from the playhead. A plain click moves the playhead and clears the selection, `Esc` clears it, and dragging in the frame-number ruler scrubs.
 - **Frame tags**: select frames and press the tag button (or right-click the frames) to name them, for example "walk" or "jump". Tags show in a strip above the frame numbers. Click a tag to select its frames, double-click it to rename it, and right-click it to rename or remove it. Playback started inside a tag loops that tag.
