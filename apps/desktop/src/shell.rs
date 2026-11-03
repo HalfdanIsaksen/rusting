@@ -315,7 +315,7 @@ fn paint_overlays(
 }
 
 /// Selection colour.
-const SELECTION_COLOR: egui::Color32 = egui::Color32::from_rgb(30, 144, 255);
+const SELECTION_COLOR: egui::Color32 = ui::theme::DARK.accent;
 
 /// The selection (an outline on each selected item and a box around them
 /// all, moved by the drag in progress) and the marquee or lasso loop. Line widths are in

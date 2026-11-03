@@ -81,6 +81,9 @@ The tool strip runs down the side of the canvas:
 - Select several layers with `Cmd/Ctrl`+click (toggle) or `Shift`+click (range); duplicate and remove act on the whole selection.
 - Onion skin (View → Onion skin).
 
+### Look
+- Uses the colours of the Rusting website (warm dark browns with an orange accent). The light or dark palette follows the operating system setting.
+
 ### View menu
 - Toggle the **Toolbar** (`Cmd/Ctrl+1`), **Timeline** (`Cmd/Ctrl+2`) and **Tool Settings** (`Cmd/Ctrl+3`) to free up space for the canvas.
 - **Preview**: a smaller floating window that shows only the canvas at the current frame. It has a close button and a Play button that loops the animation without moving the editor's playhead.
