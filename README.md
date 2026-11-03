@@ -86,7 +86,7 @@ The tool strip runs down the side of the canvas:
 ### Files and export
 - Save and open versioned `.rusting` project files.
 - Undo/redo for every edit (up to 500 steps).
-- Export the current frame as PNG/JPG, an image sequence, or an H.264 MP4 video.
+- Export the current frame as PNG/JPG, an image sequence, or an H.264 video as MP4 or MOV (QuickTime).
 
 ## Contributing workflow
 
