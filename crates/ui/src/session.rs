@@ -9,8 +9,8 @@ use crate::playback::Playback;
 use crate::preview::Preview;
 use crate::tools::ToolController;
 use document::animation_core::{FrameIndex, FrameRange, LayerId};
-use document::{CanvasAnchor, CanvasSize, Document, NewDocumentSettings, SettingsError};
-use editor::commands::{DuplicateFrame, ResizeCanvas};
+use document::{CanvasAnchor, CanvasSize, Document, FrameTag, NewDocumentSettings, SettingsError};
+use editor::commands::{DuplicateFrame, ResizeCanvas, SetTags};
 use editor::{Command, CommandError, EditorState, History};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -44,6 +44,8 @@ pub enum ExportKind {
     Sequence,
     /// The animation as an H.264 MP4 video.
     Video,
+    /// One image with each frame tag on its own row.
+    SpriteSheet,
 }
 
 /// An action that throws away the current document.
@@ -520,6 +522,57 @@ impl Session {
         self.frame_selection = None;
     }
 
+    // ----- Frame tags ----------------------------------------------------
+
+    /// Tags the selected frames (or the frame under the playhead) as
+    /// "Tag N". Returns the new tag's index.
+    pub fn add_tag(&mut self) -> Option<usize> {
+        let current = self.current_frame();
+        let range = self
+            .frame_selection
+            .unwrap_or(FrameRange::new(current, FrameIndex(current.0 + 1)));
+        let mut tags = self.document.tags.clone();
+        tags.push(FrameTag {
+            name: format!("Tag {}", tags.len() + 1),
+            range,
+        });
+        let index = tags.len() - 1;
+        self.execute(Box::new(SetTags::new(tags))).ok()?;
+        Some(index)
+    }
+
+    /// Renames tag `index`. Blank names and unchanged names do nothing.
+    pub fn rename_tag(&mut self, index: usize, name: &str) {
+        let name = name.trim();
+        let mut tags = self.document.tags.clone();
+        let Some(tag) = tags.get_mut(index) else {
+            return;
+        };
+        if name.is_empty() || tag.name == name {
+            return;
+        }
+        tag.name = name.to_owned();
+        let _ = self.execute(Box::new(SetTags::new(tags)));
+    }
+
+    /// Removes tag `index`.
+    pub fn remove_tag(&mut self, index: usize) {
+        let mut tags = self.document.tags.clone();
+        if index < tags.len() {
+            tags.remove(index);
+            let _ = self.execute(Box::new(SetTags::new(tags)));
+        }
+    }
+
+    /// Selects tag `index`'s frames and moves the playhead to its start.
+    pub fn select_tag(&mut self, index: usize) {
+        if let Some(range) = self.document.tags.get(index).map(|t| t.range) {
+            self.playback.pause();
+            self.set_frame(range.start);
+            self.frame_selection = Some(range);
+        }
+    }
+
     /// Advances playback. Call once per frame before drawing the UI.
     /// Returns true while playing.
     pub fn update_playback(&mut self) -> bool {
@@ -546,8 +599,7 @@ impl Session {
     /// Starts or stops playback from the current frame.
     pub fn toggle_playback(&mut self) {
         self.tools.cancel();
-        self.playback.sync(&self.document);
-        self.playback.toggle(self.current_frame());
+        self.playback.toggle(&self.document, self.current_frame());
     }
 
     // ----- Files ---------------------------------------------------------
@@ -904,6 +956,31 @@ mod tests {
         );
         s.clear_frame_selection();
         assert_eq!(s.frame_selection(), None);
+    }
+
+    #[test]
+    fn tags_are_added_from_the_selection_renamed_and_removed() {
+        let mut s = Session::new();
+        s.set_frame(FrameIndex(3));
+        assert_eq!(s.add_tag(), Some(0));
+        assert_eq!(
+            s.document.tags[0].range,
+            FrameRange::new(FrameIndex(3), FrameIndex(4))
+        );
+        s.select_frames_to(FrameIndex(6));
+        assert_eq!(s.add_tag(), Some(1));
+        assert_eq!(s.document.tags[1].name, "Tag 2");
+        s.rename_tag(1, "  walk ");
+        s.rename_tag(1, "");
+        assert_eq!(s.document.tags[1].name, "walk");
+        s.clear_frame_selection();
+        s.select_tag(1);
+        assert_eq!(s.current_frame(), FrameIndex(3));
+        assert_eq!(s.frame_selection(), Some(s.document.tags[1].range));
+        s.remove_tag(0);
+        assert_eq!(s.document.tags.len(), 1);
+        s.undo();
+        assert_eq!(s.document.tags.len(), 2);
     }
 
     #[test]

@@ -47,6 +47,9 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
                 if ui.button("Export Video (MP4)…").clicked() {
                     session.export(ExportKind::Video);
                 }
+                if ui.button("Export Sprite Sheet…").clicked() {
+                    session.export(ExportKind::SpriteSheet);
+                }
             });
             ui.separator();
             if ui.add(item(ui, "Quit", &shortcuts::QUIT)).clicked() {

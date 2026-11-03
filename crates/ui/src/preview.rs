@@ -61,8 +61,7 @@ impl<T: TimeSource> Preview<T> {
         if self.is_playing() {
             self.pause();
         } else if self.open {
-            self.playback.sync(doc);
-            self.playback.toggle(editor_frame);
+            self.playback.toggle(doc, editor_frame);
             self.playing_frame = Some(editor_frame);
         }
     }

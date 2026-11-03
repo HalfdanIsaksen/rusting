@@ -403,3 +403,20 @@ pub fn duplicate(painter: &Painter, rect: Rect, color: Color32) {
     line(painter, rect, color, w * 1.2, (0.59, 0.45), (0.59, 0.73));
     line(painter, rect, color, w * 1.2, (0.45, 0.59), (0.73, 0.59));
 }
+
+/// A luggage tag (frame tags).
+pub fn tag(painter: &Painter, rect: Rect, color: Color32) {
+    outline(
+        painter,
+        rect,
+        color,
+        &[
+            (0.12, 0.30),
+            (0.62, 0.30),
+            (0.90, 0.50),
+            (0.62, 0.70),
+            (0.12, 0.70),
+        ],
+    );
+    painter.circle_filled(at(rect, 0.64, 0.50), rect.width() * 0.06, color);
+}

@@ -35,7 +35,9 @@ use std::path::{Path, PathBuf};
 ///   migration).
 /// - 4: layers have a `blend` mode (absent means Normal, so v3 needs no
 ///   migration).
-pub const FORMAT_VERSION: u32 = 4;
+/// - 5: the document has frame `tags` (absent means none, so v4 needs no
+///   migration; ADR-009).
+pub const FORMAT_VERSION: u32 = 5;
 
 /// File extension for project files (without the dot).
 pub const FILE_EXTENSION: &str = "rusting";
@@ -72,6 +74,9 @@ pub enum FileFormatError {
 /// Frames in messages are shown one-based, as in the timeline.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ValidationError {
+    /// A frame tag covers no frames.
+    #[error("frame tag \"{0}\" covers no frames")]
+    EmptyTag(String),
     /// A keyframe refers to a drawing that does not exist.
     #[error(
         "layer \"{layer_name}\" ({layer}) has a keyframe at frame {frame} showing drawing \
@@ -388,6 +393,10 @@ pub fn validate(doc: &Document) -> Result<(), ValidationError> {
         }
     }
 
+    if let Some(tag) = doc.tags.iter().find(|t| t.range.is_empty()) {
+        return Err(ValidationError::EmptyTag(tag.name.clone()));
+    }
+
     let mut seen_layers = BTreeSet::new();
     for layer in doc.layers().iter() {
         if !seen_layers.insert(layer.id) {
@@ -529,7 +538,7 @@ pub fn validate(doc: &Document) -> Result<(), ValidationError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use animation_core::{DocumentId as DocumentIdForTest, Rgba, Vec2};
+    use animation_core::{DocumentId as DocumentIdForTest, FrameRange, Rgba, Vec2};
     use document::CanvasSize;
     use drawing::{
         BrushStyle, DrawingContent, Fill, FillShape, Stroke, StrokePoint, VectorDrawing,
@@ -545,6 +554,10 @@ mod tests {
             },
         );
         d.background = None;
+        d.tags.push(document::FrameTag {
+            name: "walk".into(),
+            range: FrameRange::new(FrameIndex(0), FrameIndex(4)),
+        });
         let l1 = d.add_layer("Ink");
         let l2 = d.add_layer("Color");
         let mut v = VectorDrawing::new();
@@ -641,6 +654,7 @@ mod tests {
         let vector = doc.drawings().values().next().unwrap().as_vector().unwrap();
         assert_eq!(vector.strokes().len(), 1);
         assert!(vector.fills().is_empty());
+        assert!(doc.tags.is_empty());
         // Saving writes the current version, which loads back the same.
         let text = to_string(&doc).unwrap();
         assert!(text.contains(&format!("\"format_version\": {FORMAT_VERSION}")));
@@ -675,6 +689,14 @@ mod tests {
             drawing["Vector"]["fills"][0]["opacity"] = 3.0.into();
         });
         assert!(matches!(invalid(&bad), ValidationError::OutOfRange { .. }));
+    }
+
+    #[test]
+    fn empty_tags_are_rejected() {
+        let text = edit_json(&sample(), |v| {
+            v["document"]["tags"][0]["range"]["end"] = 0.into();
+        });
+        assert!(matches!(invalid(&text), ValidationError::EmptyTag(name) if name == "walk"));
     }
 
     #[test]
