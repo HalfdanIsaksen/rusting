@@ -4,7 +4,7 @@
 //! reorder) and the blend mode, and a header with add, duplicate, remove, move up/down and
 //! show/lock-all toggles.
 
-use super::timeline::{ROW_HEIGHT, RULER_HEIGHT, Row};
+use super::timeline::{NUMBERS_HEIGHT, ROW_HEIGHT, RULER_HEIGHT, Row};
 use crate::icons::{self, IconFn};
 use crate::session::Session;
 use document::animation_core::LayerId;
@@ -62,7 +62,12 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
 
     let mut commands: Vec<Box<dyn Command>> = Vec::new();
     let mut action = None;
-    header_controls(ui, session, rows, header, &mut commands, &mut action);
+    // The controls line up with the frame numbers, under the tag strip.
+    let controls = Rect::from_x_y_ranges(
+        header.x_range(),
+        header.bottom() - NUMBERS_HEIGHT..=header.bottom(),
+    );
+    header_controls(ui, session, rows, controls, &mut commands, &mut action);
 
     let rename_id = ui.scope_id().with("layer_renaming");
     let mut renaming: Renaming = ui.data(|d| d.get_temp(rename_id)).unwrap_or_default();
@@ -313,7 +318,7 @@ fn header_controls(
     action: &mut Option<Action>,
 ) {
     let any = !rows.is_empty();
-    let eye_rect = Rect::from_min_size(header.min, vec2(TOGGLE_WIDTH, RULER_HEIGHT));
+    let eye_rect = Rect::from_min_size(header.min, vec2(TOGGLE_WIDTH, header.height()));
     let lock_rect = eye_rect.translate(vec2(TOGGLE_WIDTH, 0.0));
     let all_visible = rows.iter().all(|r| r.visible);
     let tip = if all_visible {
@@ -403,8 +408,10 @@ fn header_controls(
     ];
     let mut x = header.right() - BUTTON_WIDTH * buttons.len() as f32 - 2.0;
     for (i, (icon, tip, enabled, act)) in buttons.into_iter().enumerate() {
-        let rect =
-            Rect::from_min_size(Pos2::new(x, header.top()), vec2(BUTTON_WIDTH, RULER_HEIGHT));
+        let rect = Rect::from_min_size(
+            Pos2::new(x, header.top()),
+            vec2(BUTTON_WIDTH, header.height()),
+        );
         if icon_button(ui, rect, ("layers_button", i), icon, enabled, false, tip) {
             *action = Some(act);
         }

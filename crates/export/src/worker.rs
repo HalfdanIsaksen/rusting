@@ -36,6 +36,40 @@ pub enum ExportTarget {
         /// Size and frame rate.
         settings: VideoSettings,
     },
+    /// One image with the frames on a grid: row `i` holds the next
+    /// `rows[i]` frames, left to right.
+    SpriteSheet {
+        /// Output file.
+        path: PathBuf,
+        /// PNG or JPEG.
+        format: ImageFormat,
+        /// Frames per row.
+        rows: Vec<u32>,
+    },
+}
+
+/// The (column, row) of the `index`th frame on a sprite sheet.
+fn sheet_cell(rows: &[u32], index: usize) -> Option<(u32, u32)> {
+    let mut left = u32::try_from(index).ok()?;
+    for (row, &len) in rows.iter().enumerate() {
+        if left < len {
+            return Some((left, u32::try_from(row).ok()?));
+        }
+        left -= len;
+    }
+    None
+}
+
+/// Copies `frame` onto `sheet` at grid cell `(col, row)`.
+fn place(sheet: &mut RgbaImage, frame: &RgbaImage, (col, row): (u32, u32)) {
+    let (w, h) = (frame.width as usize, frame.height as usize);
+    let (x0, y0) = (col as usize * w, row as usize * h);
+    let stride = sheet.width as usize * 4;
+    for y in 0..h {
+        let src = &frame.pixels[y * w * 4..(y + 1) * w * 4];
+        let at = (y0 + y) * stride + x0 * 4;
+        sheet.pixels[at..at + w * 4].copy_from_slice(src);
+    }
 }
 
 /// Progress reported by the worker.
@@ -182,6 +216,7 @@ fn run(
         }
     }
     let mut first_file = None;
+    let mut sheet: Option<RgbaImage> = None;
     for (index, Message::Frame { number, image }) in frames.iter().enumerate() {
         queued.fetch_sub(1, Ordering::AcqRel);
         if cancelled.load(Ordering::Acquire) {
@@ -198,6 +233,27 @@ fn run(
                 let result = write_image(&path, &image, *format);
                 first_file.get_or_insert(path);
                 result
+            }
+            (ExportTarget::SpriteSheet { path, rows, .. }, None) => {
+                first_file.get_or_insert_with(|| path.clone());
+                let cols = rows.iter().copied().max().unwrap_or(0);
+                let sheet = sheet.get_or_insert_with(|| {
+                    RgbaImage::filled(image.width * cols, image.height * rows.len() as u32, [0; 4])
+                });
+                match sheet_cell(rows, index) {
+                    Some(cell)
+                        if image.validate().is_ok()
+                            && image.width * cols == sheet.width
+                            && image.height * rows.len() as u32 == sheet.height =>
+                    {
+                        place(sheet, &image, cell);
+                        Ok(())
+                    }
+                    _ => Err(ExportError::InvalidFrame(format!(
+                        "sprite sheet frame {} does not fit",
+                        index + 1
+                    ))),
+                }
             }
             (ExportTarget::Video { .. }, None) => Err(ExportError::Cancelled),
         };
@@ -218,7 +274,15 @@ fn run(
             Err(err) => WorkerEvent::Failed(err),
         },
         None => match first_file {
-            Some(path) => WorkerEvent::Finished(path),
+            Some(path) => match (&target, &sheet) {
+                (ExportTarget::SpriteSheet { format, .. }, Some(sheet)) => {
+                    match write_image(&path, sheet, *format) {
+                        Ok(()) => WorkerEvent::Finished(path),
+                        Err(err) => WorkerEvent::Failed(err),
+                    }
+                }
+                _ => WorkerEvent::Finished(path),
+            },
             None => {
                 WorkerEvent::Failed(ExportError::InvalidFrame("no frames were exported".into()))
             }
@@ -239,6 +303,31 @@ mod tests {
 
     fn last(events: Vec<WorkerEvent>) -> WorkerEvent {
         events.into_iter().last().unwrap()
+    }
+
+    #[test]
+    fn sprite_sheet_puts_each_row_on_its_own_line() {
+        let dir = temp_dir("sheet");
+        let path = dir.join("sheet.png");
+        let mut worker = ExportWorker::spawn(ExportTarget::SpriteSheet {
+            path: path.clone(),
+            format: ImageFormat::Png,
+            rows: vec![3, 1],
+        })
+        .unwrap();
+        for n in 1..=4u8 {
+            assert!(worker.send(u32::from(n), RgbaImage::filled(2, 2, [n * 50, 0, 0, 255])));
+        }
+        worker.finish();
+        assert!(matches!(last(worker.join()), WorkerEvent::Finished(p) if p == path));
+        let img = image::open(&path).unwrap().to_rgba8();
+        assert_eq!(img.dimensions(), (6, 4));
+        assert_eq!(img.get_pixel(0, 0).0, [50, 0, 0, 255]);
+        assert_eq!(img.get_pixel(5, 1).0, [150, 0, 0, 255]);
+        assert_eq!(img.get_pixel(1, 3).0, [200, 0, 0, 255]);
+        // Row 2 is shorter: the rest stays transparent.
+        assert_eq!(img.get_pixel(3, 3).0[3], 0);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

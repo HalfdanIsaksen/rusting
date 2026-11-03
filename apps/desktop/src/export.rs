@@ -46,6 +46,8 @@ pub struct ExportSettings {
     pub jpeg_quality: u8,
     /// PNG only: leave the background transparent.
     pub transparent: bool,
+    /// Video only: QuickTime `.mov` instead of `.mp4`.
+    pub mov: bool,
 }
 
 impl ExportSettings {
@@ -61,6 +63,7 @@ impl ExportSettings {
     /// The extension of the chosen file.
     pub fn extension(&self) -> &'static str {
         match self.kind {
+            ExportKind::Video if self.mov => "mov",
             ExportKind::Video => "mp4",
             _ => self.image_format().extension(),
         }
@@ -83,14 +86,21 @@ impl ExportSettings {
         }
     }
 
-    /// Zero-based frames to export.
-    fn frames(&self, current: FrameIndex) -> std::ops::Range<u32> {
+    /// Zero-based frames to export, by sprite sheet row. Only a sprite
+    /// sheet has more than one row: one per tag, or the frame range if the
+    /// document has no tags.
+    fn rows(&self, doc: &Document, current: FrameIndex) -> Vec<Vec<u32>> {
+        let first = self.first.max(1);
+        let range = (first - 1..self.last.max(first)).collect();
         match self.kind {
-            ExportKind::Frame => current.0..current.0 + 1,
-            _ => {
-                let first = self.first.max(1);
-                first - 1..self.last.max(first)
-            }
+            ExportKind::Frame => vec![vec![current.0]],
+            ExportKind::SpriteSheet if !doc.tags.is_empty() => doc
+                .tags
+                .iter()
+                .map(|t| (t.range.start.0..t.range.end.0.min(doc.frame_count)).collect())
+                .filter(|row: &Vec<u32>| !row.is_empty())
+                .collect(),
+            _ => vec![range],
         }
     }
 }
@@ -110,8 +120,8 @@ pub enum Outcome {
 struct Job {
     kind: ExportKind,
     document: Document,
-    frames: std::ops::Range<u32>,
-    next: u32,
+    frames: Vec<u32>,
+    next: usize,
     scale: f32,
     background: Option<Rgba>,
     worker: ExportWorker,
@@ -135,11 +145,11 @@ impl Job {
     ) -> Option<Outcome> {
         let start = Instant::now();
         while !self.cancelling
-            && self.next < self.frames.end
+            && self.next < self.frames.len()
             && self.worker.can_accept()
             && start.elapsed() < FRAME_BUDGET
         {
-            let frame = FrameIndex(self.next);
+            let frame = FrameIndex(self.frames[self.next]);
             let image = match render_frame(
                 device,
                 queue,
@@ -160,7 +170,7 @@ impl Job {
             }
             self.next += 1;
         }
-        if self.next >= self.frames.end && !self.finished_sending {
+        if self.next >= self.frames.len() && !self.finished_sending {
             self.worker.finish();
             self.finished_sending = true;
         }
@@ -255,6 +265,7 @@ impl ExportPanel {
             last: frame_count,
             jpeg_quality: 90,
             transparent: doc.background.is_none(),
+            mov: false,
         });
         settings.kind = kind;
         settings.first = settings.first.clamp(1, frame_count);
@@ -280,7 +291,7 @@ impl ExportPanel {
         session: &Session,
     ) -> Result<(), String> {
         let document = session.document.clone();
-        let frames = settings.frames(session.current_frame());
+        let rows = settings.rows(&document, session.current_frame());
         let scale = settings.scale();
         let (width, height) = output_size((document.canvas.width, document.canvas.height), scale);
         let target = match settings.kind {
@@ -301,13 +312,22 @@ impl ExportPanel {
                     fps_denominator: document.fps.denominator(),
                 },
             },
+            ExportKind::SpriteSheet => ExportTarget::SpriteSheet {
+                path: path.to_owned(),
+                format: settings.image_format(),
+                rows: rows.iter().map(|r| r.len() as u32).collect(),
+            },
         };
+        let frames: Vec<u32> = rows.into_iter().flatten().collect();
+        if frames.is_empty() {
+            return Err("No frames to export".to_owned());
+        }
         let worker = ExportWorker::spawn(target).map_err(|e| e.to_string())?;
         self.job = Some(Job {
             kind: settings.kind,
             background: settings.background(&document),
             document,
-            next: frames.start,
+            next: 0,
             frames,
             scale,
             worker,
@@ -368,7 +388,8 @@ fn options_ui(ui: &mut egui::Ui, s: &mut ExportSettings, doc: &Document) -> Opti
     ui.heading(match s.kind {
         ExportKind::Frame => "Export Frame",
         ExportKind::Sequence => "Export Image Sequence",
-        ExportKind::Video => "Export Video (MP4)",
+        ExportKind::Video => "Export Video",
+        ExportKind::SpriteSheet => "Export Sprite Sheet",
     });
     ui.add_space(8.0);
     let frame_count = doc.frame_count.max(1);
@@ -403,7 +424,11 @@ fn options_ui(ui: &mut egui::Ui, s: &mut ExportSettings, doc: &Document) -> Opti
             ui.label(format!("{w} × {h} px"));
             ui.end_row();
 
-            if s.kind != ExportKind::Frame {
+            if s.kind == ExportKind::SpriteSheet && !doc.tags.is_empty() {
+                ui.label("Rows");
+                ui.label(format!("{} (one per tag)", doc.tags.len()));
+                ui.end_row();
+            } else if s.kind != ExportKind::Frame {
                 ui.label("Frames");
                 ui.horizontal(|ui| {
                     ui.add(egui::DragValue::new(&mut s.first).range(1..=frame_count));
@@ -419,6 +444,13 @@ fn options_ui(ui: &mut egui::Ui, s: &mut ExportSettings, doc: &Document) -> Opti
             }
 
             if s.kind == ExportKind::Video {
+                ui.label("Format");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut s.mov, false, "MP4");
+                    ui.selectable_value(&mut s.mov, true, "MOV");
+                });
+                ui.end_row();
+
                 ui.label("Frame rate");
                 ui.label(format!("{:.3} fps (document)", doc.fps.as_f64()));
                 ui.end_row();
@@ -442,6 +474,9 @@ fn options_ui(ui: &mut egui::Ui, s: &mut ExportSettings, doc: &Document) -> Opti
     }
     if s.kind == ExportKind::Sequence {
         ui.weak("Files are numbered by frame, e.g. name_0001.png.");
+    }
+    if s.kind == ExportKind::SpriteSheet && doc.tags.is_empty() {
+        ui.weak("No frame tags: the frames go on one row. Tag frames to get a row per tag.");
     }
     ui.add_space(10.0);
     let mut action = None;
@@ -468,6 +503,7 @@ fn progress_window(ctx: &egui::Context, job: &mut Job) {
                 ExportKind::Frame => "frame",
                 ExportKind::Sequence => "image sequence",
                 ExportKind::Video => "video",
+                ExportKind::SpriteSheet => "sprite sheet",
             };
             if job.cancelling {
                 ui.label("Cancelling…");
@@ -492,7 +528,9 @@ pub fn ask_path(settings: &ExportSettings, session: &Session) -> Option<PathBuf>
     let (filter, title) = match settings.kind {
         ExportKind::Frame => (ext.to_uppercase(), "Export Frame"),
         ExportKind::Sequence => (ext.to_uppercase(), "Export Image Sequence"),
+        ExportKind::Video if settings.mov => ("QuickTime movie".to_owned(), "Export Video"),
         ExportKind::Video => ("MP4 video".to_owned(), "Export Video"),
+        ExportKind::SpriteSheet => (ext.to_uppercase(), "Export Sprite Sheet"),
     };
     let stem = session
         .path
@@ -558,6 +596,7 @@ mod tests {
             last: 5,
             jpeg_quality: 90,
             transparent: true,
+            mov: false,
         }
     }
 
@@ -566,8 +605,20 @@ mod tests {
         let mut doc = ui::session::new_document();
         doc.background = Some(Rgba::rgb(0.1, 0.2, 0.3));
         let s = settings(ExportKind::Sequence);
-        assert_eq!(s.frames(FrameIndex(9)), 2..5);
-        assert_eq!(settings(ExportKind::Frame).frames(FrameIndex(9)), 9..10);
+        assert_eq!(s.rows(&doc, FrameIndex(9)), [vec![2, 3, 4]]);
+        assert_eq!(
+            settings(ExportKind::Frame).rows(&doc, FrameIndex(9)),
+            [vec![9]]
+        );
+        let sheet = settings(ExportKind::SpriteSheet);
+        assert_eq!(sheet.rows(&doc, FrameIndex(9)), [vec![2, 3, 4]]);
+        let tag = |name: &str, s, e| document::FrameTag {
+            name: name.into(),
+            range: document::animation_core::FrameRange::new(FrameIndex(s), FrameIndex(e)),
+        };
+        doc.frame_count = 10;
+        doc.tags = vec![tag("walk", 0, 3), tag("jump", 8, 12)];
+        assert_eq!(sheet.rows(&doc, FrameIndex(9)), [vec![0, 1, 2], vec![8, 9]]);
         assert_eq!(s.background(&doc), None);
         let jpg = ExportSettings {
             file_type: FileType::Jpeg,
@@ -578,6 +629,7 @@ mod tests {
         let video = settings(ExportKind::Video);
         assert_eq!(video.background(&doc), doc.background);
         assert_eq!(video.extension(), "mp4");
+        assert_eq!(ExportSettings { mov: true, ..video }.extension(), "mov");
         doc.background = None;
         assert_eq!(video.background(&doc), Some(Rgba::WHITE));
     }
@@ -647,11 +699,11 @@ mod tests {
         panic!("export did not finish");
     }
 
-    /// Exports PNG, JPG, a PNG sequence and an MP4 on a real GPU and checks
+    /// Exports PNG, JPG, a PNG sequence, an MP4 and a MOV on a real GPU and checks
     /// the files. Skips when there is no GPU adapter. Set
     /// `RUSTING_EXPORT_OUT` to keep the files in that directory.
     #[test]
-    fn exports_png_jpg_sequence_and_mp4() {
+    fn exports_png_jpg_sequence_mp4_and_mov() {
         let Ok(gpu) = pollster::block_on(renderer::headless_device()) else {
             eprintln!("no GPU adapter; skipping");
             return;
@@ -671,6 +723,7 @@ mod tests {
             last: 6,
             jpeg_quality: 90,
             transparent: false,
+            mov: false,
         };
 
         // Frame 3 as PNG at 200%: red line at x = 24 (48 px), background
@@ -741,6 +794,13 @@ mod tests {
         assert_eq!(&bytes[4..8], b"ftyp");
         assert!(bytes.windows(4).any(|w| w == b"moov"));
 
+        // The same as MOV: QuickTime brand.
+        let mov = dir.join("clip.mov");
+        let outcome = run(ExportSettings { mov: true, ..video }, &mov, &session, &gpu);
+        assert!(matches!(outcome, Outcome::Done(_, 6)), "{outcome:?}");
+        let bytes = std::fs::read(&mov).expect("mov");
+        assert_eq!(&bytes[4..12], b"ftypqt  ");
+
         if keep.is_none() {
             std::fs::remove_dir_all(dir).expect("cleanup");
         }
@@ -766,6 +826,7 @@ mod tests {
             last: 6,
             jpeg_quality: 90,
             transparent: false,
+            mov: false,
         };
         panel.start(settings, &path, &session).expect("start");
         let mut offscreen = OffscreenRenderer::new(&gpu.0);

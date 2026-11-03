@@ -8,9 +8,9 @@ use crate::onion::OnionSkin;
 use crate::playback::Playback;
 use crate::preview::Preview;
 use crate::tools::ToolController;
-use document::animation_core::{FrameIndex, LayerId};
-use document::{CanvasAnchor, CanvasSize, Document, NewDocumentSettings, SettingsError};
-use editor::commands::{DuplicateFrame, ResizeCanvas};
+use document::animation_core::{FrameIndex, FrameRange, LayerId};
+use document::{CanvasAnchor, CanvasSize, Document, FrameTag, NewDocumentSettings, SettingsError};
+use editor::commands::{DuplicateFrame, ResizeCanvas, SetTags};
 use editor::{Command, CommandError, EditorState, History};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -42,8 +42,10 @@ pub enum ExportKind {
     Frame,
     /// Every frame (or a range) as numbered PNG or JPEG files.
     Sequence,
-    /// The animation as an H.264 MP4 video.
+    /// The animation as an H.264 MP4 or MOV video.
     Video,
+    /// One image with each frame tag on its own row.
+    SpriteSheet,
 }
 
 /// An action that throws away the current document.
@@ -212,6 +214,8 @@ pub struct Session {
     pub resize_canvas: Option<ResizeCanvasDialog>,
     /// Layers selected in the timeline besides the active one.
     layer_selection: BTreeSet<LayerId>,
+    /// Frames selected in the timeline, if any.
+    frame_selection: Option<FrameRange>,
     status: Option<Status>,
     dialog: Option<Dialog>,
     requests: Vec<Request>,
@@ -249,6 +253,7 @@ impl Session {
             space_panned: false,
             resize_canvas: None,
             layer_selection: BTreeSet::new(),
+            frame_selection: None,
             status: None,
             dialog: None,
             requests: Vec::new(),
@@ -263,6 +268,7 @@ impl Session {
         let brush = self.state.brush;
         self.state = EditorState::for_document(&document);
         self.layer_selection.clear();
+        self.frame_selection = None;
         self.state.tool = tool;
         self.state.brush = brush;
         self.playback = Playback::new(&document);
@@ -328,6 +334,11 @@ impl Session {
             self.state.active_layer = layers.iter().next_back().map(|l| l.id);
         }
         self.layer_selection.retain(|&id| layers.get(id).is_some());
+        let end = FrameIndex(self.document.frame_count.max(1));
+        self.frame_selection = self
+            .frame_selection
+            .map(|r| FrameRange::new(r.start.min(end), r.end.min(end)))
+            .filter(|r| !r.is_empty());
         let frame = self.state.current_frame();
         self.state.set_current_frame(&self.document, frame);
         self.playback.sync(&self.document);
@@ -491,6 +502,77 @@ impl Session {
             .collect();
     }
 
+    /// Frames selected in the timeline, if any.
+    pub fn frame_selection(&self) -> Option<FrameRange> {
+        self.frame_selection
+    }
+
+    /// Selects every frame from the playhead (the anchor) to `frame`,
+    /// both included.
+    pub fn select_frames_to(&mut self, frame: FrameIndex) {
+        let anchor = self.current_frame();
+        self.frame_selection = Some(FrameRange::new(
+            anchor.min(frame),
+            FrameIndex(anchor.max(frame).0 + 1),
+        ));
+    }
+
+    /// Clears the frame selection.
+    pub fn clear_frame_selection(&mut self) {
+        self.frame_selection = None;
+    }
+
+    // ----- Frame tags ----------------------------------------------------
+
+    /// Tags the selected frames (or the frame under the playhead) as
+    /// "Tag N". Returns the new tag's index.
+    pub fn add_tag(&mut self) -> Option<usize> {
+        let current = self.current_frame();
+        let range = self
+            .frame_selection
+            .unwrap_or(FrameRange::new(current, FrameIndex(current.0 + 1)));
+        let mut tags = self.document.tags.clone();
+        tags.push(FrameTag {
+            name: format!("Tag {}", tags.len() + 1),
+            range,
+        });
+        let index = tags.len() - 1;
+        self.execute(Box::new(SetTags::new(tags))).ok()?;
+        Some(index)
+    }
+
+    /// Renames tag `index`. Blank names and unchanged names do nothing.
+    pub fn rename_tag(&mut self, index: usize, name: &str) {
+        let name = name.trim();
+        let mut tags = self.document.tags.clone();
+        let Some(tag) = tags.get_mut(index) else {
+            return;
+        };
+        if name.is_empty() || tag.name == name {
+            return;
+        }
+        tag.name = name.to_owned();
+        let _ = self.execute(Box::new(SetTags::new(tags)));
+    }
+
+    /// Removes tag `index`.
+    pub fn remove_tag(&mut self, index: usize) {
+        let mut tags = self.document.tags.clone();
+        if index < tags.len() {
+            tags.remove(index);
+            let _ = self.execute(Box::new(SetTags::new(tags)));
+        }
+    }
+
+    /// Selects tag `index`'s frames and moves the playhead to its start.
+    pub fn select_tag(&mut self, index: usize) {
+        if let Some(range) = self.document.tags.get(index).map(|t| t.range) {
+            self.playback.pause();
+            self.set_frame(range.start);
+            self.frame_selection = Some(range);
+        }
+    }
+
     /// Advances playback. Call once per frame before drawing the UI.
     /// Returns true while playing.
     pub fn update_playback(&mut self) -> bool {
@@ -517,8 +599,7 @@ impl Session {
     /// Starts or stops playback from the current frame.
     pub fn toggle_playback(&mut self) {
         self.tools.cancel();
-        self.playback.sync(&self.document);
-        self.playback.toggle(self.current_frame());
+        self.playback.toggle(&self.document, self.current_frame());
     }
 
     // ----- Files ---------------------------------------------------------
@@ -777,7 +858,7 @@ pub fn describe_error(err: &CommandError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use editor::commands::{AddLayer, RemoveLayer};
+    use editor::commands::{AddLayer, RemoveLayer, SetFrameCount};
 
     fn temp_path(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("rusting-ui-{}", std::process::id()));
@@ -851,6 +932,55 @@ mod tests {
         assert_eq!(s.state.active_layer, Some(bottom));
         s.redo();
         assert_eq!(s.document.layers().len(), 2);
+    }
+
+    #[test]
+    fn frame_selection_spans_from_the_playhead_and_is_clamped() {
+        let mut s = Session::new();
+        s.execute(Box::new(SetFrameCount::new(10))).unwrap();
+        s.set_frame(FrameIndex(5));
+        s.select_frames_to(FrameIndex(2));
+        assert_eq!(
+            s.frame_selection(),
+            Some(FrameRange::new(FrameIndex(2), FrameIndex(6)))
+        );
+        s.select_frames_to(FrameIndex(8));
+        assert_eq!(
+            s.frame_selection(),
+            Some(FrameRange::new(FrameIndex(5), FrameIndex(9)))
+        );
+        s.execute(Box::new(SetFrameCount::new(7))).unwrap();
+        assert_eq!(
+            s.frame_selection(),
+            Some(FrameRange::new(FrameIndex(5), FrameIndex(7)))
+        );
+        s.clear_frame_selection();
+        assert_eq!(s.frame_selection(), None);
+    }
+
+    #[test]
+    fn tags_are_added_from_the_selection_renamed_and_removed() {
+        let mut s = Session::new();
+        s.set_frame(FrameIndex(3));
+        assert_eq!(s.add_tag(), Some(0));
+        assert_eq!(
+            s.document.tags[0].range,
+            FrameRange::new(FrameIndex(3), FrameIndex(4))
+        );
+        s.select_frames_to(FrameIndex(6));
+        assert_eq!(s.add_tag(), Some(1));
+        assert_eq!(s.document.tags[1].name, "Tag 2");
+        s.rename_tag(1, "  walk ");
+        s.rename_tag(1, "");
+        assert_eq!(s.document.tags[1].name, "walk");
+        s.clear_frame_selection();
+        s.select_tag(1);
+        assert_eq!(s.current_frame(), FrameIndex(3));
+        assert_eq!(s.frame_selection(), Some(s.document.tags[1].range));
+        s.remove_tag(0);
+        assert_eq!(s.document.tags.len(), 1);
+        s.undo();
+        assert_eq!(s.document.tags.len(), 2);
     }
 
     #[test]

@@ -122,6 +122,7 @@ impl Command for DuplicateFrame {
             doc.insert_drawing(copy.drawing, copy.content.clone());
         }
         doc.frame_count = frame_count;
+        shift_tags(doc, new, true);
         self.copies = Some(copies);
         Ok(())
     }
@@ -143,7 +144,31 @@ impl Command for DuplicateFrame {
             }
         }
         doc.frame_count = doc.frame_count.saturating_sub(1);
+        shift_tags(doc, new, false);
         Ok(())
+    }
+}
+
+/// Moves tags for a frame inserted (or, undoing, removed) at `new`: tags
+/// starting there or later shift, and a tag ending there or later grows so
+/// the copy of its frame stays in it.
+fn shift_tags(doc: &mut Document, new: FrameIndex, insert: bool) {
+    let step = |f: &mut FrameIndex| {
+        f.0 = if insert {
+            f.0.saturating_add(1)
+        } else {
+            f.0.saturating_sub(1)
+        }
+    };
+    // After an insert the affected bounds sit one past where they started.
+    let at = if insert { new.0 } else { new.0 + 1 };
+    for tag in &mut doc.tags {
+        if tag.range.start.0 >= at {
+            step(&mut tag.range.start);
+            step(&mut tag.range.end);
+        } else if tag.range.end.0 >= at {
+            step(&mut tag.range.end);
+        }
     }
 }
 
@@ -287,6 +312,28 @@ mod tests {
         assert_eq!(d, after, "redo keeps the copy's IDs");
         assert!(d.drawing_at(a, FrameIndex(4)).is_some());
         assert!(d.drawing_at(b, FrameIndex(4)).is_some());
+    }
+
+    #[test]
+    fn tags_shift_and_grow_and_undo_restores_them() {
+        use animation_core::FrameRange;
+        use document::FrameTag;
+        let (mut d, ..) = sample();
+        let tag = |name: &str, s, e| FrameTag {
+            name: name.into(),
+            range: FrameRange::new(FrameIndex(s), FrameIndex(e)),
+        };
+        d.tags = vec![tag("in", 2, 5), tag("after", 5, 8), tag("before", 0, 2)];
+        let before = d.clone();
+        let mut h = History::new();
+        h.execute(&mut d, Box::new(DuplicateFrame::new(FrameIndex(4))))
+            .unwrap();
+        assert_eq!(
+            d.tags,
+            [tag("in", 2, 6), tag("after", 6, 9), tag("before", 0, 2)]
+        );
+        assert!(h.undo(&mut d).unwrap());
+        assert_eq!(d, before);
     }
 
     #[test]

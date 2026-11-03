@@ -10,7 +10,7 @@ pub mod evaluate;
 pub mod new_document;
 
 pub use canvas::CanvasAnchor;
-pub use document::{CanvasSize, Document, RemovedLayer};
+pub use document::{CanvasSize, Document, FrameTag, RemovedLayer};
 pub use evaluate::{RenderLayer, RenderList};
 pub use new_document::{NewDocumentSettings, SettingsError, Template};
 

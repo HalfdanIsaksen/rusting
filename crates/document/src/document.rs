@@ -1,6 +1,6 @@
 //! The [`Document`] type.
 
-use animation_core::{DocumentId, DrawingId, Fps, FrameIndex, LayerId, Rgba};
+use animation_core::{DocumentId, DrawingId, Fps, FrameIndex, FrameRange, LayerId, Rgba};
 use drawing::DrawingContent;
 use scene::{Layer, LayerStack};
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,16 @@ pub struct CanvasSize {
     pub width: u32,
     /// Height.
     pub height: u32,
+}
+
+/// A named range of frames, e.g. "walk" or "jump". Playback loops inside the
+/// tag the playhead is in, and sprite sheets put each tag on its own row.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FrameTag {
+    /// Display name.
+    pub name: String,
+    /// The tagged frames.
+    pub range: FrameRange,
 }
 
 /// Everything removed by [`Document::remove_layer`], kept so the removal can be undone.
@@ -42,6 +52,9 @@ pub struct Document {
     pub fps: Fps,
     /// Length of the animation in frames.
     pub frame_count: u32,
+    /// Frame tags, in the order they were made. They may overlap.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<FrameTag>,
     layers: LayerStack,
     tracks: BTreeMap<LayerId, Track>,
     drawings: BTreeMap<DrawingId, DrawingContent>,
@@ -57,10 +70,16 @@ impl Document {
             background: Some(Rgba::WHITE),
             fps: Fps::FPS_24,
             frame_count: 24,
+            tags: Vec::new(),
             layers: LayerStack::new(),
             tracks: BTreeMap::new(),
             drawings: BTreeMap::new(),
         }
+    }
+
+    /// The first tag containing `frame`.
+    pub fn tag_at(&self, frame: FrameIndex) -> Option<&FrameTag> {
+        self.tags.iter().find(|t| t.range.contains(frame))
     }
 
     /// The layer stack (bottom-to-top).

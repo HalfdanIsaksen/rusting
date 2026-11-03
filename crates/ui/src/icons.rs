@@ -403,3 +403,51 @@ pub fn duplicate(painter: &Painter, rect: Rect, color: Color32) {
     line(painter, rect, color, w * 1.2, (0.59, 0.45), (0.59, 0.73));
     line(painter, rect, color, w * 1.2, (0.45, 0.59), (0.73, 0.59));
 }
+
+/// A luggage tag (frame tags).
+pub fn tag(painter: &Painter, rect: Rect, color: Color32) {
+    outline(
+        painter,
+        rect,
+        color,
+        &[
+            (0.12, 0.30),
+            (0.62, 0.30),
+            (0.90, 0.50),
+            (0.62, 0.70),
+            (0.12, 0.70),
+        ],
+    );
+    painter.circle_filled(at(rect, 0.64, 0.50), rect.width() * 0.06, color);
+}
+
+/// Small plus in the top-right corner, for the "new key" icons.
+fn corner_plus(painter: &Painter, rect: Rect, color: Color32) {
+    let w = line_width(rect) * 1.2;
+    line(painter, rect, color, w, (0.78, 0.08), (0.78, 0.40));
+    line(painter, rect, color, w, (0.62, 0.24), (0.94, 0.24));
+}
+
+/// Filled key dot with a plus: new drawing key.
+pub fn drawing_key(painter: &Painter, rect: Rect, color: Color32) {
+    painter.circle_filled(at(rect, 0.42, 0.58), rect.width() * 0.26, color);
+    corner_plus(painter, rect, color);
+}
+
+/// Hollow key dot with a plus: new empty key (ends the exposure).
+pub fn empty_key(painter: &Painter, rect: Rect, color: Color32) {
+    painter.circle_stroke(
+        at(rect, 0.42, 0.58),
+        rect.width() * 0.24,
+        Stroke::new(line_width(rect) * 1.2, color),
+    );
+    corner_plus(painter, rect, color);
+}
+
+/// Key dot with a cross: remove key.
+pub fn remove_key(painter: &Painter, rect: Rect, color: Color32) {
+    painter.circle_filled(at(rect, 0.42, 0.58), rect.width() * 0.26, color);
+    let w = line_width(rect) * 1.2;
+    line(painter, rect, color, w, (0.66, 0.10), (0.92, 0.36));
+    line(painter, rect, color, w, (0.66, 0.36), (0.92, 0.10));
+}
