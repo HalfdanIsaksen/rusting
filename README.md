@@ -75,6 +75,7 @@ The tool strip runs down the side of the canvas:
 - Frame-by-frame keys with stepped exposure. Icon buttons add a drawing key (filled dot), add an empty key that ends the exposure (hollow dot) or remove the key (dot with a cross); hover for a description.
 - **Duplicate frame** (button, Edit → Duplicate Frame, or `Cmd/Ctrl+D`) inserts a copy of the current frame right after it on every layer.
 - Select a range of frames by dragging across the frame cells, or `Shift`+click to select from the playhead. A plain click moves the playhead and clears the selection, `Esc` clears it, and dragging in the frame-number ruler scrubs.
+- **Frame tags**: select frames and press the tag button (or right-click the frames) to name them, for example "walk" or "jump". Tags show in a strip above the frame numbers. Click a tag to select its frames, double-click it to rename it, and right-click it to rename or remove it. Playback started inside a tag loops that tag.
 - Playback with loop, first/previous/next/last frame, and `←/→` and `↑/↓` to step frames and keys.
 - Layer controls in the timeline's layer column: add, duplicate, remove, rename (`F2` or double-click), drag to reorder, show/hide and lock/unlock, per layer or all at once.
 - Select several layers with `Cmd/Ctrl`+click (toggle) or `Shift`+click (range); duplicate and remove act on the whole selection.
@@ -88,6 +89,7 @@ The tool strip runs down the side of the canvas:
 - Save and open versioned `.rusting` project files.
 - Undo/redo for every edit (up to 500 steps).
 - Export the current frame as PNG/JPG, an image sequence, or an H.264 video as MP4 or MOV (QuickTime).
+- **Export Sprite Sheet**: every frame tag becomes its own row of frames in one PNG/JPG image. Without tags, the chosen frame range goes on one row.
 
 ## Contributing workflow
 

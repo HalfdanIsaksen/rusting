@@ -18,8 +18,12 @@ use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, vec2};
 
 /// Height of one layer row.
 pub(super) const ROW_HEIGHT: f32 = 22.0;
-/// Height of the frame-number ruler (and the layer column's header).
-pub(super) const RULER_HEIGHT: f32 = 20.0;
+/// Height of the tag strip at the top of the ruler.
+const TAG_HEIGHT: f32 = 16.0;
+/// Height of the frame numbers under the tag strip.
+pub(super) const NUMBERS_HEIGHT: f32 = 20.0;
+/// Height of the ruler: tags plus frame numbers (and the layer column's header).
+pub(super) const RULER_HEIGHT: f32 = TAG_HEIGHT + NUMBERS_HEIGHT;
 const MAX_FPS: u32 = 120;
 const MAX_FRAMES: u32 = 100_000;
 
@@ -31,6 +35,57 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
     keys_and_onion(ui, session);
     ui.separator();
     grid(ui, session);
+    tag_rename_dialog(ui.ctx(), session);
+}
+
+/// Where the tag being renamed (index and edited name) is kept.
+fn tag_rename_id() -> egui::Id {
+    egui::Id::unique("timeline_tag_rename")
+}
+
+/// Opens the rename dialog for tag `index`.
+fn start_tag_rename(ui: &egui::Ui, session: &Session, index: usize) {
+    if let Some(tag) = session.document.tags.get(index) {
+        let edit = (index, tag.name.clone());
+        ui.ctx().data_mut(|d| d.insert_temp(tag_rename_id(), edit));
+    }
+}
+
+/// The "Rename Tag" dialog, while one is open.
+fn tag_rename_dialog(ctx: &egui::Context, session: &mut Session) {
+    let id = tag_rename_id();
+    let Some((index, mut name)) = ctx.data(|d| d.get_temp::<(usize, String)>(id)) else {
+        return;
+    };
+    let mut done = None;
+    let response = egui::Modal::new(id.with("modal")).show(ctx, |ui| {
+        ui.heading("Rename Tag");
+        let edit = ui.text_edit_singleline(&mut name);
+        edit.request_focus();
+        let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        ui.horizontal(|ui| {
+            if ui.button("OK").clicked() || enter {
+                done = Some(true);
+            }
+            if ui.button("Cancel").clicked() {
+                done = Some(false);
+            }
+        });
+    });
+    if response.should_close() {
+        done.get_or_insert(false);
+    }
+    match done {
+        Some(ok) => {
+            ctx.data_mut(|d| d.remove::<(usize, String)>(id));
+            if ok {
+                session.rename_tag(index, &name);
+            }
+        }
+        None => {
+            ctx.data_mut(|d| d.insert_temp(id, (index, name)));
+        }
+    }
 }
 
 /// Play/pause, stepping, loop, frame display, FPS and length.
@@ -166,6 +221,16 @@ fn keys_and_onion(ui: &mut egui::Ui, session: &mut Session) {
         ) && let Some(id) = layer
         {
             let _ = session.execute(Box::new(RemoveKeyframe::new(id, frame)));
+        }
+        let tag_tip = if session.frame_selection().is_some() {
+            "Tag the selected frames: playback loops inside a tag"
+        } else {
+            "Tag this frame (select frames first to tag a range): playback loops inside a tag"
+        };
+        if icon_button(ui, icons::tag, !session.playback.is_playing(), tag_tip)
+            && let Some(index) = session.add_tag()
+        {
+            start_tag_rename(ui, session, index);
         }
 
         ui.separator();
@@ -358,6 +423,60 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
         }
     }
 
+    // The tag strip: click a tag to select its frames, double-click to
+    // rename it, right-click for more.
+    let tags = session.document.tags.clone();
+    let tag_under = |pos: Pos2| {
+        (pos.y - rect.top() < TAG_HEIGHT)
+            .then(|| tags.iter().rposition(|t| t.range.contains(frame_at(pos.x))))
+            .flatten()
+    };
+    let clicked_tag = response
+        .interact_pointer_pos()
+        .and_then(tag_under)
+        .filter(|_| response.clicked() || response.double_clicked());
+    if let Some(index) = clicked_tag {
+        session.select_tag(index);
+        if response.double_clicked() {
+            start_tag_rename(ui, session, index);
+        }
+    }
+    let menu_tag_id = ui.scope_id().with("menu_tag");
+    if response.secondary_clicked() {
+        let tag = response.interact_pointer_pos().and_then(tag_under);
+        ui.data_mut(|d| d.insert_temp(menu_tag_id, tag));
+    }
+    response.context_menu(|ui| {
+        match ui
+            .data(|d| d.get_temp::<Option<usize>>(menu_tag_id))
+            .flatten()
+        {
+            Some(index) => {
+                if ui.button("Rename Tag…").clicked() {
+                    start_tag_rename(ui, session, index);
+                }
+                if ui.button("Select Frames").clicked() {
+                    session.select_tag(index);
+                }
+                if ui.button("Remove Tag").clicked() {
+                    session.remove_tag(index);
+                }
+            }
+            None => {
+                let label = if session.frame_selection().is_some() {
+                    "Tag Selected Frames"
+                } else {
+                    "Tag This Frame"
+                };
+                if ui.button(label).clicked()
+                    && let Some(index) = session.add_tag()
+                {
+                    start_tag_rename(ui, session, index);
+                }
+            }
+        }
+    });
+
     // Press or drag in the ruler scrubs. On the cells a press moves the
     // playhead and clears the frame selection, Shift+press selects from the
     // playhead, and dragging selects from the pressed frame. Pressing on a row
@@ -377,7 +496,9 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
             session.playback.pause();
         }
         if in_ruler {
-            if session.current_frame() != frame {
+            if clicked_tag.is_some() {
+                // Handled above.
+            } else if session.current_frame() != frame {
                 session.set_frame(frame);
             }
         } else if pressed && shift {
@@ -475,6 +596,33 @@ fn paint_frames(ui: &egui::Ui, session: &Session, rows: &[Row], rect: Rect, cell
     painter.rect_filled(rect, 0.0, visuals.extreme_bg_color);
     let ruler = Rect::from_min_size(rect.min, vec2(rect.width(), RULER_HEIGHT));
     painter.rect_filled(ruler, 0.0, visuals.faint_bg_color);
+    let numbers_y = rect.top() + TAG_HEIGHT + NUMBERS_HEIGHT * 0.5;
+
+    // Tags, later ones on top.
+    for tag in &doc.tags {
+        let span = col_x(tag.range.start.0.min(count))..=col_x(tag.range.end.0.min(count));
+        if span.start() >= span.end() {
+            continue;
+        }
+        let bar = Rect::from_x_y_ranges(span, rect.top() + 2.0..=rect.top() + TAG_HEIGHT - 1.0);
+        painter.rect_filled(bar, 3.0, visuals.selection.bg_fill.gamma_multiply(0.6));
+        painter.rect_stroke(
+            bar,
+            3.0,
+            Stroke::new(1.0, visuals.selection.stroke.color),
+            StrokeKind::Inside,
+        );
+        let text = painter.layout_no_wrap(
+            tag.name.clone(),
+            egui::FontId::proportional(10.0),
+            visuals.strong_text_color(),
+        );
+        ui.painter_at(bar.shrink2(vec2(3.0, 0.0))).galley(
+            Pos2::new(bar.left() + 4.0, bar.center().y - text.size().y * 0.5),
+            text,
+            visuals.strong_text_color(),
+        );
+    }
 
     // Every fifth column is shaded, every column gets a faint line.
     let label_every = if cell >= 14.0 {
@@ -499,7 +647,7 @@ fn paint_frames(ui: &egui::Ui, session: &Session, rows: &[Row], rect: Rect, cell
         }
         if n == 1 || n % label_every == 0 {
             painter.text(
-                Pos2::new(x + 2.0, rect.top() + RULER_HEIGHT * 0.5),
+                Pos2::new(x + 2.0, numbers_y),
                 egui::Align2::LEFT_CENTER,
                 n.to_string(),
                 egui::FontId::proportional(10.0),
@@ -590,13 +738,13 @@ fn paint_frames(ui: &egui::Ui, session: &Session, rows: &[Row], rect: Rect, cell
     painter.rect_filled(
         Rect::from_x_y_ranges(
             x0..=x0 + cell.max(18.0),
-            rect.top()..=rect.top() + RULER_HEIGHT,
+            rect.top() + TAG_HEIGHT..=rect.top() + RULER_HEIGHT,
         ),
         2.0,
         playhead,
     );
     painter.text(
-        Pos2::new(x0 + 2.0, rect.top() + RULER_HEIGHT * 0.5),
+        Pos2::new(x0 + 2.0, numbers_y),
         egui::Align2::LEFT_CENTER,
         current.display_number().to_string(),
         egui::FontId::proportional(10.0),

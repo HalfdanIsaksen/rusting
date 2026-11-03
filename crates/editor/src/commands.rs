@@ -16,7 +16,7 @@ use animation_core::{DrawingId, Fps, FrameIndex, LayerId, StrokeId};
 use document::drawing::{DrawingContent, Stroke, VectorDrawing};
 use document::scene::{BlendMode, Layer};
 use document::timeline::Keyframe;
-use document::{Document, RemovedLayer};
+use document::{Document, FrameTag, RemovedLayer};
 
 /// Adds a new layer on top of the stack.
 #[derive(Debug)]
@@ -739,6 +739,34 @@ impl Command for SetFrameCount {
     fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
         std::mem::swap(&mut doc.frame_count, &mut self.frame_count);
         Ok(())
+    }
+}
+
+/// Replaces the frame tags (add, rename and remove are all this).
+#[derive(Debug)]
+pub struct SetTags {
+    tags: Vec<FrameTag>,
+}
+
+impl SetTags {
+    /// Creates the command.
+    pub fn new(tags: Vec<FrameTag>) -> Self {
+        Self { tags }
+    }
+}
+
+impl Command for SetTags {
+    fn label(&self) -> &str {
+        "Edit Tags"
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        std::mem::swap(&mut doc.tags, &mut self.tags);
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        self.apply(doc)
     }
 }
 
