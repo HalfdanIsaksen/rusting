@@ -355,20 +355,38 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
         }
     }
 
-    // Scrub: press or drag anywhere; pressing on a row also makes its layer
-    // active (keeping the layer selection if it is part of it).
+    // Press or drag in the ruler scrubs. On the cells a press moves the
+    // playhead and clears the frame selection, Shift+press selects from the
+    // playhead, and dragging selects from the pressed frame. Pressing on a row
+    // also makes its layer active (keeping the layer selection if it is part
+    // of it).
     if dragged_key.is_none()
         && response.is_pointer_button_down_on()
         && let Some(pos) = response.interact_pointer_pos()
     {
-        let frame = frame_at(pos.x).0;
+        let frame = frame_at(pos.x);
+        let in_ruler = ui
+            .input(|i| i.pointer.press_origin())
+            .is_some_and(|o| o.y - rect.top() < RULER_HEIGHT);
+        let pressed = ui.input(|i| i.pointer.primary_pressed());
+        let shift = ui.input(|i| i.modifiers.shift);
         if session.playback.is_playing() {
             session.playback.pause();
         }
-        if session.current_frame() != FrameIndex(frame) {
-            session.set_frame(FrameIndex(frame));
+        if in_ruler {
+            if session.current_frame() != frame {
+                session.set_frame(frame);
+            }
+        } else if pressed && shift {
+            session.select_frames_to(frame);
+        } else if pressed {
+            session.clear_frame_selection();
+            session.set_frame(frame);
+        } else if response.dragged() {
+            session.select_frames_to(frame);
         }
-        if ui.input(|i| i.pointer.primary_pressed())
+        if pressed
+            && !in_ruler
             && let Some(row) = row_at(rows, pos.y - rect.top())
         {
             if session.is_layer_selected(row) {
@@ -377,6 +395,9 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
                 session.select_layer(row);
             }
         }
+    }
+    if response.hovered() && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        session.clear_frame_selection();
     }
 
     paint_frames(ui, session, rows, rect, cell, count);
@@ -536,6 +557,22 @@ fn paint_frames(ui: &egui::Ui, session: &Session, rows: &[Row], rect: Rect, cell
                 }
             }
         }
+    }
+
+    // Selected frames.
+    if let Some(sel) = session.frame_selection() {
+        let span = col_x(sel.start.0)..=col_x(sel.end.0.min(count));
+        painter.rect_filled(
+            Rect::from_x_y_ranges(span.clone(), rect.top() + RULER_HEIGHT..=rect.bottom()),
+            0.0,
+            accent.gamma_multiply(0.25),
+        );
+        painter.rect_stroke(
+            Rect::from_x_y_ranges(span, rect.top()..=rect.bottom()),
+            0.0,
+            Stroke::new(1.5, visuals.selection.stroke.color),
+            StrokeKind::Inside,
+        );
     }
 
     // Playhead.

@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "animation_core"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "glam",
  "serde",
@@ -444,7 +444,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
 name = "desktop"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "document",
  "editor",
@@ -503,7 +503,7 @@ dependencies = [
 
 [[package]]
 name = "document"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "animation_core",
  "drawing",
@@ -535,7 +535,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
 name = "drawing"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "animation_core",
  "glam",
@@ -554,7 +554,7 @@ dependencies = [
 
 [[package]]
 name = "editor"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "animation_core",
  "document",
@@ -702,7 +702,7 @@ dependencies = [
 
 [[package]]
 name = "export"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "image",
  "mp4",
@@ -734,7 +734,7 @@ checksum = "b97b65636e5b9ef369943878ac74335ba1c55c1cb6adbf1e2c293c624248d693"
 
 [[package]]
 name = "file_format"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "animation_core",
  "document",
@@ -1153,7 +1153,7 @@ dependencies = [
 
 [[package]]
 name = "integration_tests"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "document",
  "editor",
@@ -2296,7 +2296,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "renderer"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "animation_core",
  "document",
@@ -2407,7 +2407,7 @@ dependencies = [
 
 [[package]]
 name = "scene"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "animation_core",
  "serde",
@@ -2767,7 +2767,7 @@ dependencies = [
 
 [[package]]
 name = "timeline"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "animation_core",
  "serde",
@@ -2938,7 +2938,7 @@ dependencies = [
 
 [[package]]
 name = "ui"
-version = "0.1.0"
+version = "0.1.3"
 dependencies = [
  "document",
  "editor",
