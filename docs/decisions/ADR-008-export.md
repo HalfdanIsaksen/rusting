@@ -27,5 +27,6 @@ Users need to get their animation out of Rusting: one frame as an image, every f
 - Builds compile OpenH264's C++ source (adds ~20 s to a clean build).
 - Baseline profile only, with no B-frames; files are somewhat larger than x264 would make at the same quality.
 - MP4 dimensions are limited to 65535 per side (the `mp4` crate stores them as u16). Odd sizes gain one pixel.
+- MOV export is the same H.264 stream and boxes with a QuickTime `ftyp` brand (`qt  `), chosen by the `.mov` extension. No alpha.
 - Rendering waits for the GPU on each export frame, which is fine at a few frames per UI frame.
 - OpenH264 prints a harmless warning to stderr ("bitrate can't be controlled … without enabling skip frame"), because frame skipping is off on purpose.

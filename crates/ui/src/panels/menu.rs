@@ -44,7 +44,7 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
                 if ui.button("Export Image Sequence…").clicked() {
                     session.export(ExportKind::Sequence);
                 }
-                if ui.button("Export Video (MP4)…").clicked() {
+                if ui.button("Export Video (MP4/MOV)…").clicked() {
                     session.export(ExportKind::Video);
                 }
                 if ui.button("Export Sprite Sheet…").clicked() {

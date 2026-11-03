@@ -46,6 +46,8 @@ pub struct ExportSettings {
     pub jpeg_quality: u8,
     /// PNG only: leave the background transparent.
     pub transparent: bool,
+    /// Video only: QuickTime `.mov` instead of `.mp4`.
+    pub mov: bool,
 }
 
 impl ExportSettings {
@@ -61,6 +63,7 @@ impl ExportSettings {
     /// The extension of the chosen file.
     pub fn extension(&self) -> &'static str {
         match self.kind {
+            ExportKind::Video if self.mov => "mov",
             ExportKind::Video => "mp4",
             _ => self.image_format().extension(),
         }
@@ -262,6 +265,7 @@ impl ExportPanel {
             last: frame_count,
             jpeg_quality: 90,
             transparent: doc.background.is_none(),
+            mov: false,
         });
         settings.kind = kind;
         settings.first = settings.first.clamp(1, frame_count);
@@ -384,7 +388,7 @@ fn options_ui(ui: &mut egui::Ui, s: &mut ExportSettings, doc: &Document) -> Opti
     ui.heading(match s.kind {
         ExportKind::Frame => "Export Frame",
         ExportKind::Sequence => "Export Image Sequence",
-        ExportKind::Video => "Export Video (MP4)",
+        ExportKind::Video => "Export Video",
         ExportKind::SpriteSheet => "Export Sprite Sheet",
     });
     ui.add_space(8.0);
@@ -440,6 +444,13 @@ fn options_ui(ui: &mut egui::Ui, s: &mut ExportSettings, doc: &Document) -> Opti
             }
 
             if s.kind == ExportKind::Video {
+                ui.label("Format");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut s.mov, false, "MP4");
+                    ui.selectable_value(&mut s.mov, true, "MOV");
+                });
+                ui.end_row();
+
                 ui.label("Frame rate");
                 ui.label(format!("{:.3} fps (document)", doc.fps.as_f64()));
                 ui.end_row();
@@ -517,6 +528,7 @@ pub fn ask_path(settings: &ExportSettings, session: &Session) -> Option<PathBuf>
     let (filter, title) = match settings.kind {
         ExportKind::Frame => (ext.to_uppercase(), "Export Frame"),
         ExportKind::Sequence => (ext.to_uppercase(), "Export Image Sequence"),
+        ExportKind::Video if settings.mov => ("QuickTime movie".to_owned(), "Export Video"),
         ExportKind::Video => ("MP4 video".to_owned(), "Export Video"),
         ExportKind::SpriteSheet => (ext.to_uppercase(), "Export Sprite Sheet"),
     };
@@ -584,6 +596,7 @@ mod tests {
             last: 5,
             jpeg_quality: 90,
             transparent: true,
+            mov: false,
         }
     }
 
@@ -616,6 +629,7 @@ mod tests {
         let video = settings(ExportKind::Video);
         assert_eq!(video.background(&doc), doc.background);
         assert_eq!(video.extension(), "mp4");
+        assert_eq!(ExportSettings { mov: true, ..video }.extension(), "mov");
         doc.background = None;
         assert_eq!(video.background(&doc), Some(Rgba::WHITE));
     }
@@ -685,11 +699,11 @@ mod tests {
         panic!("export did not finish");
     }
 
-    /// Exports PNG, JPG, a PNG sequence and an MP4 on a real GPU and checks
+    /// Exports PNG, JPG, a PNG sequence, an MP4 and a MOV on a real GPU and checks
     /// the files. Skips when there is no GPU adapter. Set
     /// `RUSTING_EXPORT_OUT` to keep the files in that directory.
     #[test]
-    fn exports_png_jpg_sequence_and_mp4() {
+    fn exports_png_jpg_sequence_mp4_and_mov() {
         let Ok(gpu) = pollster::block_on(renderer::headless_device()) else {
             eprintln!("no GPU adapter; skipping");
             return;
@@ -709,6 +723,7 @@ mod tests {
             last: 6,
             jpeg_quality: 90,
             transparent: false,
+            mov: false,
         };
 
         // Frame 3 as PNG at 200%: red line at x = 24 (48 px), background
@@ -779,6 +794,13 @@ mod tests {
         assert_eq!(&bytes[4..8], b"ftyp");
         assert!(bytes.windows(4).any(|w| w == b"moov"));
 
+        // The same as MOV: QuickTime brand.
+        let mov = dir.join("clip.mov");
+        let outcome = run(ExportSettings { mov: true, ..video }, &mov, &session, &gpu);
+        assert!(matches!(outcome, Outcome::Done(_, 6)), "{outcome:?}");
+        let bytes = std::fs::read(&mov).expect("mov");
+        assert_eq!(&bytes[4..12], b"ftypqt  ");
+
         if keep.is_none() {
             std::fs::remove_dir_all(dir).expect("cleanup");
         }
@@ -804,6 +826,7 @@ mod tests {
             last: 6,
             jpeg_quality: 90,
             transparent: false,
+            mov: false,
         };
         panel.start(settings, &path, &session).expect("start");
         let mut offscreen = OffscreenRenderer::new(&gpu.0);

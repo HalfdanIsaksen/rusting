@@ -183,19 +183,21 @@ fn keys_and_onion(ui: &mut egui::Ui, session: &mut Session) {
         let free = editable && !key_here;
         let key_here = editable && key_here;
 
-        if ui
-            .add_enabled(free, egui::Button::new("+ Drawing key"))
-            .on_hover_text("New blank drawing at this frame on the active layer")
-            .clicked()
-            && let Some(id) = layer
+        if icon_button(
+            ui,
+            icons::drawing_key,
+            free,
+            "Drawing key: new blank drawing at this frame on the active layer",
+        ) && let Some(id) = layer
         {
             let _ = session.execute(Box::new(AddKeyframe::new(id, frame, KeyframeKind::Drawing)));
         }
-        if ui
-            .add_enabled(free, egui::Button::new("○ Empty key"))
-            .on_hover_text("End the exposure here (show nothing)")
-            .clicked()
-            && let Some(id) = layer
+        if icon_button(
+            ui,
+            icons::empty_key,
+            free,
+            "Empty key: end the exposure here (show nothing)",
+        ) && let Some(id) = layer
         {
             let _ = session.execute(Box::new(AddKeyframe::new(id, frame, KeyframeKind::Empty)));
         }
@@ -211,11 +213,12 @@ fn keys_and_onion(ui: &mut egui::Ui, session: &mut Session) {
         ) {
             session.duplicate_frame();
         }
-        if ui
-            .add_enabled(key_here, egui::Button::new("✖ Remove key"))
-            .on_hover_text("Remove the key at this frame on the active layer")
-            .clicked()
-            && let Some(id) = layer
+        if icon_button(
+            ui,
+            icons::remove_key,
+            key_here,
+            "Remove key: remove the key at this frame on the active layer",
+        ) && let Some(id) = layer
         {
             let _ = session.execute(Box::new(RemoveKeyframe::new(id, frame)));
         }
