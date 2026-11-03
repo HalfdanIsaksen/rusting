@@ -7,7 +7,7 @@ mod layers;
 mod select;
 pub use canvas::ResizeCanvas;
 pub use fill::{AddFill, RemoveFill};
-pub use frames::{DuplicateFrame, InsertFrames, RemoveFrames};
+pub use frames::{DuplicateFrame, InsertFrames, MoveFrames, RemoveFrames};
 pub use layers::DuplicateLayer;
 pub use select::{TransformItems, TranslateItems, remove_items};
 

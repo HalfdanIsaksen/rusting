@@ -337,6 +337,86 @@ impl Command for RemoveFrames {
     }
 }
 
+/// Moves the keys inside a range of frames to start at `to`, on every layer.
+/// Frames are not added or removed and tags stay where they are.
+///
+/// Fails with [`CommandError::KeyframeExists`] if a key outside the range
+/// sits where a moved key would land, so a move never replaces a drawing.
+// ponytail: only keys inside the range move; a drawing held into the range
+// from an earlier key stays put. Carry it if users expect the picture to move.
+#[derive(Debug)]
+pub struct MoveFrames {
+    range: FrameRange,
+    to: FrameIndex,
+}
+
+impl MoveFrames {
+    /// Creates the command.
+    pub fn new(range: FrameRange, to: FrameIndex) -> Self {
+        Self { range, to }
+    }
+
+    /// Where the range lands.
+    pub fn target(&self) -> FrameRange {
+        FrameRange::new(
+            self.to,
+            FrameIndex(self.to.0.saturating_add(self.range.len())),
+        )
+    }
+
+    /// The first key outside the range that blocks the move, if any.
+    pub fn blocked_by(&self, doc: &Document) -> Option<FrameIndex> {
+        let target = self.target();
+        doc.tracks().values().find_map(|track| {
+            track
+                .keys()
+                .map(|(f, _)| f)
+                .find(|f| target.contains(*f) && !self.range.contains(*f))
+        })
+    }
+}
+
+impl Command for MoveFrames {
+    fn label(&self) -> &str {
+        "Move Frames"
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        let target = self.target();
+        if self.range.is_empty() || target.end.0 > doc.frame_count {
+            return Err(CommandError::FrameOutOfRange {
+                frame: target.end,
+                frame_count: doc.frame_count,
+            });
+        }
+        if let Some(frame) = self.blocked_by(doc) {
+            return Err(CommandError::KeyframeExists(frame));
+        }
+        let layers: Vec<LayerId> = doc.tracks().keys().copied().collect();
+        for layer in layers {
+            let Some(track) = doc.track_mut(layer) else {
+                continue;
+            };
+            let moved: Vec<(FrameIndex, Keyframe)> = track
+                .keys()
+                .filter(|(f, _)| self.range.contains(*f))
+                .map(|(f, k)| (f, *k))
+                .collect();
+            for &(f, _) in &moved {
+                track.remove_key(f);
+            }
+            for (f, key) in moved {
+                track.set_key(FrameIndex(f.0 - self.range.start.0 + self.to.0), key);
+            }
+        }
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        MoveFrames::new(self.target(), self.range.start).apply(doc)
+    }
+}
+
 /// Moves tags for a frame inserted (or, undoing, removed) at `new`: tags
 /// starting there or later shift, and a tag ending there or later grows so
 /// the copy of its frame stays in it.
@@ -609,5 +689,29 @@ mod tests {
             RemoveFrames::new(all).apply(&mut d),
             Err(CommandError::ZeroFrameCount)
         );
+    }
+
+    #[test]
+    fn move_frames_shifts_keys_on_every_layer_and_undoes() {
+        let (mut d, a, b, _, _) = sample();
+        let before = d.clone();
+        let mut h = History::new();
+        // Frames 2..4 hold b's key at 2 and a's key at 3.
+        let range = FrameRange::new(FrameIndex(2), FrameIndex(4));
+        h.execute(&mut d, Box::new(MoveFrames::new(range, FrameIndex(4))))
+            .unwrap();
+        assert_eq!(key_frames(&d, a), [0, 5, 6]);
+        assert_eq!(key_frames(&d, b), [4]);
+        h.undo(&mut d).unwrap();
+        assert_eq!(d, before);
+
+        // Landing on a's empty key at 6 is refused.
+        let blocked = MoveFrames::new(range, FrameIndex(5));
+        assert_eq!(blocked.blocked_by(&d), Some(FrameIndex(6)));
+        assert_eq!(
+            h.execute(&mut d, Box::new(blocked)),
+            Err(CommandError::KeyframeExists(FrameIndex(6)))
+        );
+        assert_eq!(d, before);
     }
 }
