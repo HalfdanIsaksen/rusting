@@ -8,7 +8,7 @@ use crate::onion::OnionSkin;
 use crate::playback::Playback;
 use crate::preview::Preview;
 use crate::tools::ToolController;
-use document::animation_core::{FrameIndex, LayerId};
+use document::animation_core::{FrameIndex, FrameRange, LayerId};
 use document::{CanvasAnchor, CanvasSize, Document, NewDocumentSettings, SettingsError};
 use editor::commands::{DuplicateFrame, ResizeCanvas};
 use editor::{Command, CommandError, EditorState, History};
@@ -212,6 +212,8 @@ pub struct Session {
     pub resize_canvas: Option<ResizeCanvasDialog>,
     /// Layers selected in the timeline besides the active one.
     layer_selection: BTreeSet<LayerId>,
+    /// Frames selected in the timeline, if any.
+    frame_selection: Option<FrameRange>,
     status: Option<Status>,
     dialog: Option<Dialog>,
     requests: Vec<Request>,
@@ -249,6 +251,7 @@ impl Session {
             space_panned: false,
             resize_canvas: None,
             layer_selection: BTreeSet::new(),
+            frame_selection: None,
             status: None,
             dialog: None,
             requests: Vec::new(),
@@ -263,6 +266,7 @@ impl Session {
         let brush = self.state.brush;
         self.state = EditorState::for_document(&document);
         self.layer_selection.clear();
+        self.frame_selection = None;
         self.state.tool = tool;
         self.state.brush = brush;
         self.playback = Playback::new(&document);
@@ -328,6 +332,11 @@ impl Session {
             self.state.active_layer = layers.iter().next_back().map(|l| l.id);
         }
         self.layer_selection.retain(|&id| layers.get(id).is_some());
+        let end = FrameIndex(self.document.frame_count.max(1));
+        self.frame_selection = self
+            .frame_selection
+            .map(|r| FrameRange::new(r.start.min(end), r.end.min(end)))
+            .filter(|r| !r.is_empty());
         let frame = self.state.current_frame();
         self.state.set_current_frame(&self.document, frame);
         self.playback.sync(&self.document);
@@ -489,6 +498,26 @@ impl Session {
             .take(from.abs_diff(to) + 1)
             .map(|l| l.id)
             .collect();
+    }
+
+    /// Frames selected in the timeline, if any.
+    pub fn frame_selection(&self) -> Option<FrameRange> {
+        self.frame_selection
+    }
+
+    /// Selects every frame from the playhead (the anchor) to `frame`,
+    /// both included.
+    pub fn select_frames_to(&mut self, frame: FrameIndex) {
+        let anchor = self.current_frame();
+        self.frame_selection = Some(FrameRange::new(
+            anchor.min(frame),
+            FrameIndex(anchor.max(frame).0 + 1),
+        ));
+    }
+
+    /// Clears the frame selection.
+    pub fn clear_frame_selection(&mut self) {
+        self.frame_selection = None;
     }
 
     /// Advances playback. Call once per frame before drawing the UI.
@@ -777,7 +806,7 @@ pub fn describe_error(err: &CommandError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use editor::commands::{AddLayer, RemoveLayer};
+    use editor::commands::{AddLayer, RemoveLayer, SetFrameCount};
 
     fn temp_path(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("rusting-ui-{}", std::process::id()));
@@ -851,6 +880,30 @@ mod tests {
         assert_eq!(s.state.active_layer, Some(bottom));
         s.redo();
         assert_eq!(s.document.layers().len(), 2);
+    }
+
+    #[test]
+    fn frame_selection_spans_from_the_playhead_and_is_clamped() {
+        let mut s = Session::new();
+        s.execute(Box::new(SetFrameCount::new(10))).unwrap();
+        s.set_frame(FrameIndex(5));
+        s.select_frames_to(FrameIndex(2));
+        assert_eq!(
+            s.frame_selection(),
+            Some(FrameRange::new(FrameIndex(2), FrameIndex(6)))
+        );
+        s.select_frames_to(FrameIndex(8));
+        assert_eq!(
+            s.frame_selection(),
+            Some(FrameRange::new(FrameIndex(5), FrameIndex(9)))
+        );
+        s.execute(Box::new(SetFrameCount::new(7))).unwrap();
+        assert_eq!(
+            s.frame_selection(),
+            Some(FrameRange::new(FrameIndex(5), FrameIndex(7)))
+        );
+        s.clear_frame_selection();
+        assert_eq!(s.frame_selection(), None);
     }
 
     #[test]

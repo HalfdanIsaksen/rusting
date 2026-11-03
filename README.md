@@ -74,6 +74,7 @@ The tool strip runs down the side of the canvas:
 ### Timeline and layers
 - Frame-by-frame keys with stepped exposure. Icon buttons add a drawing key (filled dot), add an empty key that ends the exposure (hollow dot) or remove the key (dot with a cross); hover for a description.
 - **Duplicate frame** (button, Edit → Duplicate Frame, or `Cmd/Ctrl+D`) inserts a copy of the current frame right after it on every layer.
+- Select a range of frames by dragging across the frame cells, or `Shift`+click to select from the playhead. A plain click moves the playhead and clears the selection, `Esc` clears it, and dragging in the frame-number ruler scrubs.
 - Playback with loop, first/previous/next/last frame, and `←/→` and `↑/↓` to step frames and keys.
 - Layer controls in the timeline's layer column: add, duplicate, remove, rename (`F2` or double-click), drag to reorder, show/hide and lock/unlock, per layer or all at once.
 - Select several layers with `Cmd/Ctrl`+click (toggle) or `Shift`+click (range); duplicate and remove act on the whole selection.
