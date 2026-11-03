@@ -111,7 +111,11 @@ impl App {
         Self {
             window: None,
             graphics: None,
-            egui_ctx: egui::Context::default(),
+            egui_ctx: {
+                let ctx = egui::Context::default();
+                ui::theme::apply(&ctx);
+                ctx
+            },
             egui_state: None,
             shell: Shell::new(session),
             next_repaint: None,
@@ -206,6 +210,12 @@ impl App {
         let viewport = shell
             .viewport
             .filter(|_| shell.session.start_menu().is_none());
+        // The workspace around the canvas follows the theme.
+        let workspace = egui::Rgba::from(
+            ui::theme::palette(self.egui_ctx.global_style().visuals.dark_mode).code_bg,
+        );
+        canvas.style.workspace =
+            document::animation_core::Rgba::rgb(workspace.r(), workspace.g(), workspace.b());
         let canvas_state = viewport.map(|viewport| {
             let (width, height) = viewport.physical_size();
             if canvas.resize(gpu.device(), width, height) {

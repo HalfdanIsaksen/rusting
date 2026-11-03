@@ -539,7 +539,8 @@ fn paint_frames(ui: &egui::Ui, session: &Session, rows: &[Row], rect: Rect, cell
     }
 
     // Playhead.
-    let playhead = Color32::from_rgb(230, 70, 60);
+    let palette = crate::theme::palette(visuals.dark_mode);
+    let playhead = palette.accent;
     let x0 = col_x(current.0);
     painter.rect_stroke(
         Rect::from_x_y_ranges(x0..=x0 + cell, rect.top()..=rect.bottom()),
@@ -560,6 +561,6 @@ fn paint_frames(ui: &egui::Ui, session: &Session, rows: &[Row], rect: Rect, cell
         egui::Align2::LEFT_CENTER,
         current.display_number().to_string(),
         egui::FontId::proportional(10.0),
-        Color32::WHITE,
+        palette.accent_text,
     );
 }
