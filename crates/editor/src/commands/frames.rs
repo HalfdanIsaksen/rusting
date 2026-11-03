@@ -2,10 +2,10 @@
 
 use super::frame_in_range;
 use crate::{Command, CommandError};
-use animation_core::{DrawingId, FrameIndex, LayerId};
-use document::Document;
+use animation_core::{DrawingId, FrameIndex, FrameRange, LayerId};
 use document::drawing::DrawingContent;
-use document::timeline::Keyframe;
+use document::timeline::{Keyframe, RemovedFrames};
+use document::{Document, FrameTag};
 
 /// One layer's copy made by [`DuplicateFrame`].
 #[derive(Debug, Clone)]
@@ -145,6 +145,194 @@ impl Command for DuplicateFrame {
         }
         doc.frame_count = doc.frame_count.saturating_sub(1);
         shift_tags(doc, new, false);
+        Ok(())
+    }
+}
+
+/// Inserts `count` blank frames at `at` on every layer: the exposure that
+/// covers the frame before `at` gets longer and later keys move right. The
+/// animation grows by `count`. A tag ending right before `at` grows with it.
+#[derive(Debug)]
+pub struct InsertFrames {
+    at: FrameIndex,
+    count: u32,
+    /// The tags before the insert, swapped back on undo.
+    tags: Vec<FrameTag>,
+}
+
+impl InsertFrames {
+    /// Creates the command.
+    pub fn new(at: FrameIndex, count: u32) -> Self {
+        Self {
+            at,
+            count,
+            tags: Vec::new(),
+        }
+    }
+}
+
+impl Command for InsertFrames {
+    fn label(&self) -> &str {
+        "Insert Frames"
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        if self.at.0 > doc.frame_count {
+            return Err(CommandError::FrameOutOfRange {
+                frame: self.at,
+                frame_count: doc.frame_count,
+            });
+        }
+        let frame_count = doc
+            .frame_count
+            .checked_add(self.count)
+            .ok_or(CommandError::FrameLimit)?;
+        // Check every track first so a failure leaves the document unchanged.
+        let overflows = doc.tracks().values().any(|track| {
+            track.keys().last().is_some_and(|(last, _)| {
+                last >= self.at && last.0.checked_add(self.count).is_none()
+            })
+        });
+        if overflows {
+            return Err(CommandError::FrameLimit);
+        }
+        let layers: Vec<LayerId> = doc.tracks().keys().copied().collect();
+        for layer in layers {
+            if let Some(track) = doc.track_mut(layer) {
+                track
+                    .insert_frames(self.at, self.count)
+                    .map_err(|_| CommandError::FrameLimit)?;
+            }
+        }
+        doc.frame_count = frame_count;
+        self.tags = doc.tags.clone();
+        for tag in &mut doc.tags {
+            if tag.range.start >= self.at {
+                tag.range.start.0 += self.count;
+            }
+            if tag.range.end >= self.at {
+                tag.range.end.0 += self.count;
+            }
+        }
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        let layers: Vec<LayerId> = doc.tracks().keys().copied().collect();
+        for layer in layers {
+            if let Some(track) = doc.track_mut(layer) {
+                track.remove_frames(self.at, self.count);
+            }
+        }
+        doc.frame_count = doc.frame_count.saturating_sub(self.count);
+        std::mem::swap(&mut doc.tags, &mut self.tags);
+        Ok(())
+    }
+}
+
+/// What [`RemoveFrames`] took out of one layer.
+#[derive(Debug)]
+struct LayerRemoval {
+    layer: LayerId,
+    removed: RemovedFrames,
+    /// A removed key whose exposure ran past the range was put back at the
+    /// range start, so the frames after the range keep their picture.
+    carried: bool,
+}
+
+/// Removes a range of frames on every layer: keys inside it are dropped and
+/// later keys move left. The animation shrinks by the range length. Tags
+/// shrink with it, and tags left with no frames are removed.
+///
+/// Fails with [`CommandError::ZeroFrameCount`] rather than removing every frame.
+#[derive(Debug)]
+pub struct RemoveFrames {
+    range: FrameRange,
+    removals: Vec<LayerRemoval>,
+    /// The tags before the removal, swapped back on undo.
+    tags: Vec<FrameTag>,
+}
+
+impl RemoveFrames {
+    /// Creates the command.
+    pub fn new(range: FrameRange) -> Self {
+        Self {
+            range,
+            removals: Vec::new(),
+            tags: Vec::new(),
+        }
+    }
+}
+
+impl Command for RemoveFrames {
+    fn label(&self) -> &str {
+        "Remove Frames"
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        let FrameRange { start, end } = self.range;
+        if self.range.is_empty() || end.0 > doc.frame_count {
+            return Err(CommandError::FrameOutOfRange {
+                frame: end,
+                frame_count: doc.frame_count,
+            });
+        }
+        let len = self.range.len();
+        if len >= doc.frame_count {
+            return Err(CommandError::ZeroFrameCount);
+        }
+        let frame_count = doc.frame_count;
+        let layers: Vec<LayerId> = doc.tracks().keys().copied().collect();
+        self.removals.clear();
+        for layer in layers {
+            let Some(track) = doc.track_mut(layer) else {
+                continue;
+            };
+            let held_past = end.0 < frame_count && track.key_at(end).is_none();
+            let removed = track.remove_frames(start, len);
+            let carried = match removed.keys.last() {
+                Some(&(_, key)) if held_past => {
+                    track.set_key(start, key);
+                    true
+                }
+                _ => false,
+            };
+            self.removals.push(LayerRemoval {
+                layer,
+                removed,
+                carried,
+            });
+        }
+        doc.frame_count -= len;
+        self.tags = doc.tags.clone();
+        let map = |f: FrameIndex| {
+            if f <= start {
+                f
+            } else if f >= end {
+                FrameIndex(f.0 - len)
+            } else {
+                start
+            }
+        };
+        for tag in &mut doc.tags {
+            tag.range = FrameRange::new(map(tag.range.start), map(tag.range.end));
+        }
+        doc.tags.retain(|t| !t.range.is_empty());
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        for removal in self.removals.drain(..) {
+            let track = doc
+                .track_mut(removal.layer)
+                .ok_or(CommandError::LayerNotFound)?;
+            if removal.carried {
+                track.remove_key(self.range.start);
+            }
+            track.restore_frames(&removal.removed);
+        }
+        doc.frame_count += self.range.len();
+        std::mem::swap(&mut doc.tags, &mut self.tags);
         Ok(())
     }
 }
@@ -357,5 +545,69 @@ mod tests {
             Err(CommandError::FrameLimit)
         );
         assert_eq!(d, before);
+    }
+
+    #[test]
+    fn insert_frames_lengthens_the_exposure_and_undoes() {
+        let (mut d, a, b, _, _) = sample();
+        d.tags.push(FrameTag {
+            name: "T".into(),
+            range: FrameRange::new(FrameIndex(0), FrameIndex(3)),
+        });
+        let before = d.clone();
+        let mut h = History::new();
+        h.execute(&mut d, Box::new(InsertFrames::new(FrameIndex(3), 2)))
+            .unwrap();
+        assert_eq!(d.frame_count, 26);
+        assert_eq!(key_frames(&d, a), [0, 5, 8]);
+        assert_eq!(key_frames(&d, b), [2]);
+        assert_eq!(d.tags[0].range.end, FrameIndex(5));
+        h.undo(&mut d).unwrap();
+        assert_eq!(d, before);
+    }
+
+    #[test]
+    fn remove_frames_keeps_the_picture_after_the_range() {
+        let (mut d, a, b, _, a3) = sample();
+        d.tags.push(FrameTag {
+            name: "Gone".into(),
+            range: FrameRange::new(FrameIndex(3), FrameIndex(5)),
+        });
+        d.tags.push(FrameTag {
+            name: "Kept".into(),
+            range: FrameRange::new(FrameIndex(4), FrameIndex(10)),
+        });
+        let before = d.clone();
+        let mut h = History::new();
+        h.execute(
+            &mut d,
+            Box::new(RemoveFrames::new(FrameRange::new(
+                FrameIndex(3),
+                FrameIndex(5),
+            ))),
+        )
+        .unwrap();
+        assert_eq!(d.frame_count, 22);
+        // a: the key at 3 still showed at 5, so it is carried to 3; 6 -> 4.
+        assert_eq!(key_frames(&d, a), [0, 3, 4]);
+        assert_eq!(d.drawing_at(a, FrameIndex(3)), Some(a3));
+        assert_eq!(key_frames(&d, b), [2]);
+        assert_eq!(d.tags.len(), 1);
+        assert_eq!(
+            d.tags[0].range,
+            FrameRange::new(FrameIndex(3), FrameIndex(8))
+        );
+        h.undo(&mut d).unwrap();
+        assert_eq!(d, before);
+    }
+
+    #[test]
+    fn remove_frames_never_removes_every_frame() {
+        let (mut d, ..) = sample();
+        let all = FrameRange::new(FrameIndex(0), FrameIndex(d.frame_count));
+        assert_eq!(
+            RemoveFrames::new(all).apply(&mut d),
+            Err(CommandError::ZeroFrameCount)
+        );
     }
 }

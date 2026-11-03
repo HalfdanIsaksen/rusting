@@ -10,7 +10,7 @@ use crate::preview::Preview;
 use crate::tools::ToolController;
 use document::animation_core::{FrameIndex, FrameRange, LayerId};
 use document::{CanvasAnchor, CanvasSize, Document, FrameTag, NewDocumentSettings, SettingsError};
-use editor::commands::{DuplicateFrame, ResizeCanvas, SetTags};
+use editor::commands::{DuplicateFrame, InsertFrames, RemoveFrames, ResizeCanvas, SetTags};
 use editor::{Command, CommandError, EditorState, History};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -404,6 +404,42 @@ impl Session {
                 "Duplicated to frame {}",
                 new_frame.display_number()
             ));
+        }
+    }
+
+    /// Inserts a blank frame right after the playhead on every layer and
+    /// moves to it. The drawing at the playhead is held one frame longer.
+    pub fn insert_frame(&mut self) {
+        if self.tools.is_active() {
+            return;
+        }
+        self.tools.cancel();
+        self.playback.pause();
+        let new_frame = FrameIndex(self.current_frame().0 + 1);
+        if self
+            .execute(Box::new(InsertFrames::new(new_frame, 1)))
+            .is_ok()
+        {
+            self.set_frame(new_frame);
+        }
+    }
+
+    /// Removes the selected frames (or the frame under the playhead) on
+    /// every layer.
+    pub fn delete_frames(&mut self) {
+        if self.tools.is_active() {
+            return;
+        }
+        self.tools.cancel();
+        self.playback.pause();
+        let current = self.current_frame();
+        let range = self
+            .frame_selection
+            .unwrap_or(FrameRange::new(current, FrameIndex(current.0 + 1)));
+        if self.execute(Box::new(RemoveFrames::new(range))).is_ok() {
+            self.clear_frame_selection();
+            let last = FrameIndex(self.document.frame_count - 1);
+            self.set_frame(range.start.min(last));
         }
     }
 
