@@ -101,6 +101,12 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
             brush_size(ui, session);
             brush_smoothing(ui, session);
             ui.separator();
+            let behind = &mut session.tools.brush_behind;
+            ui.selectable_value(behind, false, "Paint in front")
+                .on_hover_text("New strokes go on top of the frame's existing strokes.");
+            ui.selectable_value(behind, true, "Paint behind")
+                .on_hover_text("New strokes go under the frame's existing strokes.");
+            ui.separator();
             paint_settings(ui, session);
         }
         Tool::Fill => {
