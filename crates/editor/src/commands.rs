@@ -175,6 +175,7 @@ pub struct AddStroke {
     frame: FrameIndex,
     stroke: Stroke,
     new_drawing: DrawingId,
+    behind: bool,
     target: Option<StrokeTarget>,
 }
 
@@ -187,8 +188,16 @@ impl AddStroke {
             frame,
             stroke,
             new_drawing: DrawingId::new(),
+            behind: false,
             target: None,
         }
+    }
+
+    /// Puts the stroke under the drawing's other strokes instead of on top.
+    /// Fills still draw under every stroke (ADR-007).
+    pub fn behind(mut self, behind: bool) -> Self {
+        self.behind = behind;
+        self
     }
 
     /// ID of the stroke this command adds.
@@ -212,7 +221,12 @@ impl Command for AddStroke {
         frame_in_range(doc, self.frame)?;
         let target = match doc.drawing_at(self.layer, self.frame) {
             Some(id) => {
-                vector_mut(doc, id)?.push_stroke(self.stroke.clone());
+                let drawing = vector_mut(doc, id)?;
+                if self.behind {
+                    drawing.insert_stroke(0, self.stroke.clone());
+                } else {
+                    drawing.push_stroke(self.stroke.clone());
+                }
                 StrokeTarget::Existing(id)
             }
             None => {
@@ -979,6 +993,24 @@ mod tests {
         assert_eq!(d, before);
         h.redo(&mut d).unwrap();
         assert_eq!(d.drawing_at(l, FrameIndex(2)), Some(drawing));
+    }
+
+    #[test]
+    fn add_stroke_behind_goes_under_existing_strokes() {
+        let mut d = doc();
+        let l = d.add_layer("L");
+        let mut h = History::new();
+        let first = AddStroke::new(l, FrameIndex(0), stroke());
+        let drawing = first.new_drawing_id();
+        h.execute(&mut d, Box::new(first)).unwrap();
+        let before = d.clone();
+        let back = AddStroke::new(l, FrameIndex(0), stroke()).behind(true);
+        let back_id = back.stroke_id();
+        h.execute(&mut d, Box::new(back)).unwrap();
+        let strokes = d.drawing(drawing).unwrap().as_vector().unwrap().strokes();
+        assert_eq!(strokes[0].id, back_id);
+        h.undo(&mut d).unwrap();
+        assert_eq!(d, before);
     }
 
     #[test]

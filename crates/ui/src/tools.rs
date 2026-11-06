@@ -345,6 +345,8 @@ pub struct ToolController {
     /// Brush smoothing in percent (`0.0..=100.0`). Higher irons out more of
     /// the hand and tablet wobble.
     pub brush_smoothing: f32,
+    /// Brush paints under the frame's existing strokes instead of on top.
+    pub brush_behind: bool,
     /// Eraser radius in document units.
     pub eraser_radius: f32,
     /// Partial or whole-stroke erasing.
@@ -373,6 +375,7 @@ impl Default for ToolController {
     fn default() -> Self {
         Self {
             brush_smoothing: DEFAULT_BRUSH_SMOOTHING,
+            brush_behind: false,
             eraser_radius: 12.0,
             eraser_mode: EraserMode::default(),
             fill_gap: GapClosing::default(),
@@ -1138,7 +1141,10 @@ impl Session {
                 ..
             }) => {
                 if let Some(stroke) = builder.finish() {
-                    let _ = self.execute(Box::new(AddStroke::new(layer, frame, stroke)));
+                    let behind = self.tools.brush_behind;
+                    let _ = self.execute(Box::new(
+                        AddStroke::new(layer, frame, stroke).behind(behind),
+                    ));
                 }
             }
             Some(Gesture::Erase {
