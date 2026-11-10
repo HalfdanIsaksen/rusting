@@ -63,7 +63,7 @@ The tool strip runs down the side of the canvas:
 | Selection | `V` | Select strokes and fills (click, or drag a box from anywhere), then move or delete them |
 | Lasso | `L` | Select strokes and fills by drawing a loop around them |
 | Transform | `Q` | Scale and rotate the selection with box handles |
-| Brush | `B` | Vector strokes with size, opacity, colour, a 0–100% smoothing slider, and paint in front of or behind the existing strokes |
+| Brush | `B` | Vector strokes with size, opacity, colour, a 0–100% smoothing slider, and paint in front of or behind the existing strokes. Hold `Shift` to draw a straight line |
 | Eraser | `E` | Erase part of a stroke or whole strokes |
 | Paint Bucket | `K` | Fill areas enclosed by strokes, with optional gap closing |
 

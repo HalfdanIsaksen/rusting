@@ -108,6 +108,8 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
                 .on_hover_text("New strokes go under the frame's existing strokes.");
             ui.separator();
             paint_settings(ui, session);
+            ui.separator();
+            ui.weak("Hold Shift while dragging to draw a straight line.");
         }
         Tool::Fill => {
             ui.label("Fill type");

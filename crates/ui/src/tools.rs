@@ -264,6 +264,11 @@ enum Gesture {
         builder: StrokeBuilder,
         /// Stroke id used for the live preview mesh.
         preview_id: StrokeId,
+        /// Where the press was; with Shift held the stroke is a straight
+        /// line from here to `last`.
+        start: Vec2,
+        /// Latest pointer position.
+        last: Vec2,
     },
     Erase {
         layer: LayerId,
@@ -365,7 +370,8 @@ pub struct ToolController {
     selection: Vec<ItemId>,
     /// The layer and frame the selection belongs to.
     selection_at: Option<(LayerId, FrameIndex)>,
-    /// Shift held: keep the aspect ratio / snap the angle while transforming.
+    /// Shift held: keep the aspect ratio / snap the angle while transforming,
+    /// draw a straight line with the brush.
     shift: bool,
     /// Alt held: scale from the centre while transforming.
     alt: bool,
@@ -541,15 +547,24 @@ impl ToolController {
                 layer,
                 builder,
                 preview_id,
+                start,
+                last,
                 ..
-            }) if !builder.is_empty() => Some((
-                *layer,
-                Stroke {
-                    id: *preview_id,
-                    points: builder.smoothed_points(),
-                    style: *builder.style(),
-                },
-            )),
+            }) if !builder.is_empty() => {
+                let points = if self.shift {
+                    straight_line(*start, *last)
+                } else {
+                    builder.smoothed_points()
+                };
+                Some((
+                    *layer,
+                    Stroke {
+                        id: *preview_id,
+                        points,
+                        style: *builder.style(),
+                    },
+                ))
+            }
             _ => None,
         }
     }
@@ -668,6 +683,8 @@ impl Session {
                     frame,
                     builder,
                     preview_id: StrokeId::new(),
+                    start: pos,
+                    last: pos,
                 }
             }
             Tool::Eraser => Gesture::Erase {
@@ -748,8 +765,9 @@ impl Session {
                     self.tools.selection = items;
                 }
             }
-            Some(Gesture::Brush { builder, .. }) => {
+            Some(Gesture::Brush { builder, last, .. }) => {
                 builder.add_point(StrokePoint::new(pos));
+                *last = pos;
             }
             Some(Gesture::Erase {
                 layer,
@@ -1138,9 +1156,16 @@ impl Session {
                 layer,
                 frame,
                 builder,
+                start,
+                last,
                 ..
             }) => {
-                if let Some(stroke) = builder.finish() {
+                let stroke = if self.tools.shift {
+                    Some(Stroke::new(straight_line(start, last), *builder.style()))
+                } else {
+                    builder.finish()
+                };
+                if let Some(stroke) = stroke {
                     let behind = self.tools.brush_behind;
                     let _ = self.execute(Box::new(
                         AddStroke::new(layer, frame, stroke).behind(behind),
@@ -1187,6 +1212,16 @@ impl Session {
     }
 }
 
+/// The points of a straight brush line from `start` to `end` (one point, a
+/// dot, when they coincide).
+fn straight_line(start: Vec2, end: Vec2) -> Vec<StrokePoint> {
+    if start == end {
+        vec![StrokePoint::new(start)]
+    } else {
+        vec![StrokePoint::new(start), StrokePoint::new(end)]
+    }
+}
+
 /// The vector drawing `layer` shows at `frame`.
 fn vector_at(
     doc: &document::Document,
@@ -1218,6 +1253,27 @@ mod tests {
             s.pointer_move(from.lerp(to, i as f32 / 10.0));
         }
         s.pointer_up();
+    }
+
+    #[test]
+    fn shift_brush_draws_a_straight_line() {
+        let mut s = Session::new();
+        assert!(s.pointer_down_with(Vec2::new(10.0, 10.0), 1.0, true));
+        s.pointer_move(Vec2::new(30.0, 40.0));
+        s.pointer_move(Vec2::new(80.0, 20.0));
+        let (_, preview) = s.tools.preview().unwrap();
+        assert_eq!(preview.points.len(), 2);
+        // Releasing Shift mid-drag goes back to the freehand path.
+        s.tools.set_modifiers(false, false);
+        assert!(s.tools.preview().unwrap().1.points.len() > 2);
+        s.tools.set_modifiers(true, false);
+        s.pointer_move(Vec2::new(90.0, 50.0));
+        s.pointer_up();
+        let stroke = &s.active_drawing().unwrap().strokes()[0];
+        let ends: Vec<Vec2> = stroke.points.iter().map(|p| p.pos).collect();
+        assert_eq!(ends, vec![Vec2::new(10.0, 10.0), Vec2::new(90.0, 50.0)]);
+        s.undo();
+        assert!(s.active_drawing().is_none_or(|d| d.strokes().is_empty()));
     }
 
     #[test]
