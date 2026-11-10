@@ -10,7 +10,7 @@ mod shell;
 use document::animation_core::Rgba;
 use document::animation_core::Vec2;
 use document::animation_core::glam::Mat4;
-use document::drawing::ItemId;
+use document::drawing::{Fill, ItemId, Stroke};
 use document::scene::BlendMode;
 use renderer::{
     CanvasFrame, CanvasRenderer, DrawListBuilder, Gpu, Mesh, OffscreenRenderer, StrokeDraw,
@@ -414,7 +414,12 @@ fn collect_draws(
     }
 
     let erasing = session.tools.erasing();
-    let mut preview = session.tools.preview();
+    // The stroke or shape being drawn: its layer, fill and stroke.
+    let mut preview = session
+        .tools
+        .preview()
+        .map(|(layer, stroke)| (layer, None, Some(stroke)))
+        .or_else(|| session.tools.shape_preview());
     // Selected items being dragged are drawn moved by the drag offset, or
     // scaled/rotated copies while the transform tool drags (copies, so brush
     // widths match what release commits).
@@ -469,17 +474,17 @@ fn collect_draws(
                 }
             }
         }
-        if let Some((_, stroke)) = preview.take_if(|(id, _)| *id == layer.layer_id) {
-            draws.stroke(&stroke, stroke_color(&stroke, layer.opacity), transform);
+        if let Some((_, fill, stroke)) = preview.take_if(|(id, ..)| *id == layer.layer_id) {
+            draw_preview(&mut draws, fill, stroke, layer.opacity, transform);
         }
     }
     // The active layer shows nothing yet at this frame: draw the preview on top.
-    if let Some((layer_id, stroke)) = preview {
+    if let Some((layer_id, fill, stroke)) = preview {
         let layer = doc.layers().get(layer_id);
         let transform = layer.map_or(Mat4::IDENTITY, |l| transform_matrix(&l.transform));
         let opacity = layer.map_or(1.0, |l| l.opacity);
         draws.set_layer(Some(layer_id), layer.map_or(BlendMode::Normal, |l| l.blend));
-        draws.stroke(&stroke, stroke_color(&stroke, opacity), transform);
+        draw_preview(&mut draws, fill, stroke, opacity, transform);
     }
 
     if shell.debug.test_triangle {
@@ -508,6 +513,27 @@ fn collect_draws(
         });
     }
     draws.finish()
+}
+
+/// Adds the stroke or shape being drawn: its fill, then its stroke.
+fn draw_preview(
+    draws: &mut DrawListBuilder<'_>,
+    fill: Option<Fill>,
+    stroke: Option<Stroke>,
+    opacity: f32,
+    transform: Mat4,
+) {
+    if let Some(fill) = fill {
+        draws.fill(
+            &fill,
+            fill_color(&fill, opacity),
+            fill_gradient(&fill, opacity),
+            transform,
+        );
+    }
+    if let Some(stroke) = stroke {
+        draws.stroke(&stroke, stroke_color(&stroke, opacity), transform);
+    }
 }
 
 /// Native file dialogs (via `rfd`) and quitting, on behalf of the UI.

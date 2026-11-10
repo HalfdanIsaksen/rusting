@@ -25,7 +25,8 @@
 //! press anywhere else selects, like the select tool.
 
 use crate::session::Session;
-use document::animation_core::{FrameIndex, LayerId, Rgba, StrokeId, Vec2};
+use crate::shapes::{ShapeKind, ShapeStyle, shape_box, shape_items};
+use document::animation_core::{FillId, FrameIndex, LayerId, Rgba, StrokeId, Vec2};
 use document::drawing::select::{Affine2, rect_from_corners, scale_rotate_about};
 use document::drawing::{
     BrushStyle, Fill, FillShape, GapClosing, Gradient, ItemId, Stroke, StrokeBuilder, StrokePoint,
@@ -264,6 +265,22 @@ enum Gesture {
         builder: StrokeBuilder,
         /// Stroke id used for the live preview mesh.
         preview_id: StrokeId,
+        /// Where the press was; with Shift held the stroke is a straight
+        /// line from here to `last`.
+        start: Vec2,
+        /// Latest pointer position.
+        last: Vec2,
+    },
+    /// Dragging out a rectangle or ellipse.
+    Shape {
+        layer: LayerId,
+        frame: FrameIndex,
+        kind: ShapeKind,
+        start: Vec2,
+        last: Vec2,
+        /// IDs used for the live preview meshes.
+        preview_fill: FillId,
+        preview_stroke: StrokeId,
     },
     Erase {
         layer: LayerId,
@@ -357,6 +374,8 @@ pub struct ToolController {
     pub fill_style: FillStyle,
     /// Colour a gradient fill blends into from the brush colour.
     pub gradient_color: Rgba,
+    /// Stroke and fill of the rectangle and ellipse tools.
+    pub shape_style: ShapeStyle,
     /// Gradient fill: the first click, waiting for the second, which sets
     /// where `gradient_color` is reached.
     gradient_start: Option<(LayerId, FrameIndex, Vec2)>,
@@ -365,7 +384,8 @@ pub struct ToolController {
     selection: Vec<ItemId>,
     /// The layer and frame the selection belongs to.
     selection_at: Option<(LayerId, FrameIndex)>,
-    /// Shift held: keep the aspect ratio / snap the angle while transforming.
+    /// Shift held: keep the aspect ratio / snap the angle while transforming,
+    /// draw a straight line with the brush.
     shift: bool,
     /// Alt held: scale from the centre while transforming.
     alt: bool,
@@ -381,6 +401,7 @@ impl Default for ToolController {
             fill_gap: GapClosing::default(),
             fill_style: FillStyle::default(),
             gradient_color: Rgba::WHITE,
+            shape_style: ShapeStyle::default(),
             gradient_start: None,
             gesture: None,
             selection: Vec::new(),
@@ -541,15 +562,51 @@ impl ToolController {
                 layer,
                 builder,
                 preview_id,
+                start,
+                last,
                 ..
-            }) if !builder.is_empty() => Some((
-                *layer,
-                Stroke {
-                    id: *preview_id,
-                    points: builder.smoothed_points(),
-                    style: *builder.style(),
-                },
-            )),
+            }) if !builder.is_empty() => {
+                let points = if self.shift {
+                    straight_line(*start, *last)
+                } else {
+                    builder.smoothed_points()
+                };
+                Some((
+                    *layer,
+                    Stroke {
+                        id: *preview_id,
+                        points,
+                        style: *builder.style(),
+                    },
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// The rectangle or ellipse being dragged, for the live preview: the
+    /// layer it goes on, its fill and its outline (either may be off).
+    pub fn shape_preview(&self) -> Option<(LayerId, Option<Fill>, Option<Stroke>)> {
+        match &self.gesture {
+            Some(Gesture::Shape {
+                layer,
+                kind,
+                start,
+                last,
+                preview_fill,
+                preview_stroke,
+                ..
+            }) => {
+                let bounds = shape_box(*start, *last, self.shift, self.alt);
+                let (fill, stroke) = shape_items(
+                    *kind,
+                    bounds,
+                    &self.shape_style,
+                    *preview_fill,
+                    *preview_stroke,
+                );
+                (fill.is_some() || stroke.is_some()).then_some((*layer, fill, stroke))
+            }
             _ => None,
         }
     }
@@ -668,8 +725,23 @@ impl Session {
                     frame,
                     builder,
                     preview_id: StrokeId::new(),
+                    start: pos,
+                    last: pos,
                 }
             }
+            Tool::Rectangle | Tool::Ellipse => Gesture::Shape {
+                layer,
+                frame,
+                kind: if self.state.tool == Tool::Rectangle {
+                    ShapeKind::Rectangle
+                } else {
+                    ShapeKind::Ellipse
+                },
+                start: pos,
+                last: pos,
+                preview_fill: FillId::new(),
+                preview_stroke: StrokeId::new(),
+            },
             Tool::Eraser => Gesture::Erase {
                 layer,
                 frame,
@@ -748,8 +820,10 @@ impl Session {
                     self.tools.selection = items;
                 }
             }
-            Some(Gesture::Brush { builder, .. }) => {
+            Some(Gesture::Shape { last, .. }) => *last = pos,
+            Some(Gesture::Brush { builder, last, .. }) => {
                 builder.add_point(StrokePoint::new(pos));
+                *last = pos;
             }
             Some(Gesture::Erase {
                 layer,
@@ -1138,13 +1212,47 @@ impl Session {
                 layer,
                 frame,
                 builder,
+                start,
+                last,
                 ..
             }) => {
-                if let Some(stroke) = builder.finish() {
+                let stroke = if self.tools.shift {
+                    Some(Stroke::new(straight_line(start, last), *builder.style()))
+                } else {
+                    builder.finish()
+                };
+                if let Some(stroke) = stroke {
                     let behind = self.tools.brush_behind;
                     let _ = self.execute(Box::new(
                         AddStroke::new(layer, frame, stroke).behind(behind),
                     ));
+                }
+            }
+            Some(Gesture::Shape {
+                layer,
+                frame,
+                kind,
+                start,
+                last,
+                ..
+            }) => {
+                let bounds = shape_box(start, last, self.tools.shift, self.tools.alt);
+                let (fill, stroke) = shape_items(
+                    kind,
+                    bounds,
+                    &self.tools.shape_style,
+                    FillId::new(),
+                    StrokeId::new(),
+                );
+                let mut commands: Vec<Box<dyn editor::Command>> = Vec::new();
+                if let Some(fill) = fill {
+                    commands.push(Box::new(AddFill::new(layer, frame, fill)));
+                }
+                if let Some(stroke) = stroke {
+                    commands.push(Box::new(AddStroke::new(layer, frame, stroke)));
+                }
+                if !commands.is_empty() {
+                    let _ = self.execute(Box::new(Batch::new(kind.label(), commands)));
                 }
             }
             Some(Gesture::Erase {
@@ -1187,6 +1295,16 @@ impl Session {
     }
 }
 
+/// The points of a straight brush line from `start` to `end` (one point, a
+/// dot, when they coincide).
+fn straight_line(start: Vec2, end: Vec2) -> Vec<StrokePoint> {
+    if start == end {
+        vec![StrokePoint::new(start)]
+    } else {
+        vec![StrokePoint::new(start), StrokePoint::new(end)]
+    }
+}
+
 /// The vector drawing `layer` shows at `frame`.
 fn vector_at(
     doc: &document::Document,
@@ -1218,6 +1336,64 @@ mod tests {
             s.pointer_move(from.lerp(to, i as f32 / 10.0));
         }
         s.pointer_up();
+    }
+
+    #[test]
+    fn shape_tools_add_fill_and_outline_as_one_step() {
+        let mut s = Session::new();
+        s.state.tool = Tool::Rectangle;
+        s.tools.shape_style.stroke_width = 6.0;
+        assert!(s.pointer_down(Vec2::new(10.0, 10.0), 1.0));
+        s.pointer_move(Vec2::new(60.0, 40.0));
+        let (_, fill, stroke) = s.tools.shape_preview().unwrap();
+        assert!(fill.is_some() && stroke.is_some());
+        assert!(
+            s.active_drawing().is_none(),
+            "document untouched while dragging"
+        );
+        s.pointer_up();
+        let d = s.active_drawing().unwrap();
+        assert_eq!((d.fills().len(), d.strokes().len()), (1, 1));
+        assert_eq!(d.strokes()[0].style.width, 6.0);
+        assert_eq!(
+            d.fills()[0].bounds(),
+            Some((Vec2::new(10.0, 10.0), Vec2::new(60.0, 40.0)))
+        );
+        s.undo();
+        assert!(s.active_drawing().is_none(), "one undo removes both parts");
+
+        // Shift: a circle; a click without a drag draws nothing.
+        s.state.tool = Tool::Ellipse;
+        assert!(s.pointer_down_with(Vec2::ZERO, 1.0, true));
+        s.pointer_move(Vec2::new(40.0, 10.0));
+        s.pointer_up();
+        let (min, max) = s.active_drawing().unwrap().fills()[0].bounds().unwrap();
+        let size = max - min;
+        assert!((size.x - size.y).abs() < 0.01 && (size.x - 40.0).abs() < 0.01);
+        assert!(s.pointer_down(Vec2::new(5.0, 5.0), 1.0));
+        s.pointer_up();
+        assert_eq!(s.active_drawing().unwrap().fills().len(), 1);
+    }
+
+    #[test]
+    fn shift_brush_draws_a_straight_line() {
+        let mut s = Session::new();
+        assert!(s.pointer_down_with(Vec2::new(10.0, 10.0), 1.0, true));
+        s.pointer_move(Vec2::new(30.0, 40.0));
+        s.pointer_move(Vec2::new(80.0, 20.0));
+        let (_, preview) = s.tools.preview().unwrap();
+        assert_eq!(preview.points.len(), 2);
+        // Releasing Shift mid-drag goes back to the freehand path.
+        s.tools.set_modifiers(false, false);
+        assert!(s.tools.preview().unwrap().1.points.len() > 2);
+        s.tools.set_modifiers(true, false);
+        s.pointer_move(Vec2::new(90.0, 50.0));
+        s.pointer_up();
+        let stroke = &s.active_drawing().unwrap().strokes()[0];
+        let ends: Vec<Vec2> = stroke.points.iter().map(|p| p.pos).collect();
+        assert_eq!(ends, vec![Vec2::new(10.0, 10.0), Vec2::new(90.0, 50.0)]);
+        s.undo();
+        assert!(s.active_drawing().is_none_or(|d| d.strokes().is_empty()));
     }
 
     #[test]
