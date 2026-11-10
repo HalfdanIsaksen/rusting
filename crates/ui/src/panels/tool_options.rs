@@ -127,6 +127,7 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
             ui.separator();
             paint_settings(ui, session);
         }
+        Tool::Rectangle | Tool::Ellipse => shape_settings(ui, session),
         Tool::Eraser => {
             eraser_size(ui, session);
             ui.separator();
@@ -167,6 +168,40 @@ fn brush_smoothing(ui: &mut egui::Ui, session: &mut Session) {
     .on_hover_text(SMOOTHING_HINT);
 }
 
+const SHAPE_HINT: &str = "Drag to draw. Shift makes a square or circle, Alt draws from the \
+                          centre.";
+
+/// Stroke width and colour, and fill colour, of the rectangle and ellipse
+/// tools.
+fn shape_settings(ui: &mut egui::Ui, session: &mut Session) {
+    let style = &mut session.tools.shape_style;
+    ui.checkbox(&mut style.stroke, "Stroke");
+    ui.add_enabled_ui(style.stroke, |ui| {
+        ui.label("Stroke width");
+        ui.add(
+            egui::Slider::new(&mut style.stroke_width, 0.5..=200.0)
+                .logarithmic(true)
+                .max_decimals(1),
+        );
+        ui.horizontal(|ui| {
+            ui.label("Stroke colour");
+            color_button(ui, &mut style.stroke_color);
+        });
+        swatches(ui, &mut style.stroke_color);
+    });
+    ui.separator();
+    ui.checkbox(&mut style.fill, "Fill");
+    ui.add_enabled_ui(style.fill, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Fill colour");
+            color_button(ui, &mut style.fill_color);
+        });
+        swatches(ui, &mut style.fill_color);
+    });
+    ui.separator();
+    ui.weak(SHAPE_HINT);
+}
+
 fn eraser_size(ui: &mut egui::Ui, session: &mut Session) {
     ui.label("Size");
     let mut diameter = session.tools.eraser_radius * 2.0;
@@ -193,13 +228,18 @@ fn paint_settings(ui: &mut egui::Ui, session: &mut Session) {
         ui.label("Colour");
         color_button(ui, &mut session.state.brush.color);
     });
+    swatches(ui, &mut session.state.brush.color);
+}
+
+/// The quick colour swatches; clicking one sets `color`.
+fn swatches(ui: &mut egui::Ui, color: &mut Rgba) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(3.0, 3.0);
         for [r, g, b] in SWATCHES {
-            let color = egui::Rgba::from_rgb(r, g, b);
+            let swatch = egui::Rgba::from_rgb(r, g, b);
             let (rect, response) =
                 ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
-            ui.painter().rect_filled(rect, 3.0, color);
+            ui.painter().rect_filled(rect, 3.0, swatch);
             ui.painter().rect_stroke(
                 rect,
                 3.0,
@@ -207,7 +247,7 @@ fn paint_settings(ui: &mut egui::Ui, session: &mut Session) {
                 egui::StrokeKind::Inside,
             );
             if response.clicked() {
-                session.state.brush.color = Rgba::rgb(r, g, b);
+                *color = Rgba::rgb(r, g, b);
             }
         }
     });

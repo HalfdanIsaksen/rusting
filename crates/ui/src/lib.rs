@@ -16,6 +16,7 @@ pub mod panels;
 pub mod playback;
 pub mod preview;
 pub mod session;
+pub mod shapes;
 pub mod theme;
 pub mod tools;
 

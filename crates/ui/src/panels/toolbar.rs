@@ -102,6 +102,20 @@ pub const TOOLS: &[ToolEntry] = &[
         ToolGroup::Selection,
     ),
     ToolEntry::new(Tool::Brush, icons::brush, "Brush", "B", ToolGroup::Drawing),
+    ToolEntry::new(
+        Tool::Rectangle,
+        icons::rectangle,
+        "Rectangle",
+        "R",
+        ToolGroup::Drawing,
+    ),
+    ToolEntry::new(
+        Tool::Ellipse,
+        icons::ellipse,
+        "Ellipse",
+        "O",
+        ToolGroup::Drawing,
+    ),
     ToolEntry::new(Tool::Eraser, icons::eraser, "Eraser", "E", ToolGroup::Paint)
         .with_options(eraser_popup),
     ToolEntry::new(

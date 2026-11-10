@@ -19,6 +19,10 @@ pub enum Tool {
     Lasso,
     /// Scale and rotate the selection with box handles.
     Transform,
+    /// Drag out a rectangle.
+    Rectangle,
+    /// Drag out an ellipse.
+    Ellipse,
 }
 
 impl Tool {

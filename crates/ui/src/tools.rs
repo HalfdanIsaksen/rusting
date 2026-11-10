@@ -25,7 +25,8 @@
 //! press anywhere else selects, like the select tool.
 
 use crate::session::Session;
-use document::animation_core::{FrameIndex, LayerId, Rgba, StrokeId, Vec2};
+use crate::shapes::{ShapeKind, ShapeStyle, shape_box, shape_items};
+use document::animation_core::{FillId, FrameIndex, LayerId, Rgba, StrokeId, Vec2};
 use document::drawing::select::{Affine2, rect_from_corners, scale_rotate_about};
 use document::drawing::{
     BrushStyle, Fill, FillShape, GapClosing, Gradient, ItemId, Stroke, StrokeBuilder, StrokePoint,
@@ -270,6 +271,17 @@ enum Gesture {
         /// Latest pointer position.
         last: Vec2,
     },
+    /// Dragging out a rectangle or ellipse.
+    Shape {
+        layer: LayerId,
+        frame: FrameIndex,
+        kind: ShapeKind,
+        start: Vec2,
+        last: Vec2,
+        /// IDs used for the live preview meshes.
+        preview_fill: FillId,
+        preview_stroke: StrokeId,
+    },
     Erase {
         layer: LayerId,
         frame: FrameIndex,
@@ -362,6 +374,8 @@ pub struct ToolController {
     pub fill_style: FillStyle,
     /// Colour a gradient fill blends into from the brush colour.
     pub gradient_color: Rgba,
+    /// Stroke and fill of the rectangle and ellipse tools.
+    pub shape_style: ShapeStyle,
     /// Gradient fill: the first click, waiting for the second, which sets
     /// where `gradient_color` is reached.
     gradient_start: Option<(LayerId, FrameIndex, Vec2)>,
@@ -387,6 +401,7 @@ impl Default for ToolController {
             fill_gap: GapClosing::default(),
             fill_style: FillStyle::default(),
             gradient_color: Rgba::WHITE,
+            shape_style: ShapeStyle::default(),
             gradient_start: None,
             gesture: None,
             selection: Vec::new(),
@@ -569,6 +584,33 @@ impl ToolController {
         }
     }
 
+    /// The rectangle or ellipse being dragged, for the live preview: the
+    /// layer it goes on, its fill and its outline (either may be off).
+    pub fn shape_preview(&self) -> Option<(LayerId, Option<Fill>, Option<Stroke>)> {
+        match &self.gesture {
+            Some(Gesture::Shape {
+                layer,
+                kind,
+                start,
+                last,
+                preview_fill,
+                preview_stroke,
+                ..
+            }) => {
+                let bounds = shape_box(*start, *last, self.shift, self.alt);
+                let (fill, stroke) = shape_items(
+                    *kind,
+                    bounds,
+                    &self.shape_style,
+                    *preview_fill,
+                    *preview_stroke,
+                );
+                (fill.is_some() || stroke.is_some()).then_some((*layer, fill, stroke))
+            }
+            _ => None,
+        }
+    }
+
     /// Strokes the eraser gesture will remove or cut; hide them while
     /// erasing and draw [`ToolController::erase_preview`] in their place.
     pub fn erasing(&self) -> &[StrokeId] {
@@ -687,6 +729,19 @@ impl Session {
                     last: pos,
                 }
             }
+            Tool::Rectangle | Tool::Ellipse => Gesture::Shape {
+                layer,
+                frame,
+                kind: if self.state.tool == Tool::Rectangle {
+                    ShapeKind::Rectangle
+                } else {
+                    ShapeKind::Ellipse
+                },
+                start: pos,
+                last: pos,
+                preview_fill: FillId::new(),
+                preview_stroke: StrokeId::new(),
+            },
             Tool::Eraser => Gesture::Erase {
                 layer,
                 frame,
@@ -765,6 +820,7 @@ impl Session {
                     self.tools.selection = items;
                 }
             }
+            Some(Gesture::Shape { last, .. }) => *last = pos,
             Some(Gesture::Brush { builder, last, .. }) => {
                 builder.add_point(StrokePoint::new(pos));
                 *last = pos;
@@ -1172,6 +1228,33 @@ impl Session {
                     ));
                 }
             }
+            Some(Gesture::Shape {
+                layer,
+                frame,
+                kind,
+                start,
+                last,
+                ..
+            }) => {
+                let bounds = shape_box(start, last, self.tools.shift, self.tools.alt);
+                let (fill, stroke) = shape_items(
+                    kind,
+                    bounds,
+                    &self.tools.shape_style,
+                    FillId::new(),
+                    StrokeId::new(),
+                );
+                let mut commands: Vec<Box<dyn editor::Command>> = Vec::new();
+                if let Some(fill) = fill {
+                    commands.push(Box::new(AddFill::new(layer, frame, fill)));
+                }
+                if let Some(stroke) = stroke {
+                    commands.push(Box::new(AddStroke::new(layer, frame, stroke)));
+                }
+                if !commands.is_empty() {
+                    let _ = self.execute(Box::new(Batch::new(kind.label(), commands)));
+                }
+            }
             Some(Gesture::Erase {
                 layer,
                 frame,
@@ -1253,6 +1336,43 @@ mod tests {
             s.pointer_move(from.lerp(to, i as f32 / 10.0));
         }
         s.pointer_up();
+    }
+
+    #[test]
+    fn shape_tools_add_fill_and_outline_as_one_step() {
+        let mut s = Session::new();
+        s.state.tool = Tool::Rectangle;
+        s.tools.shape_style.stroke_width = 6.0;
+        assert!(s.pointer_down(Vec2::new(10.0, 10.0), 1.0));
+        s.pointer_move(Vec2::new(60.0, 40.0));
+        let (_, fill, stroke) = s.tools.shape_preview().unwrap();
+        assert!(fill.is_some() && stroke.is_some());
+        assert!(
+            s.active_drawing().is_none(),
+            "document untouched while dragging"
+        );
+        s.pointer_up();
+        let d = s.active_drawing().unwrap();
+        assert_eq!((d.fills().len(), d.strokes().len()), (1, 1));
+        assert_eq!(d.strokes()[0].style.width, 6.0);
+        assert_eq!(
+            d.fills()[0].bounds(),
+            Some((Vec2::new(10.0, 10.0), Vec2::new(60.0, 40.0)))
+        );
+        s.undo();
+        assert!(s.active_drawing().is_none(), "one undo removes both parts");
+
+        // Shift: a circle; a click without a drag draws nothing.
+        s.state.tool = Tool::Ellipse;
+        assert!(s.pointer_down_with(Vec2::ZERO, 1.0, true));
+        s.pointer_move(Vec2::new(40.0, 10.0));
+        s.pointer_up();
+        let (min, max) = s.active_drawing().unwrap().fills()[0].bounds().unwrap();
+        let size = max - min;
+        assert!((size.x - size.y).abs() < 0.01 && (size.x - 40.0).abs() < 0.01);
+        assert!(s.pointer_down(Vec2::new(5.0, 5.0), 1.0));
+        s.pointer_up();
+        assert_eq!(s.active_drawing().unwrap().fills().len(), 1);
     }
 
     #[test]

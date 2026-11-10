@@ -136,6 +136,27 @@ pub fn brush(painter: &Painter, rect: Rect, color: Color32) {
     );
 }
 
+/// Rectangle tool: a rectangle outline.
+pub fn rectangle(painter: &Painter, rect: Rect, color: Color32) {
+    outline(
+        painter,
+        rect,
+        color,
+        &[(0.14, 0.24), (0.86, 0.24), (0.86, 0.76), (0.14, 0.76)],
+    );
+}
+
+/// Ellipse tool: an ellipse outline.
+pub fn ellipse(painter: &Painter, rect: Rect, color: Color32) {
+    let pts: Vec<(f32, f32)> = (0..32)
+        .map(|i| {
+            let a = i as f32 / 32.0 * std::f32::consts::TAU;
+            (0.5 + 0.38 * a.cos(), 0.5 + 0.28 * a.sin())
+        })
+        .collect();
+    outline(painter, rect, color, &pts);
+}
+
 /// Eraser: a tilted block with the rubber end filled.
 pub fn eraser(painter: &Painter, rect: Rect, color: Color32) {
     // Block along the diagonal: u points to the top right, v across it.
