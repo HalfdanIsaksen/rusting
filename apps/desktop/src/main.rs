@@ -5,6 +5,7 @@
 //! shows in the central panel (ADR-002). Frames are drawn only on demand.
 
 mod export;
+mod icon;
 mod shell;
 
 use document::animation_core::Rgba;
@@ -127,7 +128,9 @@ impl App {
     fn init(&mut self, event_loop: &ActiveEventLoop) -> Result<(), String> {
         let attrs = Window::default_attributes()
             .with_title("Rusting")
-            .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0));
+            .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0))
+            .with_window_icon(icon::window_icon());
+        icon::set_dock_icon();
         let window = Arc::new(event_loop.create_window(attrs).map_err(|e| e.to_string())?);
         let size = window.inner_size();
         let gpu = pollster::block_on(Gpu::new(window.clone(), size.width, size.height))

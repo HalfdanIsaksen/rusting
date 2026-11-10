@@ -86,6 +86,7 @@ The tool strip runs down the side of the canvas:
 
 ### Look
 - Uses the colours of the Rusting website (warm dark browns with an orange accent). The light or dark palette follows the operating system setting.
+- The app icon (window, taskbar and Dock) and the start menu show the website's logo: an orange brush stroke with an amber dot. Its source is `assets/logo.svg`.
 
 ### View menu
 - Toggle the **Toolbar** (`Cmd/Ctrl+1`), **Timeline** (`Cmd/Ctrl+2`) and **Tool Settings** (`Cmd/Ctrl+3`) to free up space for the canvas.

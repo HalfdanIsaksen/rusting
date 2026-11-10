@@ -11,6 +11,7 @@
 //! [`ToolController::preview`].
 
 pub mod icons;
+pub mod logo;
 pub mod onion;
 pub mod panels;
 pub mod playback;
