@@ -7,7 +7,7 @@
 //! like hand-drawn art.
 
 use document::animation_core::{FillId, Rgba, StrokeId, Vec2};
-use document::drawing::{BrushStyle, Fill, FillShape, Stroke, StrokePoint};
+use document::drawing::{BrushStyle, Fill, FillShape, Gradient, Stroke, StrokePoint};
 
 /// Smallest side of a shape, in document units. Smaller drags (a click)
 /// draw nothing.
@@ -32,6 +32,43 @@ impl ShapeKind {
     }
 }
 
+/// Which way a shape's gradient fill runs across it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GradientDirection {
+    /// Fill colour on the left, gradient colour on the right.
+    #[default]
+    LeftToRight,
+    /// Fill colour at the top, gradient colour at the bottom.
+    TopToBottom,
+    /// Fill colour at the top-left corner, gradient colour at the
+    /// bottom-right one.
+    Diagonal,
+}
+
+impl GradientDirection {
+    /// Every direction, in menu order.
+    pub const ALL: [Self; 3] = [Self::LeftToRight, Self::TopToBottom, Self::Diagonal];
+
+    /// User-visible name.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::LeftToRight => "Left → right",
+            Self::TopToBottom => "Top → bottom",
+            Self::Diagonal => "Diagonal",
+        }
+    }
+
+    /// The gradient's start and end points across the box `(min, max)`.
+    pub fn endpoints(self, (min, max): (Vec2, Vec2)) -> (Vec2, Vec2) {
+        let center = (min + max) * 0.5;
+        match self {
+            Self::LeftToRight => (Vec2::new(min.x, center.y), Vec2::new(max.x, center.y)),
+            Self::TopToBottom => (Vec2::new(center.x, min.y), Vec2::new(center.x, max.y)),
+            Self::Diagonal => (min, max),
+        }
+    }
+}
+
 /// Stroke and fill settings of the shape tools.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ShapeStyle {
@@ -43,8 +80,14 @@ pub struct ShapeStyle {
     pub stroke_color: Rgba,
     /// Fill the inside.
     pub fill: bool,
-    /// Fill colour.
+    /// Fill colour (the start colour of a gradient fill).
     pub fill_color: Rgba,
+    /// Blend the fill into `gradient_color` instead of a solid colour.
+    pub gradient: bool,
+    /// Colour the gradient fill blends into.
+    pub gradient_color: Rgba,
+    /// Which way the gradient runs.
+    pub gradient_direction: GradientDirection,
 }
 
 impl Default for ShapeStyle {
@@ -55,6 +98,9 @@ impl Default for ShapeStyle {
             stroke_color: Rgba::BLACK,
             fill: true,
             fill_color: Rgba::WHITE,
+            gradient: false,
+            gradient_color: Rgba::BLACK,
+            gradient_direction: GradientDirection::default(),
         }
     }
 }
@@ -122,7 +168,15 @@ pub fn shape_items(
             1.0,
         );
         fill.id = fill_id;
-        fill
+        let gradient = style.gradient.then(|| {
+            let (start, end) = style.gradient_direction.endpoints(bounds);
+            Gradient {
+                start,
+                end,
+                end_color: style.gradient_color,
+            }
+        });
+        fill.with_gradient(gradient)
     });
     let stroke = style.stroke.then(|| {
         let mut points: Vec<StrokePoint> = polygon.iter().copied().map(StrokePoint::new).collect();
@@ -172,6 +226,35 @@ mod tests {
             contours: vec![outline(ShapeKind::Rectangle, bounds)],
         };
         assert_eq!(rect.area(), 800.0);
+    }
+
+    #[test]
+    fn gradient_fill_spans_the_box() {
+        let bounds = (Vec2::new(10.0, 20.0), Vec2::new(50.0, 80.0));
+        let style = ShapeStyle {
+            gradient: true,
+            gradient_direction: GradientDirection::TopToBottom,
+            ..ShapeStyle::default()
+        };
+        let (fill, _) = shape_items(
+            ShapeKind::Rectangle,
+            bounds,
+            &style,
+            FillId::new(),
+            StrokeId::new(),
+        );
+        let g = fill.unwrap().gradient.unwrap();
+        assert_eq!(g.start, Vec2::new(30.0, 20.0));
+        assert_eq!(g.end, Vec2::new(30.0, 80.0));
+        assert_eq!(g.end_color, style.gradient_color);
+        let solid = shape_items(
+            ShapeKind::Rectangle,
+            bounds,
+            &ShapeStyle::default(),
+            FillId::new(),
+            StrokeId::new(),
+        );
+        assert!(solid.0.unwrap().gradient.is_none());
     }
 
     #[test]

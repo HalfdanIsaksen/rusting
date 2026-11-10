@@ -4,6 +4,7 @@
 
 use super::toolbar::TOOLS;
 use crate::session::Session;
+use crate::shapes::GradientDirection;
 use crate::tools::{EraserMode, FillStyle};
 use document::animation_core::Rgba;
 use document::drawing::GapClosing;
@@ -197,6 +198,28 @@ fn shape_settings(ui: &mut egui::Ui, session: &mut Session) {
             color_button(ui, &mut style.fill_color);
         });
         swatches(ui, &mut style.fill_color);
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut style.gradient, false, "Solid");
+            ui.selectable_value(&mut style.gradient, true, "Gradient");
+        });
+        if style.gradient {
+            ui.horizontal(|ui| {
+                ui.label("Gradient to")
+                    .on_hover_text("The fill blends from the fill colour into this one.");
+                color_button(ui, &mut style.gradient_color);
+            });
+            swatches(ui, &mut style.gradient_color);
+            ui.label("Direction");
+            ui.horizontal_wrapped(|ui| {
+                for direction in GradientDirection::ALL {
+                    ui.selectable_value(
+                        &mut style.gradient_direction,
+                        direction,
+                        direction.label(),
+                    );
+                }
+            });
+        }
     });
     ui.separator();
     ui.weak(SHAPE_HINT);
