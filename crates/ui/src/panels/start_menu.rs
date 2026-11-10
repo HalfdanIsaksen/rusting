@@ -33,6 +33,10 @@ pub fn show(ui: &mut egui::Ui, session: &mut Session) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(32.0);
+                let (logo, _) = ui.allocate_exact_size(vec2(56.0, 56.0), Sense::hover());
+                let colors = crate::logo::colors(crate::theme::palette(ui.visuals().dark_mode));
+                crate::logo::paint(ui.painter(), logo, colors);
+                ui.add_space(8.0);
                 ui.heading(egui::RichText::new("Rusting").size(28.0).strong());
                 ui.label("Start a new animation");
                 ui.add_space(20.0);
