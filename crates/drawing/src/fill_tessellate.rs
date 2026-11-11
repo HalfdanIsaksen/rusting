@@ -204,6 +204,10 @@ fn ear_clip(polygon: &[Vec2], mesh: &mut Mesh) {
         let degenerate = cross.abs() <= f32::EPSILON * (b - a).length() * (c - b).length()
             || a.distance(b) <= MERGE_EPSILON
             || b.distance(c) <= MERGE_EPSILON;
+        // A vertex on the triangle's edge blocks the ear too: traced fill
+        // outlines lie on a half-cell grid, so such touching vertices are
+        // common, and clipping past them makes triangles that overlap or
+        // reach across erased channels.
         let is_ear = !degenerate
             && cross > 0.0
             && !ring.iter().any(|&j| {
