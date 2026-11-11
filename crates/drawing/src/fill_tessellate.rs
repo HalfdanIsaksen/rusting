@@ -141,7 +141,9 @@ fn bridge_holes(outer: Vec<Vec2>, mut holes: Vec<Vec<Vec2>>) -> Vec<Vec2> {
         let others: Vec<&[Vec2]> = holes[k..].iter().map(Vec::as_slice).collect();
         let visible = candidates.iter().copied().find(|&j| {
             let to = polygon[j];
-            !crosses_any(from, to, &[&polygon]) && !crosses_any(from, to, &others)
+            locally_inside(&polygon, j, from)
+                && !crosses_any(from, to, &[&polygon])
+                && !crosses_any(from, to, &others)
         });
         let Some(j) = visible.or(candidates.first().copied()) else {
             continue;
@@ -156,8 +158,29 @@ fn bridge_holes(outer: Vec<Vec2>, mut holes: Vec<Vec<Vec2>>) -> Vec<Vec2> {
     polygon
 }
 
-fn strictly_inside_triangle(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> bool {
-    (b - a).perp_dot(p - a) > 0.0 && (c - b).perp_dot(p - b) > 0.0 && (a - c).perp_dot(p - c) > 0.0
+/// Whether the bridge from `polygon[j]` towards `target` leaves the vertex
+/// into the polygon's interior. An earlier bridge may have duplicated the
+/// vertex; only the copy whose corner faces `target` gives a simple ring.
+fn locally_inside(polygon: &[Vec2], j: usize, target: Vec2) -> bool {
+    let n = polygon.len();
+    let v = polygon[j];
+    let next = polygon[(j + 1) % n] - v;
+    let prev = polygon[(j + n - 1) % n] - v;
+    let d = target - v;
+    // Positive orientation: the interior is swept turning from `next`
+    // counter-clockwise (in y-up terms) to `prev`.
+    if next.perp_dot(prev) > 0.0 {
+        next.perp_dot(d) > 0.0 && d.perp_dot(prev) > 0.0
+    } else {
+        next.perp_dot(d) > 0.0 || d.perp_dot(prev) > 0.0
+    }
+}
+
+/// Whether `p` is inside triangle `abc` or on its boundary.
+fn in_triangle(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> bool {
+    (b - a).perp_dot(p - a) >= 0.0
+        && (c - b).perp_dot(p - b) >= 0.0
+        && (a - c).perp_dot(p - c) >= 0.0
 }
 
 /// Ear clipping of a positively oriented polygon (bridges allowed). Appends
@@ -191,7 +214,7 @@ fn ear_clip(polygon: &[Vec2], mesh: &mut Mesh) {
                     && p != a
                     && p != b
                     && p != c
-                    && strictly_inside_triangle(p, a, b, c)
+                    && in_triangle(p, a, b, c)
             });
         if is_ear || (degenerate && !is_spike(a, b, c)) || misses >= k {
             // A forced removal (no ear found: bad input) may be reflex; it
@@ -357,6 +380,211 @@ mod tests {
         assert!((mesh_area(&mesh) - expected).abs() < expected * 1e-3);
         assert!(!covers(&mesh, c));
         assert!(covers(&mesh, c + Vec2::new(0.0, 40.0)));
+    }
+
+    /// A small deterministic random generator for test shapes.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> f32 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (self.0 >> 33) as f32 / (1u64 << 31) as f32
+        }
+    }
+
+    /// The parts of a hand-drawn heart test shape.
+    struct Heart {
+        drawing: crate::VectorDrawing,
+        click: Vec2,
+        center: Vec2,
+        /// The body's outline as a closed polygon.
+        outline: Vec<Vec2>,
+        /// Points inside the vessel tubes.
+        in_tubes: Vec<Vec2>,
+        /// Points in the open space beside the tubes.
+        open: Vec<Vec2>,
+    }
+
+    /// A hand-drawn heart: a wobbly body whose outline opens at the top into
+    /// three vessel tubes with elliptical end caps (the crotches between the
+    /// tubes are only closed by gap closing), plus loose detail lines inside.
+    fn heart(seed: u64) -> Heart {
+        use crate::stroke::{BrushStyle, Stroke, StrokePoint, VectorDrawing};
+        use std::f32::consts::TAU;
+        let mut r = Lcg(seed);
+        let line = |points: Vec<Vec2>| {
+            Stroke::new(
+                points.into_iter().map(StrokePoint::new).collect(),
+                BrushStyle {
+                    width: 3.0,
+                    ..BrushStyle::default()
+                },
+            )
+        };
+        let c = Vec2::new(500.0, 550.0);
+        let (p1, p2, p3) = (r.next() * 6.0, r.next() * 6.0, r.next() * 6.0);
+        let body = |t: f32| {
+            c + Vec2::from_angle(t)
+                * (230.0
+                    + 25.0 * (3.0 * t + p1).sin()
+                    + 12.0 * (7.0 * t + p2).sin()
+                    + 6.0 * (13.0 * t + p3).sin())
+        };
+        let arc = |a0: f32, a1: f32| -> Vec<Vec2> {
+            (0..=200)
+                .map(|i| body(a0 + (a1 - a0) * i as f32 / 200.0))
+                .collect()
+        };
+        let mut drawing = VectorDrawing::new();
+        drawing.push_stroke(line(arc(-0.9, TAU - 2.2)));
+        let tubes = [
+            (-2.2, -1.85, Vec2::new(-1.0, -0.8)),
+            (-1.75, -1.4, Vec2::new(-0.1, -1.0)),
+            (-1.3, -0.9, Vec2::new(1.0, -0.45)),
+        ];
+        let (mut in_tubes, mut open, mut prev_wall_end) = (Vec::new(), Vec::new(), None);
+        for (a0, a1, dir) in tubes {
+            let dir: Vec2 = dir.normalize();
+            let len = 250.0 + 100.0 * r.next();
+            let mut wall = |start: Vec2, side: f32| -> Vec<Vec2> {
+                let phase = r.next() * 6.0;
+                (0..=60)
+                    .map(|i| {
+                        let t = i as f32 / 60.0;
+                        start
+                            + dir * len * t
+                            + dir.perp() * side * 8.0 * (t * 5.0 + phase).sin() * t
+                    })
+                    .collect()
+            };
+            // Walls start a little inside the body, crossing its outline.
+            let wa = wall(body(a0) - dir * 6.0, 1.0);
+            let wb = wall(body(a1) - dir * 6.0, -1.0);
+            let (ea, eb) = (wa[60], wb[60]);
+            in_tubes.push((body(a0) + body(a1)) * 0.5 + dir * len * 0.8);
+            // Between this tube and the previous one, and below each tube's
+            // lower wall, outside the body.
+            if let Some(end) = prev_wall_end {
+                open.push((end + ea) * 0.5);
+            }
+            open.push(wb[36] + dir.perp() * 50.0);
+            prev_wall_end = Some(eb);
+            drawing.push_stroke(line(wa));
+            drawing.push_stroke(line(wb));
+            let (mid, half) = ((ea + eb) * 0.5, (eb - ea) * 0.5);
+            let minor = dir * 0.35 * half.length();
+            drawing.push_stroke(line(
+                (0..=40)
+                    .map(|i| {
+                        let t = i as f32 / 40.0 * TAU;
+                        mid + half * t.cos() + minor * t.sin()
+                    })
+                    .collect(),
+            ));
+        }
+        for _ in 0..3 {
+            let s = c + Vec2::new(r.next() * 200.0 - 100.0, r.next() * 200.0 - 100.0);
+            let e = s + Vec2::new(r.next() * 160.0 - 80.0, r.next() * 160.0);
+            drawing.push_stroke(line(
+                (0..=30)
+                    .map(|i| s.lerp(e, i as f32 / 30.0) + Vec2::X * 10.0 * (i as f32 * 0.3).sin())
+                    .collect(),
+            ));
+        }
+        open.retain(|&p| !point_in_polygon(&arc(0.0, TAU), p));
+        Heart {
+            drawing,
+            click: c + Vec2::new(0.0, 150.0),
+            center: c,
+            outline: arc(0.0, TAU),
+            in_tubes,
+            open,
+        }
+    }
+
+    #[test]
+    fn heart_with_vessel_tubes_fills_exactly_its_region() {
+        use crate::fill::{GapClosing, fill_region};
+        // Seeds whose fills used to triangulate wrongly: 51 through a vertex
+        // lying on an ear's diagonal, 17 through hole bridges joined to the
+        // wrong copy of a shared vertex. Both added triangles across open
+        // canvas (the phantom wedge) and dropped others (unfilled slivers).
+        for seed in [17, 51] {
+            let h = heart(seed);
+            let segments: Vec<(Vec2, Vec2)> = h
+                .drawing
+                .strokes()
+                .iter()
+                .flat_map(|s| s.points.windows(2).map(|w| (w[0].pos, w[1].pos)))
+                .collect();
+            let near_ink = |p: Vec2| {
+                segments.iter().any(|&(a, b)| {
+                    let ab = b - a;
+                    let t = ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
+                    p.distance(a + ab * t) < 4.0
+                })
+            };
+            let shape =
+                fill_region(&h.drawing, h.click, GapClosing::Medium, Vec2::splat(1200.0)).unwrap();
+            let expected = shape.area();
+            let mesh = tessellate_fill(&Fill::new(shape.clone(), Rgba::BLACK, 1.0));
+            assert_valid(&mesh);
+            // Triangles neither overlap nor leave out any of the shape...
+            let area = mesh_area(&mesh);
+            assert!(
+                (area - expected).abs() < expected * 1e-4,
+                "seed {seed}: mesh {area} vs shape {expected}"
+            );
+            // ...nor stray outside it.
+            for t in mesh.indices.as_chunks::<3>().0 {
+                let v = |i: u32| Vec2::from(mesh.vertices[i as usize]);
+                assert!(shape.contains((v(t[0]) + v(t[1]) + v(t[2])) / 3.0));
+            }
+            // The body fills up to its lines: no unfilled slivers. (Skips a
+            // thin band along the outline, where the crotches between the
+            // tubes dip into the body.)
+            let inset: Vec<Vec2> = h.outline.iter().map(|&p| h.center.lerp(p, 0.9)).collect();
+            for y in (300..820).step_by(5) {
+                for x in (240..770).step_by(5) {
+                    let p = Vec2::new(x as f32, y as f32);
+                    if point_in_polygon(&inset, p) && !near_ink(p) {
+                        assert!(covers(&mesh, p), "seed {seed}: {p} not filled");
+                    }
+                }
+            }
+            // The tubes fill up to their end caps.
+            for &p in &h.in_tubes {
+                assert!(covers(&mesh, p), "seed {seed}: tube at {p} not filled");
+            }
+            // The open space beside the tubes (where the phantom wedge ran
+            // from a tube's tip to the body) stays empty.
+            assert!(h.open.len() >= 3);
+            for &p in &h.open {
+                assert!(!shape.contains(p), "seed {seed}: {p} in shape");
+                assert!(!covers(&mesh, p), "seed {seed}: {p} covered");
+            }
+        }
+    }
+
+    #[test]
+    fn vertex_on_a_diagonal_blocks_the_ear() {
+        // Contours from `fill_region` lie on a half-cell lattice, so a
+        // reflex vertex often sits exactly on a candidate diagonal.
+        let notch = vec![
+            Vec2::new(0.0, 0.0),
+            Vec2::new(4.0, 0.0),
+            Vec2::new(4.0, 4.0),
+            Vec2::new(2.0, 2.0),
+            Vec2::new(0.0, 4.0),
+        ];
+        // Clipping (4,0) would cut along (0,0)-(4,4), through (2,2).
+        let mesh = tessellate_fill(&fill(vec![notch]));
+        assert_valid(&mesh);
+        assert!((mesh_area(&mesh) - 12.0).abs() < 1e-4);
+        assert!(!covers(&mesh, Vec2::new(2.0, 3.0)));
     }
 
     #[test]
