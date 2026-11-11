@@ -5,9 +5,10 @@
 //! [`Session::pointer_down`], [`Session::pointer_move`] and
 //! [`Session::pointer_up`]. A brush gesture builds a stroke and commits it as
 //! one `AddStroke`. An eraser gesture either cuts away the part of each
-//! stroke it passes over ([`EraserMode::Partial`], with a live preview of the
-//! pieces) or collects whole strokes ([`EraserMode::Stroke`]); either way the
-//! result is committed as one undo step on release. The document is not
+//! stroke and fill it passes over ([`EraserMode::Partial`], with a live
+//! preview of the pieces) or collects whole strokes and fills
+//! ([`EraserMode::Stroke`]); either way the result is committed as one undo
+//! step on release. The document is not
 //! touched until the gesture ends.
 //!
 //! The select tool keeps a selection of strokes and fills on the active
@@ -30,13 +31,13 @@ use crate::shapes::{ShapeKind, ShapeStyle, shape_box, shape_items};
 use document::animation_core::{FillId, FrameIndex, LayerId, Rgba, StrokeId, Vec2};
 use document::drawing::select::{Affine2, rect_from_corners, scale_rotate_about};
 use document::drawing::{
-    BrushStyle, Fill, FillShape, GapClosing, Gradient, ItemId, Stroke, StrokeBuilder, StrokePoint,
-    VectorDrawing,
+    BrushStyle, Fill, FillEraser, FillShape, GapClosing, Gradient, ItemId, Stroke, StrokeBuilder,
+    StrokePoint, VectorDrawing,
 };
 use editor::Tool;
 use editor::commands::{
-    AddFill, AddStroke, Batch, RemoveFill, RemoveStroke, ReplaceStroke, TransformItems,
-    TranslateItems, remove_items,
+    AddFill, AddStroke, Batch, RemoveFill, RemoveStroke, ReplaceFill, ReplaceStroke,
+    TransformItems, TranslateItems, remove_items,
 };
 
 /// Smallest distance between recorded brush points, in screen points.
@@ -293,6 +294,14 @@ enum Gesture {
         /// Partial mode: what each touched stroke is cut down to so far,
         /// parallel to `hits`.
         pieces: Vec<Vec<Stroke>>,
+        /// Touched fills, in drawing order of first touch.
+        fill_hits: Vec<FillId>,
+        /// Partial mode: what each touched fill is cut down to so far,
+        /// parallel to `fill_hits`.
+        fill_pieces: Vec<Vec<Fill>>,
+        /// Partial mode: the rasterized fills the eraser came near (touched
+        /// or not), so each fill is rasterized once per drag.
+        fill_erasers: Vec<FillEraser>,
     },
     /// Dragging the selection.
     Move {
@@ -337,13 +346,13 @@ fn past_drag_threshold(start: Vec2, pos: Vec2, zoom: f32) -> bool {
     (pos - start).length() * zoom > DRAG_THRESHOLD_SCREEN
 }
 
-/// How the eraser treats a stroke it touches.
+/// How the eraser treats a stroke or fill it touches.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EraserMode {
     /// Cut away only the part the eraser passes over.
     #[default]
     Partial,
-    /// Remove every stroke the eraser touches.
+    /// Remove every stroke and fill the eraser touches.
     Stroke,
 }
 
@@ -657,6 +666,33 @@ impl ToolController {
             _ => &[],
         }
     }
+
+    /// Fills the eraser gesture will remove or cut; hide them while erasing
+    /// and draw [`ToolController::fill_erase_preview`] in their place.
+    pub fn erasing_fills(&self) -> &[FillId] {
+        match &self.gesture {
+            Some(Gesture::Erase { fill_hits, .. }) => fill_hits,
+            _ => &[],
+        }
+    }
+
+    /// The pieces that will replace fill `id` when the partial eraser
+    /// gesture ends, in fill order. Empty if the fill is erased entirely or
+    /// is not being erased.
+    pub fn fill_erase_preview(&self, id: FillId) -> &[Fill] {
+        match &self.gesture {
+            Some(Gesture::Erase {
+                fill_hits,
+                fill_pieces,
+                ..
+            }) => fill_hits
+                .iter()
+                .position(|h| *h == id)
+                .and_then(|i| fill_pieces.get(i))
+                .map_or(&[], Vec::as_slice),
+            _ => &[],
+        }
+    }
 }
 
 impl Session {
@@ -773,6 +809,9 @@ impl Session {
                 last: pos,
                 hits: Vec::new(),
                 pieces: Vec::new(),
+                fill_hits: Vec::new(),
+                fill_pieces: Vec::new(),
+                fill_erasers: Vec::new(),
             },
         });
         self.pointer_move(pos);
@@ -856,6 +895,9 @@ impl Session {
                 last,
                 hits,
                 pieces,
+                fill_hits,
+                fill_pieces,
+                fill_erasers,
             }) => {
                 let Some(drawing) = self
                     .document
@@ -892,6 +934,7 @@ impl Session {
                             }
                         }
                     }
+                    erase_fills(drawing, &path, radius, fill_hits, fill_pieces, fill_erasers);
                     *last = pos;
                     return;
                 }
@@ -903,6 +946,11 @@ impl Session {
                     for id in drawing.strokes_hit(point, radius) {
                         if !hits.contains(&id) {
                             hits.push(id);
+                        }
+                    }
+                    for id in drawing.fills_hit(point, radius) {
+                        if !fill_hits.contains(&id) {
+                            fill_hits.push(id);
                         }
                     }
                 }
@@ -1333,36 +1381,93 @@ impl Session {
                 mode: EraserMode::Partial,
                 hits,
                 pieces,
+                fill_hits,
+                fill_pieces,
                 ..
             }) => {
-                if hits.is_empty() {
+                if hits.is_empty() && fill_hits.is_empty() {
                     return;
                 }
-                let commands = hits
+                let mut commands: Vec<Box<dyn editor::Command>> = hits
                     .into_iter()
                     .zip(pieces)
                     .map(|(id, cut)| Box::new(ReplaceStroke::new(layer, frame, id, cut)) as _)
                     .collect();
+                commands.extend(fill_hits.into_iter().zip(fill_pieces).map(|(id, cut)| {
+                    Box::new(ReplaceFill::new(layer, frame, id, cut)) as Box<dyn editor::Command>
+                }));
                 let _ = self.execute(Box::new(Batch::new("Erase", commands)));
             }
             Some(Gesture::Erase {
-                layer, frame, hits, ..
+                layer,
+                frame,
+                hits,
+                fill_hits,
+                ..
             }) => {
-                if hits.is_empty() {
-                    return;
-                }
-                let label = if hits.len() == 1 {
-                    "Erase Stroke"
-                } else {
-                    "Erase Strokes"
+                let label = match (hits.len(), fill_hits.len()) {
+                    (0, 0) => return,
+                    (1, 0) => "Erase Stroke",
+                    (_, 0) => "Erase Strokes",
+                    (0, 1) => "Erase Fill",
+                    (0, _) => "Erase Fills",
+                    _ => "Erase",
                 };
-                let commands = hits
+                let mut commands: Vec<Box<dyn editor::Command>> = hits
                     .into_iter()
                     .map(|id| Box::new(RemoveStroke::new(layer, frame, id)) as _)
                     .collect();
+                commands.extend(fill_hits.into_iter().map(|id| {
+                    Box::new(RemoveFill::new(layer, frame, id)) as Box<dyn editor::Command>
+                }));
                 let _ = self.execute(Box::new(Batch::new(label, commands)));
             }
             None => {}
+        }
+    }
+}
+
+/// Partial eraser on fills: cuts the capsule `path` out of every fill of
+/// `drawing` it reaches. Each fill near the path is rasterized once per drag
+/// (kept in `erasers`); fills that lose area are added to `hits`, with their
+/// current pieces in `pieces`.
+fn erase_fills(
+    drawing: &VectorDrawing,
+    path: &[Vec2],
+    radius: f32,
+    hits: &mut Vec<FillId>,
+    pieces: &mut Vec<Vec<Fill>>,
+    erasers: &mut Vec<FillEraser>,
+) {
+    let (lo, hi) = (
+        path.iter().copied().fold(Vec2::INFINITY, Vec2::min) - Vec2::splat(radius),
+        path.iter().copied().fold(Vec2::NEG_INFINITY, Vec2::max) + Vec2::splat(radius),
+    );
+    for fill in drawing.fills() {
+        let index = match erasers.iter().position(|e| e.id() == fill.id) {
+            Some(i) => i,
+            None => {
+                let near = fill
+                    .bounds()
+                    .is_some_and(|(min, max)| min.cmple(hi).all() && max.cmpge(lo).all());
+                let Some(eraser) = near.then(|| FillEraser::new(fill)).flatten() else {
+                    continue;
+                };
+                erasers.push(eraser);
+                erasers.len() - 1
+            }
+        };
+        let eraser = &mut erasers[index];
+        if !eraser.erase(path, radius) {
+            continue;
+        }
+        let cut = eraser.result().into_replacements().unwrap_or_default();
+        match hits.iter().position(|h| *h == fill.id) {
+            Some(i) => pieces[i] = cut,
+            None => {
+                hits.push(fill.id);
+                pieces.push(cut);
+            }
         }
     }
 }

@@ -1,4 +1,5 @@
-//! Fill commands: adding and removing filled areas (fill bucket, ADR-007).
+//! Fill commands: adding, removing and replacing filled areas (fill bucket
+//! and eraser, ADR-007).
 
 use super::{StrokeTarget, editable_layer, frame_in_range, vector_mut};
 use crate::{Command, CommandError};
@@ -145,6 +146,84 @@ impl Command for RemoveFill {
     }
 }
 
+/// Replaces one fill with others at the same place in the fill order, e.g.
+/// the pieces left after a partial erase. An empty replacement list removes
+/// the fill.
+///
+/// Undo removes the replacements and puts back the exact original fill, with
+/// its ID, at its old index. Fails on locked layers.
+#[derive(Debug)]
+pub struct ReplaceFill {
+    layer: LayerId,
+    frame: FrameIndex,
+    original: FillId,
+    replacements: Vec<Fill>,
+    removed: Option<(DrawingId, usize, Fill)>,
+}
+
+impl ReplaceFill {
+    /// Creates the command. The replacements keep their IDs, so redo
+    /// recreates the same fills.
+    pub fn new(
+        layer: LayerId,
+        frame: FrameIndex,
+        original: FillId,
+        replacements: Vec<Fill>,
+    ) -> Self {
+        Self {
+            layer,
+            frame,
+            original,
+            replacements,
+            removed: None,
+        }
+    }
+
+    /// ID of the fill this command replaces.
+    pub fn original_id(&self) -> FillId {
+        self.original
+    }
+
+    /// The fills that take the original's place, bottom to top.
+    pub fn replacements(&self) -> &[Fill] {
+        &self.replacements
+    }
+}
+
+impl Command for ReplaceFill {
+    fn label(&self) -> &str {
+        "Replace Fill"
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        editable_layer(doc, self.layer)?;
+        let drawing = doc
+            .drawing_at(self.layer, self.frame)
+            .ok_or(CommandError::DrawingNotFound)?;
+        let vector = vector_mut(doc, drawing)?;
+        let (index, fill) = vector
+            .remove_fill(self.original)
+            .ok_or(CommandError::DrawingNotFound)?;
+        for (offset, piece) in self.replacements.iter().enumerate() {
+            vector.insert_fill(index + offset, piece.clone());
+        }
+        self.removed = Some((drawing, index, fill));
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        let (drawing, index, fill) = self.removed.take().ok_or(CommandError::DrawingNotFound)?;
+        let vector = vector_mut(doc, drawing)?;
+        for piece in &self.replacements {
+            vector
+                .remove_fill(piece.id)
+                .ok_or(CommandError::DrawingNotFound)?;
+        }
+        vector.insert_fill(index, fill);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,5 +360,62 @@ mod tests {
             .unwrap_err();
         assert_eq!(err, CommandError::LayerLocked);
         assert_eq!(fills(&doc, layer, 0), 0);
+    }
+
+    #[test]
+    fn replace_fill_keeps_order_and_undoes_exactly() {
+        let (mut doc, layer) = setup();
+        let mut history = History::new();
+        let (a, b) = (square(), square());
+        let (a_id, b_id) = (a.id, b.id);
+        for fill in [a, b] {
+            history
+                .execute(&mut doc, Box::new(AddFill::new(layer, FrameIndex(0), fill)))
+                .unwrap();
+        }
+        let before = doc.clone();
+        let (p, q) = (square(), square());
+        let (p_id, q_id) = (p.id, q.id);
+        history
+            .execute(
+                &mut doc,
+                Box::new(ReplaceFill::new(layer, FrameIndex(0), a_id, vec![p, q])),
+            )
+            .unwrap();
+        let drawing = doc.drawing_at(layer, FrameIndex(0)).unwrap();
+        let ids: Vec<FillId> = doc
+            .drawing(drawing)
+            .unwrap()
+            .as_vector()
+            .unwrap()
+            .fills()
+            .iter()
+            .map(|f| f.id)
+            .collect();
+        assert_eq!(ids, [p_id, q_id, b_id], "pieces stay under the other fill");
+        let after = doc.clone();
+        history.undo(&mut doc).unwrap();
+        assert_eq!(doc, before);
+        history.redo(&mut doc).unwrap();
+        assert_eq!(doc, after);
+        // An empty list removes the fill.
+        history
+            .execute(
+                &mut doc,
+                Box::new(ReplaceFill::new(layer, FrameIndex(0), b_id, Vec::new())),
+            )
+            .unwrap();
+        assert_eq!(fills(&doc, layer, 0), 2);
+        // Locked layers refuse.
+        history
+            .execute(&mut doc, Box::new(SetLayerLocked::new(layer, true)))
+            .unwrap();
+        let err = history
+            .execute(
+                &mut doc,
+                Box::new(ReplaceFill::new(layer, FrameIndex(0), p_id, Vec::new())),
+            )
+            .unwrap_err();
+        assert_eq!(err, CommandError::LayerLocked);
     }
 }
