@@ -16,12 +16,16 @@
 //! - [`fill_region`] finds the area enclosed by strokes around a point (the
 //!   fill bucket), optionally closing small gaps, and returns it as vector
 //!   contours; [`tessellate_fill`] turns a [`Fill`] into a [`Mesh`].
+//! - [`erase_fill`] cuts the area an eraser passes over out of a [`Fill`]
+//!   (the partial eraser on fills); [`Fill::hit_test`] and
+//!   [`VectorDrawing::fills_hit`] support the whole-stroke eraser on fills.
 //! - [`select`] has the selection tool's geometry: [`ItemId`], item bounds,
 //!   translation, and hit-testing a point or rectangle against a drawing.
 
 pub mod builder;
 pub mod erase;
 pub mod fill;
+pub mod fill_erase;
 mod fill_tessellate;
 mod hit;
 pub mod select;
@@ -31,6 +35,7 @@ pub mod tessellate;
 pub use builder::StrokeBuilder;
 pub use erase::EraseResult;
 pub use fill::{Fill, FillError, FillShape, GapClosing, Gradient, fill_region};
+pub use fill_erase::{FillEraseResult, FillEraser, erase_fill};
 pub use fill_tessellate::tessellate_fill;
 pub use select::ItemId;
 pub use stroke::{BrushStyle, DrawingContent, Stroke, StrokePoint, VectorDrawing};
