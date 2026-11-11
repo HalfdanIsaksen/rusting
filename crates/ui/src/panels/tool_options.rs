@@ -25,9 +25,9 @@ const SWATCHES: [[f32; 3]; 8] = [
 const GRADIENT_HINT: &str = "Click where the gradient starts (the brush colour), then where it \
                              ends (this colour). The area under the first click is filled. \
                              Esc cancels.";
-const PARTIAL_HINT: &str =
-    "Cuts away the part of each stroke it passes over on the active layer and frame.";
-const STROKE_HINT: &str = "Removes every stroke it touches on the active layer and frame.";
+const PARTIAL_HINT: &str = "Cuts away the part of each stroke and fill it passes over on the \
+                            active layer and frame.";
+const STROKE_HINT: &str = "Removes every stroke and fill it touches on the active layer and frame.";
 const FILL_HINT: &str = "Fills the area enclosed by lines, with the brush colour and opacity. \
                          Click a fill to recolour it.";
 

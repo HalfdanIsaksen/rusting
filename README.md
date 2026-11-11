@@ -76,7 +76,7 @@ The tool strip runs down the side of the canvas:
 | Brush | `B` | Vector strokes with size, opacity, colour, a 0–100% smoothing slider, and paint in front of or behind the existing strokes. Hold `Shift` to draw a straight line |
 | Rectangle | `R` | Drag out a rectangle with a stroke and a fill. Set stroke width, stroke colour and fill colour (or turn either off) in Tool Settings. The fill can be solid or a gradient into a second colour, running left to right, top to bottom or diagonally. `Shift` makes a square, `Alt` draws from the centre |
 | Ellipse | `O` | Like Rectangle, for ellipses; `Shift` makes a circle |
-| Eraser | `E` | Erase part of a stroke or whole strokes |
+| Eraser | `E` | Erase part of a stroke or fill, or whole strokes and fills. Partial erasing cuts holes in fills or splits them into separate fills, with a live preview; every drag is one undo step |
 | Paint Bucket | `K` | Fill areas enclosed by strokes, with optional gap closing. Click a stroke to recolour it. Recolouring a fill also recolours the strokes along its edge that had the fill's colour |
 
 ### Canvas

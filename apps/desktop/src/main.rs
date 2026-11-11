@@ -417,6 +417,7 @@ fn collect_draws(
     }
 
     let erasing = session.tools.erasing();
+    let erasing_fills = session.tools.erasing_fills();
     // The stroke or shape being drawn: its layer, fill and stroke.
     let mut preview = session
         .tools
@@ -455,13 +456,22 @@ fn collect_draws(
                     fill_gradient(&fill, layer.opacity),
                     transform,
                 );
-            } else {
+            } else if !erasing_fills.contains(&fill.id) {
                 draws.fill(
                     fill,
                     fill_color(fill, layer.opacity),
                     fill_gradient(fill, layer.opacity),
                     place(item),
                 );
+            } else {
+                for piece in session.tools.fill_erase_preview(fill.id) {
+                    draws.fill(
+                        piece,
+                        fill_color(piece, layer.opacity),
+                        fill_gradient(piece, layer.opacity),
+                        transform,
+                    );
+                }
             }
         }
         for stroke in layer.drawing.strokes() {
