@@ -346,6 +346,16 @@ pub enum EraserMode {
     Stroke,
 }
 
+/// Whether `stroke` runs along `fill`'s edge. Fills are tucked under their
+/// lines (ADR-007), so a bordering stroke covers some of the fill's contour.
+fn borders(stroke: &Stroke, fill: &Fill) -> bool {
+    const SLACK: f32 = 1.5;
+    fill.contours
+        .iter()
+        .flatten()
+        .any(|&p| stroke.hit_test(p, SLACK))
+}
+
 /// What the fill bucket paints an area with.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FillStyle {
@@ -681,7 +691,7 @@ impl Session {
         self.tools.gesture = Some(match self.state.tool {
             // A click, not a drag: fill right away, no gesture.
             Tool::Fill if self.tools.fill_style == FillStyle::Normal => {
-                self.fill_at(layer, frame, pos);
+                self.fill_at(layer, frame, pos, zoom);
                 return true;
             }
             // Gradient: the first click sets the start, the second the end
@@ -689,7 +699,7 @@ impl Session {
             Tool::Fill => {
                 match gradient_start {
                     Some((l, f, start)) if (l, f) == (layer, frame) => {
-                        self.fill_with(layer, frame, start, Some(pos));
+                        self.fill_with(layer, frame, start, Some(pos), zoom);
                     }
                     _ => self.tools.gradient_start = Some((layer, frame, pos)),
                 }
@@ -889,11 +899,14 @@ impl Session {
     }
 
     /// Fill bucket click at `pos` (document coordinates) on `layer` at
-    /// `frame`, with the brush colour and opacity. Clicking an existing fill
-    /// recolours it (one undo step). Explains in the status bar when nothing
-    /// can be filled.
-    pub fn fill_at(&mut self, layer: LayerId, frame: FrameIndex, pos: Vec2) {
-        self.fill_with(layer, frame, pos, None);
+    /// `frame`, with the brush colour and opacity. `zoom` is screen points
+    /// per document unit. Clicking a stroke recolours it; clicking an existing
+    /// fill recolours it together with the strokes along its edge that had
+    /// the fill's old colour, so a fill and outline of one colour change as
+    /// one shape. Each is one undo step. Explains in the status bar when
+    /// nothing can be filled.
+    pub fn fill_at(&mut self, layer: LayerId, frame: FrameIndex, pos: Vec2, zoom: f32) {
+        self.fill_with(layer, frame, pos, None, zoom);
     }
 
     /// Like [`Self::fill_at`]; with `gradient_to`, the fill blends from the
@@ -904,6 +917,7 @@ impl Session {
         frame: FrameIndex,
         pos: Vec2,
         gradient_to: Option<Vec2>,
+        zoom: f32,
     ) {
         let doc = &self.document;
         let canvas = Vec2::new(doc.canvas.width as f32, doc.canvas.height as f32);
@@ -919,6 +933,35 @@ impl Session {
             end_color: self.tools.gradient_color,
         });
         let paint = |shape: FillShape| Fill::new(shape, color, opacity).with_gradient(gradient);
+        let recolour = |stroke: &Stroke| -> Option<Box<dyn editor::Command>> {
+            let style = &stroke.style;
+            ((style.color, style.opacity) != (color, opacity)).then(|| {
+                let mut recoloured = stroke.clone();
+                recoloured.style.color = color;
+                recoloured.style.opacity = opacity;
+                Box::new(ReplaceStroke::new(
+                    layer,
+                    frame,
+                    stroke.id,
+                    vec![recoloured],
+                )) as Box<dyn editor::Command>
+            })
+        };
+        // Strokes paint over fills, so a click on a line recolours the line.
+        let tolerance = SELECT_TOLERANCE_SCREEN / zoom.max(f32::EPSILON);
+        let clicked_stroke = drawing.and_then(|d| {
+            d.strokes()
+                .iter()
+                .rev()
+                .find(|s| s.hit_test(pos, tolerance))
+        });
+        if let (Some(stroke), None) = (clicked_stroke, gradient_to) {
+            if let Some(command) = recolour(stroke) {
+                let commands = vec![command];
+                let _ = self.execute(Box::new(Batch::new("Recolour Stroke", commands)));
+            }
+            return;
+        }
         if let Some(existing) = drawing
             .and_then(|d| d.fill_at(pos))
             .and_then(|id| drawing.and_then(|d| d.fill(id)).cloned())
@@ -929,10 +972,20 @@ impl Session {
             {
                 return;
             }
-            let commands: Vec<Box<dyn editor::Command>> = vec![
+            let mut commands: Vec<Box<dyn editor::Command>> = vec![
                 Box::new(RemoveFill::new(layer, frame, existing.id)),
                 Box::new(AddFill::new(layer, frame, recoloured)),
             ];
+            // Outline strokes in the fill's old colour read as part of the
+            // same shape, so they follow the new colour.
+            if let Some(d) = drawing {
+                commands.extend(
+                    d.strokes()
+                        .iter()
+                        .filter(|s| s.style.color == existing.color && borders(s, &existing))
+                        .filter_map(recolour),
+                );
+            }
             let _ = self.execute(Box::new(Batch::new("Recolour Fill", commands)));
             return;
         }
