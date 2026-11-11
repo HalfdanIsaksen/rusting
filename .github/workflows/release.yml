@@ -2,7 +2,8 @@ name: Release
 
 # Push a tag like v0.2.0 (matching the version in Cargo.toml) to build the
 # app for macOS, Windows and Linux, publish a GitHub Release, and update the
-# Homebrew formula in Formula/rusting.rb. See docs/releasing.md.
+# Homebrew formula in Formula/rusting.rb. The release text comes from
+# release-notes.md, which is reset afterwards. See docs/releasing.md.
 on:
   push:
     tags: ["v*"]
@@ -29,6 +30,8 @@ jobs:
             exit 1
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
+      - name: Check release notes are written
+        run: scripts/check-release-notes.sh
 
   build:
     name: Build ${{ matrix.target }}
@@ -104,13 +107,16 @@ jobs:
       - name: Checksums
         run: cd dist && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
       - name: Create GitHub Release
-        run: gh release create "v${VERSION}" dist/* --verify-tag --generate-notes --title "Rusting ${VERSION}"
+        run: |
+          scripts/clean-release-notes.sh > "${RUNNER_TEMP}/notes.md"
+          gh release create "v${VERSION}" dist/* --verify-tag --notes-file "${RUNNER_TEMP}/notes.md" --generate-notes --title "Rusting ${VERSION}"
       - name: Update Homebrew formula
         run: |
           sha="$(sha256sum "dist/rusting-${VERSION}-universal-apple-darwin.tar.gz" | cut -d' ' -f1)"
           scripts/homebrew-formula.sh "${VERSION}" "${sha}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/rusting.rb
-          git commit -m "Homebrew: rusting ${VERSION} [skip ci]"
+          cp scripts/release-notes-template.md release-notes.md
+          git add Formula/rusting.rb release-notes.md
+          git commit -m "Homebrew: rusting ${VERSION}, reset release notes [skip ci]"
           git push origin HEAD:main
