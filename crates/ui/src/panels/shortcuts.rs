@@ -133,43 +133,56 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
     } else if delete && session.frame_selection().is_some() && !gesture {
         session.delete_frames();
     }
-    let (brush, eraser, fill, rectangle, ellipse, left, right, up, down, space_down, space_up) =
-        ctx.input_mut(|i| {
-            let plain = i.modifiers.is_none();
-            let space = |want_pressed: bool| {
-                i.events.iter().any(|e| {
-                    matches!(
-                        e,
-                        egui::Event::Key { key: Key::Space, pressed, repeat: false, .. }
-                            if *pressed == want_pressed
-                    )
-                })
-            };
-            let result = (
-                plain && i.key_pressed(Key::B),
-                plain && i.key_pressed(Key::E),
-                plain && i.key_pressed(Key::K),
-                plain && i.key_pressed(Key::R),
-                plain && i.key_pressed(Key::O),
-                i.num_presses(Key::ArrowLeft),
-                i.num_presses(Key::ArrowRight),
-                i.num_presses(Key::ArrowUp),
-                i.num_presses(Key::ArrowDown),
-                space(true),
-                space(false),
-            );
-            // Space belongs to playback and panning, not to a focused button.
-            i.events.retain(|e| {
-                !matches!(
+    let (
+        brush,
+        eraser,
+        fill,
+        rectangle,
+        ellipse,
+        eyedropper,
+        left,
+        right,
+        up,
+        down,
+        space_down,
+        space_up,
+    ) = ctx.input_mut(|i| {
+        let plain = i.modifiers.is_none();
+        let space = |want_pressed: bool| {
+            i.events.iter().any(|e| {
+                matches!(
                     e,
-                    egui::Event::Key {
-                        key: Key::Space,
-                        ..
-                    }
+                    egui::Event::Key { key: Key::Space, pressed, repeat: false, .. }
+                        if *pressed == want_pressed
                 )
-            });
-            result
+            })
+        };
+        let result = (
+            plain && i.key_pressed(Key::B),
+            plain && i.key_pressed(Key::E),
+            plain && i.key_pressed(Key::K),
+            plain && i.key_pressed(Key::R),
+            plain && i.key_pressed(Key::O),
+            plain && i.key_pressed(Key::I),
+            i.num_presses(Key::ArrowLeft),
+            i.num_presses(Key::ArrowRight),
+            i.num_presses(Key::ArrowUp),
+            i.num_presses(Key::ArrowDown),
+            space(true),
+            space(false),
+        );
+        // Space belongs to playback and panning, not to a focused button.
+        i.events.retain(|e| {
+            !matches!(
+                e,
+                egui::Event::Key {
+                    key: Key::Space,
+                    ..
+                }
+            )
         });
+        result
+    });
     if !gesture {
         if select {
             session.state.tool = Tool::Select;
@@ -194,6 +207,9 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
         }
         if ellipse {
             session.state.tool = Tool::Ellipse;
+        }
+        if eyedropper {
+            session.state.tool = Tool::Eyedropper;
         }
     }
     if selecting {

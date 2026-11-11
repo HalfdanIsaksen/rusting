@@ -42,6 +42,32 @@ impl Default for BrushStyle {
     }
 }
 
+/// The draw-order tier of a stroke or fill (ADR-010).
+///
+/// Per drawing, items paint in four groups, bottom to top: normal fills,
+/// normal strokes, front fills, front strokes. Within a group the stored
+/// order holds (newer above older, unless an item was added at the bottom).
+/// So a [`Placement::Front`] item stays above every normal item, including
+/// ones drawn later.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Placement {
+    /// The ordinary tier: fills under strokes, as before ADR-010.
+    #[default]
+    Normal,
+    /// Always drawn above the drawing's normal items.
+    Front,
+}
+
+impl Placement {
+    /// Both tiers, bottom first.
+    pub const ALL: [Self; 2] = [Self::Normal, Self::Front];
+
+    /// Whether this is the default tier (used to leave it out of files).
+    pub fn is_normal(&self) -> bool {
+        *self == Self::Normal
+    }
+}
+
 /// A single editable brush stroke.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stroke {
@@ -51,6 +77,9 @@ pub struct Stroke {
     pub points: Vec<StrokePoint>,
     /// Brush settings used for the stroke.
     pub style: BrushStyle,
+    /// Draw-order tier; absent in files means [`Placement::Normal`].
+    #[serde(default, skip_serializing_if = "Placement::is_normal")]
+    pub placement: Placement,
 }
 
 impl Stroke {
@@ -60,7 +89,14 @@ impl Stroke {
             id: StrokeId::new(),
             points,
             style,
+            placement: Placement::Normal,
         }
+    }
+
+    /// The same stroke in `placement`'s tier.
+    pub fn with_placement(mut self, placement: Placement) -> Self {
+        self.placement = placement;
+        self
     }
 
     /// Axis-aligned bounds `(min, max)` including half the brush width.
@@ -76,12 +112,14 @@ impl Stroke {
     }
 }
 
-/// A vector drawing: fills painted bottom-to-top, then strokes painted
-/// bottom-to-top on top of every fill.
+/// A vector drawing. Items paint in [`VectorDrawing::paint_order`]: normal
+/// fills, normal strokes, front fills, front strokes, each group in stored
+/// order (bottom-to-top).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct VectorDrawing {
     strokes: Vec<Stroke>,
-    /// Filled regions, drawn under all strokes (file format v2+).
+    /// Filled regions, drawn under the strokes of the same tier (file format
+    /// v2+).
     fills: Vec<Fill>,
 }
 
@@ -113,7 +151,8 @@ impl VectorDrawing {
         self.strokes.iter().find(|s| s.id == id)
     }
 
-    /// All strokes, bottom-to-top.
+    /// All strokes in stored order. Front strokes paint above normal ones
+    /// whatever their index; see [`Self::paint_order`].
     pub fn strokes(&self) -> &[Stroke] {
         &self.strokes
     }
@@ -131,7 +170,8 @@ impl VectorDrawing {
         self.strokes.is_empty() && self.fills.is_empty()
     }
 
-    /// Appends a fill on top of the other fills (still under every stroke).
+    /// Appends a fill on top of the other fills of its tier (still under the
+    /// strokes of that tier).
     pub fn push_fill(&mut self, fill: Fill) {
         self.fills.push(fill);
     }
@@ -153,18 +193,95 @@ impl VectorDrawing {
         self.fills.iter().find(|f| f.id == id)
     }
 
-    /// All fills, bottom-to-top.
+    /// All fills in stored order. Front fills paint above normal ones
+    /// whatever their index; see [`Self::paint_order`].
     pub fn fills(&self) -> &[Fill] {
         &self.fills
     }
 
-    /// The topmost fill covering `point`, if any.
-    pub fn fill_at(&self, point: Vec2) -> Option<FillId> {
+    /// Adds a stroke to its tier: at the bottom of the drawing's strokes when
+    /// `at_bottom`, else on top.
+    pub fn add_stroke(&mut self, stroke: Stroke, at_bottom: bool) {
+        if at_bottom {
+            self.insert_stroke(0, stroke);
+        } else {
+            self.push_stroke(stroke);
+        }
+    }
+
+    /// Adds a fill to its tier: at the bottom of the drawing's fills when
+    /// `at_bottom`, else on top.
+    pub fn add_fill(&mut self, fill: Fill, at_bottom: bool) {
+        if at_bottom {
+            self.insert_fill(0, fill);
+        } else {
+            self.push_fill(fill);
+        }
+    }
+
+    /// Every item in the order it is painted, bottom to top: normal fills,
+    /// normal strokes, front fills, front strokes (ADR-010). Reverse it for
+    /// topmost-first hit-testing.
+    pub fn paint_order(&self) -> impl DoubleEndedIterator<Item = PaintItem<'_>> + '_ {
+        self.tier(Placement::Normal)
+            .chain(self.tier(Placement::Front))
+    }
+
+    /// One tier's fills, then its strokes.
+    fn tier(&self, placement: Placement) -> impl DoubleEndedIterator<Item = PaintItem<'_>> + '_ {
         self.fills
             .iter()
+            .filter(move |f| f.placement == placement)
+            .map(PaintItem::Fill)
+            .chain(
+                self.strokes
+                    .iter()
+                    .filter(move |s| s.placement == placement)
+                    .map(PaintItem::Stroke),
+            )
+    }
+
+    /// Strokes in paint order, bottom to top.
+    pub fn strokes_painted(&self) -> impl DoubleEndedIterator<Item = &Stroke> + '_ {
+        self.paint_order().filter_map(|item| match item {
+            PaintItem::Stroke(s) => Some(s),
+            PaintItem::Fill(_) => None,
+        })
+    }
+
+    /// Fills in paint order, bottom to top.
+    pub fn fills_painted(&self) -> impl DoubleEndedIterator<Item = &Fill> + '_ {
+        self.paint_order().filter_map(|item| match item {
+            PaintItem::Fill(f) => Some(f),
+            PaintItem::Stroke(_) => None,
+        })
+    }
+
+    /// The topmost fill covering `point`, if any.
+    pub fn fill_at(&self, point: Vec2) -> Option<FillId> {
+        self.fills_painted()
             .rev()
             .find(|f| f.contains(point))
             .map(|f| f.id)
+    }
+}
+
+/// One item of a drawing, as yielded by [`VectorDrawing::paint_order`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PaintItem<'a> {
+    /// A fill.
+    Fill(&'a Fill),
+    /// A stroke.
+    Stroke(&'a Stroke),
+}
+
+impl PaintItem<'_> {
+    /// The item's draw-order tier.
+    pub fn placement(&self) -> Placement {
+        match self {
+            Self::Fill(f) => f.placement,
+            Self::Stroke(s) => s.placement,
+        }
     }
 }
 
@@ -296,5 +413,97 @@ mod tests {
         }
         assert_ne!(d.fills()[0].id, copy.fills()[0].id);
         assert_eq!(d.fills()[0].contours, copy.fills()[0].contours);
+    }
+
+    fn square_fill() -> Fill {
+        crate::fill::Fill::new(
+            crate::fill::FillShape {
+                contours: vec![vec![
+                    Vec2::new(-5.0, -5.0),
+                    Vec2::new(20.0, -5.0),
+                    Vec2::new(20.0, 20.0),
+                    Vec2::new(-5.0, 20.0),
+                ]],
+            },
+            Rgba::WHITE,
+            1.0,
+        )
+    }
+
+    fn order(d: &VectorDrawing) -> Vec<crate::ItemId> {
+        d.paint_order().map(crate::ItemId::from).collect()
+    }
+
+    #[test]
+    fn paint_order_groups_by_tier_then_kind() {
+        let mut d = VectorDrawing::new();
+        let front_stroke = line().with_placement(Placement::Front);
+        let normal_stroke = line();
+        let front_fill = square_fill().with_placement(Placement::Front);
+        let normal_fill = square_fill();
+        let later_stroke = line();
+        let ids = (
+            front_stroke.id,
+            normal_stroke.id,
+            front_fill.id,
+            normal_fill.id,
+            later_stroke.id,
+        );
+        // Added in an order that mixes tiers and kinds.
+        d.push_stroke(front_stroke);
+        d.push_fill(front_fill);
+        d.push_stroke(normal_stroke);
+        d.push_fill(normal_fill);
+        d.push_stroke(later_stroke);
+        use crate::ItemId::{Fill as F, Stroke as S};
+        assert_eq!(
+            order(&d),
+            vec![F(ids.3), S(ids.1), S(ids.4), F(ids.2), S(ids.0)]
+        );
+        // Hit-testing finds the topmost painted item: the front stroke,
+        // then (off the line) the front fill covering the normal strokes.
+        assert_eq!(d.item_at(Vec2::new(5.0, 2.5), 0.5), Some(S(ids.0)));
+        assert_eq!(d.item_at(Vec2::new(15.0, 15.0), 0.5), Some(F(ids.2)));
+        assert_eq!(d.fill_at(Vec2::new(15.0, 15.0)), Some(ids.2));
+        assert_eq!(
+            d.strokes_hit(Vec2::new(5.0, 2.5), 0.5),
+            vec![ids.1, ids.4, ids.0]
+        );
+        assert_eq!(d.all_items(), order(&d));
+    }
+
+    #[test]
+    fn add_at_bottom_stays_in_its_tier() {
+        let mut d = VectorDrawing::new();
+        let front = line().with_placement(Placement::Front);
+        let top = line();
+        let bottom = line();
+        let ids = [bottom.id, top.id, front.id];
+        d.add_stroke(front, false);
+        d.add_stroke(top, false);
+        d.add_stroke(bottom, true);
+        let painted: Vec<_> = d.strokes_painted().map(|s| s.id).collect();
+        assert_eq!(painted, ids);
+    }
+
+    #[test]
+    fn erase_and_transform_keep_the_tier() {
+        let stroke = line().with_placement(Placement::Front);
+        let pieces = stroke
+            .erase(&[Vec2::new(5.0, 2.5)], 1.0)
+            .into_replacements()
+            .unwrap();
+        assert!(!pieces.is_empty());
+        assert!(pieces.iter().all(|p| p.placement == Placement::Front));
+        let moved = stroke.transformed(&crate::select::Affine2::from_angle(1.0));
+        assert_eq!(moved.placement, Placement::Front);
+        let fill = square_fill().with_placement(Placement::Front);
+        assert_eq!(fill.translated(Vec2::ONE).placement, Placement::Front);
+        let copy = {
+            let mut d = VectorDrawing::new();
+            d.push_fill(fill);
+            d.duplicate()
+        };
+        assert_eq!(copy.fills()[0].placement, Placement::Front);
     }
 }

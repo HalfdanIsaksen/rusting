@@ -279,7 +279,7 @@ impl Stroke {
         let strokes: Vec<Stroke> = pieces
             .into_iter()
             .filter(|p| polyline_length(p) >= MIN_FRAGMENT_LENGTH)
-            .map(|p| Stroke::new(p, self.style))
+            .map(|p| Stroke::new(p, self.style).with_placement(self.placement))
             .collect();
         if strokes.is_empty() {
             EraseResult::Removed

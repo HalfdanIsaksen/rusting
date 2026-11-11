@@ -126,6 +126,13 @@ pub const TOOLS: &[ToolEntry] = &[
         ToolGroup::Paint,
     )
     .with_options(fill_popup),
+    ToolEntry::new(
+        Tool::Eyedropper,
+        icons::eyedropper,
+        "Eyedropper",
+        "I",
+        ToolGroup::Paint,
+    ),
 ];
 
 fn eraser_popup(ui: &mut egui::Ui, session: &mut Session) {

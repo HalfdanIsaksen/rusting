@@ -37,7 +37,11 @@ use std::path::{Path, PathBuf};
 ///   migration).
 /// - 5: the document has frame `tags` (absent means none, so v4 needs no
 ///   migration; ADR-009).
-pub const FORMAT_VERSION: u32 = 5;
+/// - 6: strokes and fills may have a `placement` draw-order tier, `"Front"`
+///   (absent means `Normal`, so v5 needs no migration; ADR-010). Older builds
+///   must reject these files: they would drop the tier and change the
+///   picture.
+pub const FORMAT_VERSION: u32 = 6;
 
 /// File extension for project files (without the dot).
 pub const FILE_EXTENSION: &str = "rusting";
@@ -541,7 +545,7 @@ mod tests {
     use animation_core::{DocumentId as DocumentIdForTest, FrameRange, Rgba, Vec2};
     use document::CanvasSize;
     use drawing::{
-        BrushStyle, DrawingContent, Fill, FillShape, Stroke, StrokePoint, VectorDrawing,
+        BrushStyle, DrawingContent, Fill, FillShape, Placement, Stroke, StrokePoint, VectorDrawing,
     };
     use timeline::Keyframe;
 
@@ -585,6 +589,14 @@ mod tests {
             Rgba::new(0.9, 0.5, 0.1, 1.0),
             0.75,
         ));
+        // A front stroke over the normal items (ADR-010).
+        v.push_stroke(
+            Stroke::new(
+                vec![StrokePoint::new(Vec2::new(0.0, 4.0))],
+                BrushStyle::default(),
+            )
+            .with_placement(Placement::Front),
+        );
         let drawing = d.add_drawing(DrawingContent::Vector(v));
         d.track_mut(l1)
             .unwrap()
@@ -659,6 +671,52 @@ mod tests {
         let text = to_string(&doc).unwrap();
         assert!(text.contains(&format!("\"format_version\": {FORMAT_VERSION}")));
         assert_eq!(from_str(&text).unwrap(), doc);
+    }
+
+    #[test]
+    fn placement_roundtrips_and_older_files_load_as_normal() {
+        let doc = sample();
+        let text = to_string(&doc).unwrap();
+        // Only front items write the field.
+        assert_eq!(text.matches("\"placement\"").count(), 1);
+        let front_fill = |d: &mut Document| {
+            let id = *d.drawings().keys().next().unwrap();
+            let v = d.drawing_mut(id).unwrap().as_vector_mut().unwrap();
+            let fill = v.fills()[0].id;
+            v.fill_mut(fill).unwrap().placement = Placement::Front;
+        };
+        let mut with_front_fill = doc.clone();
+        front_fill(&mut with_front_fill);
+        let reloaded = from_str(&to_string(&with_front_fill).unwrap()).unwrap();
+        assert_eq!(reloaded, with_front_fill);
+        let v = reloaded.drawings().values().next().unwrap();
+        let v = v.as_vector().unwrap();
+        assert_eq!(v.fills()[0].placement, Placement::Front);
+        assert_eq!(
+            v.strokes().iter().map(|s| s.placement).collect::<Vec<_>>(),
+            [Placement::Normal, Placement::Front]
+        );
+
+        // A v5 file has no placement: everything loads in the normal tier.
+        let v5 = edit_json(&doc, |json| {
+            json["format_version"] = 5.into();
+            let drawings = json["document"]["drawings"].as_object_mut().unwrap();
+            for content in drawings.values_mut() {
+                for stroke in content["Vector"]["strokes"].as_array_mut().unwrap() {
+                    stroke.as_object_mut().unwrap().remove("placement");
+                }
+            }
+        });
+        let (old, report) = from_str_with_report(&v5).unwrap();
+        assert!(report.is_clean(), "{report:?}");
+        let v = old.drawings().values().next().unwrap().as_vector().unwrap();
+        assert!(v.strokes().iter().all(|s| s.placement == Placement::Normal));
+        assert!(v.fills().iter().all(|f| f.placement == Placement::Normal));
+
+        // An unknown tier is a malformed file, not a panic.
+        let bad = text.replace("\"placement\": \"Front\"", "\"placement\": \"Sideways\"");
+        assert_ne!(bad, text);
+        assert!(matches!(from_str(&bad), Err(FileFormatError::Malformed(_))));
     }
 
     #[test]

@@ -144,6 +144,7 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
             ui.separator();
             for (keys, what) in [
                 ("B / E", "Brush / Eraser"),
+                ("I / Alt+click", "Eyedropper: pick a colour from the canvas"),
                 ("Space", "Play / pause (hold and drag to pan)"),
                 ("← / →", "Previous / next frame"),
                 ("↑ / ↓", "Previous / next key"),

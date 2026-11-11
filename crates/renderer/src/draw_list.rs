@@ -10,7 +10,7 @@ use animation_core::glam::Mat4;
 use animation_core::{LayerId, Rgba};
 use document::RenderList;
 use document::scene::BlendMode;
-use drawing::{Fill, Gradient, Stroke, tessellate, tessellate_fill};
+use drawing::{Fill, Gradient, PaintItem, Stroke, tessellate, tessellate_fill};
 
 /// Draw colour of a stroke on a layer: its colour with brush and layer
 /// opacity applied.
@@ -114,22 +114,25 @@ impl<'a> DrawListBuilder<'a> {
     }
 
     /// Adds a document frame as the canvas shows it: per layer (bottom to
-    /// top), its fills, then its strokes, with layer opacity and transform.
+    /// top), its items in paint order (ADR-010), with layer opacity and
+    /// transform.
     /// Hidden layers are already left out of `list`.
     pub fn render_list(&mut self, list: &RenderList<'_>) {
         for layer in &list.layers {
             self.set_layer(Some(layer.layer_id), layer.blend);
             let transform = transform_matrix(&layer.transform);
-            for fill in layer.drawing.fills() {
-                self.fill(
-                    fill,
-                    fill_color(fill, layer.opacity),
-                    fill_gradient(fill, layer.opacity),
-                    transform,
-                );
-            }
-            for stroke in layer.drawing.strokes() {
-                self.stroke(stroke, stroke_color(stroke, layer.opacity), transform);
+            for item in layer.drawing.paint_order() {
+                match item {
+                    PaintItem::Fill(fill) => self.fill(
+                        fill,
+                        fill_color(fill, layer.opacity),
+                        fill_gradient(fill, layer.opacity),
+                        transform,
+                    ),
+                    PaintItem::Stroke(stroke) => {
+                        self.stroke(stroke, stroke_color(stroke, layer.opacity), transform);
+                    }
+                }
             }
         }
     }

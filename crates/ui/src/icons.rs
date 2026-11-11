@@ -227,6 +227,20 @@ pub fn paint_bucket(painter: &Painter, rect: Rect, color: Color32) {
     painter.circle_filled(at(rect, 0.84, 0.72), rect.width() * 0.09, color);
 }
 
+/// Eyedropper: a tilted pipette with a bulb at the top right and a drop
+/// at the tip.
+pub fn eyedropper(painter: &Painter, rect: Rect, color: Color32) {
+    let w = line_width(rect);
+    // Glass tube from the tip (bottom left) to the collar.
+    line(painter, rect, color, w * 2.2, (0.20, 0.80), (0.56, 0.44));
+    // Collar across the tube.
+    line(painter, rect, color, w * 1.2, (0.48, 0.38), (0.62, 0.52));
+    // Rubber bulb.
+    painter.circle_filled(at(rect, 0.70, 0.30), rect.width() * 0.14, color);
+    // A drop under the tip.
+    painter.circle_filled(at(rect, 0.14, 0.90), rect.width() * 0.06, color);
+}
+
 /// Hand (pan) tool: palm with four fingers and a thumb.
 pub fn hand(painter: &Painter, rect: Rect, color: Color32) {
     let finger = line_width(rect) * 2.0;

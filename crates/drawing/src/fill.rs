@@ -1,8 +1,8 @@
 //! Fills and the fill bucket's region finder (ADR-007).
 //!
 //! A [`Fill`] is a filled area stored as vector contours in document
-//! coordinates. It belongs to a [`VectorDrawing`] and is drawn under all of
-//! that drawing's strokes.
+//! coordinates. It belongs to a [`VectorDrawing`] and is drawn under the
+//! strokes of its draw-order tier (ADR-010).
 //!
 //! [`fill_region`] finds the area enclosed by strokes around a click. It
 //! works on a temporary raster (a coverage grid), but only the traced vector
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fmt;
 
-use crate::stroke::{Stroke, VectorDrawing};
+use crate::stroke::{Placement, Stroke, VectorDrawing};
 use crate::tessellate::collect_nodes;
 
 /// Gap radius for [`GapClosing::Small`], in document units. Gaps up to about
@@ -142,7 +142,8 @@ pub struct Gradient {
     pub end_color: Rgba,
 }
 
-/// A filled area of a drawing, drawn under the drawing's strokes.
+/// A filled area of a drawing, drawn under the strokes of its tier
+/// ([`Placement`], ADR-010).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Fill {
     /// Stable identifier.
@@ -156,6 +157,9 @@ pub struct Fill {
     /// Blends `color` into a second colour; `None` is a solid fill.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gradient: Option<Gradient>,
+    /// Draw-order tier; absent in files means [`Placement::Normal`].
+    #[serde(default, skip_serializing_if = "Placement::is_normal")]
+    pub placement: Placement,
 }
 
 impl Fill {
@@ -167,7 +171,14 @@ impl Fill {
             color,
             opacity,
             gradient: None,
+            placement: Placement::Normal,
         }
+    }
+
+    /// The same fill in `placement`'s tier.
+    pub fn with_placement(mut self, placement: Placement) -> Self {
+        self.placement = placement;
+        self
     }
 
     /// The same fill with `gradient`.
@@ -342,15 +353,16 @@ pub fn fill_region(
 
 /// The working raster: `w * h` square cells of side `cell`, the first one's
 /// top-left corner at `origin` (document coordinates).
-struct Grid {
-    w: usize,
-    h: usize,
-    origin: Vec2,
-    cell: f32,
+#[derive(Clone, Debug)]
+pub(crate) struct Grid {
+    pub(crate) w: usize,
+    pub(crate) h: usize,
+    pub(crate) origin: Vec2,
+    pub(crate) cell: f32,
 }
 
 impl Grid {
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.w * self.h
     }
 
@@ -363,12 +375,12 @@ impl Grid {
         (x < self.w && y < self.h).then_some(y * self.w + x)
     }
 
-    fn center(&self, x: usize, y: usize) -> Vec2 {
+    pub(crate) fn center(&self, x: usize, y: usize) -> Vec2 {
         self.origin + (Vec2::new(x as f32, y as f32) + 0.5) * self.cell
     }
 
     /// Cell index range `[x0, x1) x [y0, y1)` covering document rect `lo..hi`.
-    fn span(&self, lo: Vec2, hi: Vec2) -> (usize, usize, usize, usize) {
+    pub(crate) fn span(&self, lo: Vec2, hi: Vec2) -> (usize, usize, usize, usize) {
         let to = |v: f32, n: usize| (v.max(0.0) as usize).min(n);
         let a = (lo - self.origin) / self.cell;
         let b = (hi - self.origin) / self.cell;
@@ -380,7 +392,7 @@ impl Grid {
         )
     }
 
-    fn neighbours(&self, i: usize) -> impl Iterator<Item = usize> {
+    pub(crate) fn neighbours(&self, i: usize) -> impl Iterator<Item = usize> {
         let (x, y) = (i % self.w, i / self.w);
         let w = self.w;
         [
@@ -594,7 +606,7 @@ fn nearest_free(grid: &Grid, start: usize, ink: &[bool], blocked: &[bool]) -> Op
 /// the trace turns right (they count as separate, matching the 4-connected
 /// flood). Each loop's points are the midpoints of its crack edges, which is
 /// the marching-squares outline of the mask.
-fn trace_contours(grid: &Grid, mask: &[bool]) -> Vec<Vec<Vec2>> {
+pub(crate) fn trace_contours(grid: &Grid, mask: &[bool]) -> Vec<Vec<Vec2>> {
     // Directions: 0 = +x, 1 = +y, 2 = -x, 3 = -y.
     const STEP: [(i64, i64); 4] = [(1, 0), (0, 1), (-1, 0), (0, -1)];
     let (w, h) = (grid.w, grid.h);
