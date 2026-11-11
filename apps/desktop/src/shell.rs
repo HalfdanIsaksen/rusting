@@ -219,7 +219,10 @@ fn paint_overlays(
 ) {
     let painter = ui.painter_at(rect);
     paint_selection(&painter, rect, viewport, session);
-    let blocked = session.draw_block_reason();
+    // The eyedropper only reads the canvas, so it works on locked layers.
+    let blocked = session
+        .draw_block_reason()
+        .filter(|_| session.state.tool != Tool::Eyedropper);
     if let Some(reason) = &blocked {
         let text = format!("🔒 {reason} — drawing is disabled");
         let galley =
@@ -280,6 +283,18 @@ fn paint_overlays(
         ui.ctx().set_cursor_icon(icon);
         return;
     }
+    let picking = session.state.tool == Tool::Eyedropper
+        || (ui.input(|i| i.modifiers.alt)
+            && !session.tools.is_active()
+            && matches!(
+                session.state.tool,
+                Tool::Brush | Tool::Fill | Tool::Rectangle | Tool::Ellipse
+            ));
+    if picking {
+        // egui has no eyedropper cursor; the cell cursor reads as "sample".
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Cell);
+        return;
+    }
     ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
     // Gradient fill waiting for its end: a dashed line from the start.
     if session.state.tool == Tool::Fill
@@ -303,7 +318,8 @@ fn paint_overlays(
         | Tool::Lasso
         | Tool::Transform
         | Tool::Rectangle
-        | Tool::Ellipse => 0.0,
+        | Tool::Ellipse
+        | Tool::Eyedropper => 0.0,
     };
     if radius >= 2.0 {
         painter.circle_stroke(

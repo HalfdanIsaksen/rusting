@@ -283,6 +283,9 @@ enum Gesture {
         /// IDs used for the live preview meshes.
         preview_fill: FillId,
         preview_stroke: StrokeId,
+        /// Alt was held on press: a click (no drag) picks a colour instead
+        /// of drawing. Holds the zoom for the drag threshold.
+        pick_on_click: Option<f32>,
     },
     Erase {
         layer: LayerId,
@@ -514,9 +517,11 @@ impl ToolController {
         }
     }
 
-    /// Tells the transform tool which modifiers are held: Shift keeps the
-    /// aspect ratio (or snaps the angle), Alt scales from the centre. The
-    /// drag in progress follows at once.
+    /// Tells the tools which modifiers are held: Shift keeps the aspect
+    /// ratio (or snaps the angle), Alt scales from the centre. The drag in
+    /// progress follows at once. Alt held on the next press makes the brush,
+    /// paint bucket and shape tools pick a colour instead (see
+    /// [`Session::pointer_down_with`]).
     pub fn set_modifiers(&mut self, shift: bool, alt: bool) {
         if (shift, alt) == (self.shift, self.alt) {
             return;
@@ -723,10 +728,30 @@ impl Session {
 
     /// Like [`Session::pointer_down`], with Shift held or not. Shift makes
     /// the select tool add to or remove from the selection.
+    ///
+    /// The eyedropper picks a colour on press ([`Session::pick_color`]), and
+    /// so do the brush and the paint bucket with Alt held (see
+    /// [`ToolController::set_modifiers`]). The shape tools pick on an
+    /// Alt-click, but an Alt-drag still draws from the centre. Picking works
+    /// on locked and hidden layers too, since it changes nothing.
     pub fn pointer_down_with(&mut self, pos: Vec2, zoom: f32, shift: bool) -> bool {
         self.tools.cancel();
         self.tools.shift = shift;
-        if let Some(reason) = self.draw_block_reason() {
+        let tool = self.state.tool;
+        let alt = self.tools.alt;
+        let blocked = self.draw_block_reason();
+        let picks = match tool {
+            Tool::Eyedropper => true,
+            Tool::Brush | Tool::Fill => alt,
+            // On a locked layer there is no shape to draw, so pick at once.
+            Tool::Rectangle | Tool::Ellipse => alt && blocked.is_some(),
+            _ => false,
+        };
+        if picks {
+            self.pick_color(pos, zoom);
+            return true;
+        }
+        if let Some(reason) = blocked {
             self.set_error(reason);
             return false;
         }
@@ -801,7 +826,10 @@ impl Session {
                 last: pos,
                 preview_fill: FillId::new(),
                 preview_stroke: StrokeId::new(),
+                pick_on_click: self.tools.alt.then_some(zoom),
             },
+            // Picked above.
+            Tool::Eyedropper => return true,
             Tool::Eraser => Gesture::Erase {
                 layer,
                 frame,
@@ -1351,8 +1379,15 @@ impl Session {
                 kind,
                 start,
                 last,
+                pick_on_click,
                 ..
             }) => {
+                if let Some(zoom) = pick_on_click
+                    && !past_drag_threshold(start, last, zoom)
+                {
+                    self.pick_color(start, zoom);
+                    return;
+                }
                 let bounds = shape_box(start, last, self.tools.shift, self.tools.alt);
                 let (fill, stroke) = shape_items(
                     kind,

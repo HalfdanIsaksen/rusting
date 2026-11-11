@@ -23,6 +23,8 @@ pub enum Tool {
     Rectangle,
     /// Drag out an ellipse.
     Ellipse,
+    /// Pick the colour of the artwork under the cursor.
+    Eyedropper,
 }
 
 impl Tool {

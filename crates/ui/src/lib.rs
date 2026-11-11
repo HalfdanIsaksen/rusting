@@ -10,6 +10,7 @@
 //! and renders the canvas with [`OnionSkin::collect`] and
 //! [`ToolController::preview`].
 
+pub mod eyedropper;
 pub mod icons;
 pub mod logo;
 pub mod onion;
@@ -22,6 +23,7 @@ pub mod shapes;
 pub mod theme;
 pub mod tools;
 
+pub use eyedropper::{PickSource, PickedColor};
 pub use onion::{OnionDrawing, OnionSkin};
 pub use paint_order::PaintOrder;
 pub use panels::{preview_window, show};
