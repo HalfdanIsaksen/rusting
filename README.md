@@ -82,6 +82,8 @@ The tool strip runs down the side of the canvas:
 | Paint Bucket | `K` | Fill areas enclosed by strokes, with optional gap closing. Click a stroke to recolour it. Recolouring a fill also recolours the strokes along its edge that had the fill's colour, and keeps its draw order |
 | Eyedropper | `I` | Click the canvas to pick the colour (and opacity) of the topmost stroke or fill on the active layer; a gradient fill gives its colour at that point, and empty canvas gives the background colour. Sets the brush and paint bucket colour. `Alt`+click with the Brush, Paint Bucket, Rectangle or Ellipse picks a colour without switching tools (shapes take it as their stroke or fill colour; an `Alt`+drag still draws from the centre) |
 
+**Merge same colour** (Brush, Rectangle, Ellipse, Paint Bucket; on by default): a new stroke or fill that touches fills of the same colour, opacity and draw order becomes one fill with them, so the shape selects, moves and erases as one item. Existing strokes are never merged, so line art keeps bounding bucket fills. Turn it off in Tool Settings to keep items separate.
+
 **Draw order** (Brush, Rectangle, Ellipse, Paint Bucket): **Behind** puts the new item under everything already in the frame, **Normal** puts it on top, and **In front** keeps it on top of everything else, including what you draw later. The live preview shows where it lands. Erasing, moving and transforming keep an item's draw order.
 
 ### Canvas

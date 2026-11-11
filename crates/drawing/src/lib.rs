@@ -19,6 +19,8 @@
 //! - [`erase_fill`] cuts the area an eraser passes over out of a [`Fill`]
 //!   (the partial eraser on fills); [`Fill::hit_test`] and
 //!   [`VectorDrawing::fills_hit`] support the whole-stroke eraser on fills.
+//! - [`VectorDrawing::merge_same_colour`] merges touching strokes and fills
+//!   of the same colour into one fill (see [`merge`]).
 //! - [`select`] has the selection tool's geometry: [`ItemId`], item bounds,
 //!   translation, and hit-testing a point or rectangle against a drawing.
 
@@ -28,6 +30,7 @@ pub mod fill;
 pub mod fill_erase;
 mod fill_tessellate;
 mod hit;
+pub mod merge;
 pub mod select;
 pub mod stroke;
 pub mod tessellate;
@@ -37,6 +40,7 @@ pub use erase::EraseResult;
 pub use fill::{Fill, FillError, FillShape, GapClosing, Gradient, fill_region};
 pub use fill_erase::{FillEraseResult, FillEraser, erase_fill};
 pub use fill_tessellate::tessellate_fill;
+pub use merge::Merge;
 pub use select::ItemId;
 pub use stroke::{
     BrushStyle, DrawingContent, PaintItem, Placement, Stroke, StrokePoint, VectorDrawing,

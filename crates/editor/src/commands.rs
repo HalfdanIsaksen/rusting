@@ -4,11 +4,13 @@ mod canvas;
 mod fill;
 mod frames;
 mod layers;
+mod merge;
 mod select;
 pub use canvas::ResizeCanvas;
 pub use fill::{AddFill, RemoveFill, ReplaceFill};
 pub use frames::{DuplicateFrame, InsertFrames, MoveFrames, RemoveFrames};
 pub use layers::DuplicateLayer;
+pub use merge::MergeSameColour;
 pub use select::{TransformItems, TranslateItems, remove_items};
 
 use crate::{Command, CommandError};
