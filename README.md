@@ -2,8 +2,6 @@
 
 Open-source 2D animation software written in Rust. It is vector-first and frame-by-frame, with a GPU-accelerated canvas (wgpu) and our own animation, timeline, drawing, and document engines.
 
-> Status: **Phase 0**, the workspace foundation. The app opens a window and clears it with wgpu. See [docs/roadmap.md](docs/roadmap.md).
-
 ## Install
 
 macOS, with Homebrew:
@@ -41,12 +39,24 @@ Set `RUST_LOG=debug` for more log output.
 | `crates/document` | The project document and per-frame evaluation (`RenderList`) |
 | `crates/file_format` | Versioned `.rusting` save/load and validation |
 | `crates/editor` | Editor state, commands, undo/redo |
-| `crates/renderer` | wgpu device, surface, canvas and stroke rendering |
-| `crates/ui` | Editor panels (egui shell for the MVP) |
-| `apps/desktop` | The executable: window, event loop, wiring |
+| `crates/export` | Encoding exported frames: PNG/JPEG images, image sequences and H.264 video (no GPU) |
+| `crates/renderer` | wgpu device, surface, canvas and stroke rendering, offscreen rendering for export |
+| `crates/ui` | The editing session and its egui panels |
+| `apps/desktop` | The executable: window, event loop, file dialogs, export wiring |
+| `assets` | WGSL shaders and the app logo |
 | `tests` | Cross-crate integration tests (`integration_tests` crate) |
+| `Formula`, `scripts` | The Homebrew formula and the script that regenerates it on release |
 
-Read [docs/architecture.md](docs/architecture.md) for the dependency graph and rules, and [docs/decisions/](docs/decisions/) for the architecture decision records.
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | Crate dependency graph, data model, coordinate spaces, frame flow |
+| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-009) |
+| [docs/roadmap.md](docs/roadmap.md) | Development phases and their acceptance criteria |
+| [docs/smoke-test.md](docs/smoke-test.md) | Manual end-to-end test checklist |
+| [docs/releasing.md](docs/releasing.md) | How to tag a release and update the Homebrew tap |
+| [docs/agents.md](docs/agents.md) | Rules for parallel feature sessions |
 
 ## Features
 
@@ -79,7 +89,7 @@ The tool strip runs down the side of the canvas:
 - **Insert frame** (`F5`, Edit → Insert Frame) adds a blank frame after the playhead on every layer, holding the current drawing one frame longer. **Delete frames** (`Shift+F5`, Edit → Delete Frames, or `Delete`/`Backspace` with frames selected) removes the selected frames, or the current one, on every layer.
 - Select a range of frames by dragging across the frame cells, or `Shift`+click to select from the playhead. Drag inside the selection to move its keys on every layer (the drop outline turns red if a key is in the way). A plain click moves the playhead and clears the selection, `Esc` clears it, and dragging in the frame-number ruler scrubs.
 - **Frame tags**: select frames and press the tag button (or right-click the frames) to name them, for example "walk" or "jump". Tags show in a strip above the frame numbers. Click a tag to select its frames, double-click it to rename it, and right-click it to rename or remove it. Playback started inside a tag loops that tag.
-- Playback with loop, first/previous/next/last frame, and `←/→` and `↑/↓` to step frames and keys.
+- Playback with loop, first/previous/next/last frame. `Space` plays and pauses, and `←/→` and `↑/↓` step frames and keys.
 - Layer controls in the timeline's layer column: add, duplicate, remove, rename (`F2` or double-click), drag to reorder, show/hide and lock/unlock, per layer or all at once.
 - Select several layers with `Cmd/Ctrl`+click (toggle) or `Shift`+click (range); duplicate and remove act on the whole selection.
 - Onion skin (View → Onion skin).
@@ -92,6 +102,9 @@ The tool strip runs down the side of the canvas:
 - Toggle the **Toolbar** (`Cmd/Ctrl+1`), **Timeline** (`Cmd/Ctrl+2`) and **Tool Settings** (`Cmd/Ctrl+3`) to free up space for the canvas.
 - **Preview**: a smaller floating window that shows only the canvas at the current frame. It has a close button and a Play button that loops the animation without moving the editor's playhead.
 
+### Help menu
+- Lists the keyboard shortcuts.
+
 ### Files and export
 - Save and open versioned `.rusting` project files.
 - Undo/redo for every edit (up to 500 steps).
@@ -100,4 +113,8 @@ The tool strip runs down the side of the canvas:
 
 ## Contributing workflow
 
-Each feature is built on its own branch (`feat/<name>`) and only touches the crates it owns. Before merging, a branch must pass `fmt`, `clippy -D warnings`, and `test`. Integration happens in dependency order. See [docs/roadmap.md](docs/roadmap.md).
+Each feature is built on its own branch (`feat/<name>`) and only touches the crates it owns. Before merging, a branch must pass `fmt`, `clippy -D warnings`, and `test`. Integration happens in dependency order. When a branch adds a user-visible feature, it also updates the feature list above. See [docs/roadmap.md](docs/roadmap.md) and [docs/agents.md](docs/agents.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
