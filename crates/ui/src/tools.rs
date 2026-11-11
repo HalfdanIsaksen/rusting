@@ -31,8 +31,8 @@ use crate::shapes::{ShapeKind, ShapeStyle, shape_box, shape_items};
 use document::animation_core::{FillId, FrameIndex, LayerId, Rgba, StrokeId, Vec2};
 use document::drawing::select::{Affine2, rect_from_corners, scale_rotate_about};
 use document::drawing::{
-    BrushStyle, Fill, FillEraser, FillShape, GapClosing, Gradient, ItemId, Stroke, StrokeBuilder,
-    StrokePoint, VectorDrawing,
+    BrushStyle, Fill, FillEraser, FillShape, GapClosing, Gradient, ItemId, Placement, Stroke,
+    StrokeBuilder, StrokePoint, VectorDrawing,
 };
 use editor::Tool;
 use editor::commands::{
@@ -605,7 +605,8 @@ impl ToolController {
                         id: *preview_id,
                         points,
                         style: *builder.style(),
-                        placement: self.brush_order.placement(),
+                        // `paint_order::with_preview` sets the real tier.
+                        placement: Placement::Normal,
                     },
                 ))
             }
@@ -640,8 +641,8 @@ impl ToolController {
                     *kind,
                     bounds,
                     &self.shape_style,
-                    *preview_fill,
-                    *preview_stroke,
+                    (*preview_fill, *preview_stroke),
+                    None,
                 );
                 (fill.is_some() || stroke.is_some()).then_some((*layer, fill, stroke))
             }
@@ -1083,7 +1084,7 @@ impl Session {
         let drawing = drawing.unwrap_or(&empty);
         match document::drawing::fill_region(drawing, pos, self.tools.fill_gap, canvas) {
             Ok(shape) => {
-                let fill = paint(shape).with_placement(order.placement());
+                let fill = paint(shape).with_placement(order.placement(Some(drawing)));
                 let command = AddFill::new(layer, frame, fill).behind(order.at_bottom());
                 let _ = self.execute(Box::new(command));
             }
@@ -1367,7 +1368,8 @@ impl Session {
                 };
                 if let Some(stroke) = stroke {
                     let order = self.tools.brush_order;
-                    let stroke = stroke.with_placement(order.placement());
+                    let drawing = vector_at(&self.document, layer, frame);
+                    let stroke = stroke.with_placement(order.placement(drawing));
                     let _ = self.execute(Box::new(
                         AddStroke::new(layer, frame, stroke).behind(order.at_bottom()),
                     ));
@@ -1393,8 +1395,8 @@ impl Session {
                     kind,
                     bounds,
                     &self.tools.shape_style,
-                    FillId::new(),
-                    StrokeId::new(),
+                    (FillId::new(), StrokeId::new()),
+                    vector_at(&self.document, layer, frame),
                 );
                 let at_bottom = self.tools.shape_style.order.at_bottom();
                 let mut commands: Vec<Box<dyn editor::Command>> = Vec::new();
@@ -1654,6 +1656,49 @@ mod tests {
     }
 
     #[test]
+    fn behind_brush_stroke_goes_under_existing_fills() {
+        let mut s = Session::new();
+        rectangle(&mut s, Vec2::new(20.0, 20.0), Vec2::new(80.0, 80.0));
+        let before = painted(&s);
+        s.state.tool = Tool::Brush;
+        s.tools.brush_order = PaintOrder::Behind;
+        // The live preview already paints the stroke under the rectangle.
+        assert!(s.pointer_down(Vec2::new(0.0, 50.0), 1.0));
+        s.pointer_move(Vec2::new(50.0, 50.0));
+        s.pointer_move(Vec2::new(100.0, 50.0));
+        let (_, stroke) = s.tools.preview().unwrap();
+        let preview_id = ItemId::Stroke(stroke.id);
+        let preview = crate::paint_order::with_preview(
+            s.active_drawing().unwrap(),
+            None,
+            Some(stroke),
+            s.tools.preview_order(),
+        );
+        assert_eq!(preview.all_items()[0], preview_id);
+        assert_eq!(preview.all_items()[1..], before[..]);
+        s.pointer_up();
+
+        let d = s.active_drawing().unwrap();
+        let behind = d
+            .strokes()
+            .iter()
+            .find(|st| st.placement != Placement::Normal);
+        let behind = behind.unwrap().id;
+        assert_eq!(painted(&s)[0], ItemId::Stroke(behind));
+        assert_eq!(painted(&s)[1..], before[..]);
+        // The rectangle's fill covers it, so a click there finds the fill.
+        assert_eq!(s.item_under(Vec2::new(50.0, 50.0), 1.0), Some(before[0]));
+
+        // A second behind stroke goes under the first one too.
+        draw(&mut s, Vec2::new(50.0, 0.0), Vec2::new(50.0, 100.0));
+        let order = painted(&s);
+        assert_eq!(order[1], ItemId::Stroke(behind));
+        assert_eq!(order[2..], before[..]);
+        s.undo();
+        assert_eq!(painted(&s)[0], ItemId::Stroke(behind));
+    }
+
+    #[test]
     fn behind_rectangle_sits_under_existing_strokes() {
         let mut s = Session::new();
         s.state.tool = Tool::Brush;
@@ -1683,7 +1728,8 @@ mod tests {
                 ItemId::Stroke(line)
             ]
         );
-        assert!(d.fills()[0].placement == Placement::Normal);
+        assert_eq!(d.fills()[0].placement, Placement::Back(1));
+        assert_eq!(d.strokes()[0].placement, Placement::Back(1));
         // The existing line is still what a click on it finds.
         assert_eq!(
             s.item_under(Vec2::new(50.0, 50.0), 1.0),

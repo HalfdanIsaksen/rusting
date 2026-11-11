@@ -197,6 +197,8 @@ impl AddStroke {
     /// The stroke's [`Placement`](document::drawing::Placement) tier still
     /// applies: a front stroke added at the bottom stays above every normal
     /// item (ADR-010), and normal fills stay under normal strokes (ADR-007).
+    /// To go under everything in the frame, fills included, give the stroke
+    /// [`VectorDrawing::behind_placement`] (ADR-011).
     pub fn behind(mut self, behind: bool) -> Self {
         self.behind = behind;
         self
