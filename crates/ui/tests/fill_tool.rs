@@ -169,3 +169,72 @@ fn gradient_fill_spans_the_area_and_survives_save() {
     assert!(text.contains("gradient"));
     assert_eq!(file_format::from_str(&text).unwrap(), s.document);
 }
+
+fn stroke_colors(s: &Session) -> Vec<Rgba> {
+    drawing(s).map_or(Vec::new(), |d| {
+        d.strokes().iter().map(|st| st.style.color).collect()
+    })
+}
+
+#[test]
+fn bucket_click_on_a_stroke_recolours_it() {
+    let mut s = Session::new();
+    s.state.brush.width = 4.0;
+    draw(&mut s, &[(100.0, 100.0), (200.0, 100.0)]);
+    let red = Rgba::rgb(1.0, 0.0, 0.0);
+    s.state.brush.color = red;
+    let undo_steps = s.history.undo_len();
+    click_fill(&mut s, Vec2::new(150.0, 101.0));
+    assert_eq!(stroke_colors(&s), vec![red]);
+    assert_eq!(fills(&s), 0);
+    assert_eq!(s.history.undo_len(), undo_steps + 1);
+    // Same colour again records nothing.
+    click_fill(&mut s, Vec2::new(150.0, 100.0));
+    assert_eq!(s.history.undo_len(), undo_steps + 1);
+    s.undo();
+    assert_eq!(stroke_colors(&s), vec![Rgba::BLACK]);
+}
+
+#[test]
+fn recolouring_a_fill_takes_bordering_strokes_of_its_old_colour_along() {
+    let mut s = Session::new();
+    s.state.brush.width = 4.0;
+    let blue = Rgba::rgb(0.0, 0.0, 1.0);
+    let yellow = Rgba::rgb(1.0, 1.0, 0.0);
+    let red = Rgba::rgb(1.0, 0.0, 0.0);
+    // Black U shape closed by a blue line on top.
+    draw(
+        &mut s,
+        &[
+            (100.0, 100.0),
+            (100.0, 200.0),
+            (200.0, 200.0),
+            (200.0, 100.0),
+        ],
+    );
+    s.state.brush.color = blue;
+    draw(&mut s, &[(80.0, 100.0), (220.0, 100.0)]);
+    // A separate blue stroke far away stays blue.
+    draw(&mut s, &[(300.0, 300.0), (350.0, 300.0)]);
+
+    s.state.brush.color = yellow;
+    click_fill(&mut s, Vec2::new(150.0, 150.0));
+    assert_eq!(drawing(&s).unwrap().fills()[0].color, yellow);
+    assert_eq!(stroke_colors(&s), vec![Rgba::BLACK, blue, blue]);
+
+    // Fill blue: it now matches the blue line.
+    s.state.brush.color = blue;
+    click_fill(&mut s, Vec2::new(150.0, 150.0));
+    assert_eq!(drawing(&s).unwrap().fills()[0].color, blue);
+
+    // Recolouring again changes the fill and the blue line, in one step.
+    let undo_steps = s.history.undo_len();
+    s.state.brush.color = red;
+    click_fill(&mut s, Vec2::new(150.0, 150.0));
+    assert_eq!(drawing(&s).unwrap().fills()[0].color, red);
+    assert_eq!(stroke_colors(&s), vec![Rgba::BLACK, red, blue]);
+    assert_eq!(s.history.undo_len(), undo_steps + 1);
+    s.undo();
+    assert_eq!(drawing(&s).unwrap().fills()[0].color, blue);
+    assert_eq!(stroke_colors(&s), vec![Rgba::BLACK, blue, blue]);
+}
