@@ -42,15 +42,23 @@ impl Default for BrushStyle {
     }
 }
 
-/// The draw-order tier of a stroke or fill (ADR-010).
+/// The draw-order tier of a stroke or fill (ADR-010, ADR-011).
 ///
-/// Per drawing, items paint in four groups, bottom to top: normal fills,
-/// normal strokes, front fills, front strokes. Within a group the stored
-/// order holds (newer above older, unless an item was added at the bottom).
-/// So a [`Placement::Front`] item stays above every normal item, including
-/// ones drawn later.
+/// Per drawing, items paint bottom to top: the back levels from the deepest
+/// up (each level's fills, then its strokes), then normal fills, normal
+/// strokes, front fills, front strokes. Within a group the stored order
+/// holds (newer above older, unless an item was added at the bottom). So a
+/// [`Placement::Front`] item stays above every normal item, including ones
+/// drawn later, and a [`Placement::Back`] item stays under every normal
+/// item and under every shallower back item.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Placement {
+    /// Under every normal item. Larger levels paint further back. Each
+    /// "Behind" commit gets a level one deeper than any already in its
+    /// drawing ([`VectorDrawing::behind_placement`]), so it lands under
+    /// everything there, fills included, while a shape's own fill and outline
+    /// share one level and keep fill-under-outline (ADR-011).
+    Back(u32),
     /// The ordinary tier: fills under strokes, as before ADR-010.
     #[default]
     Normal,
@@ -59,12 +67,18 @@ pub enum Placement {
 }
 
 impl Placement {
-    /// Both tiers, bottom first.
-    pub const ALL: [Self; 2] = [Self::Normal, Self::Front];
-
     /// Whether this is the default tier (used to leave it out of files).
     pub fn is_normal(&self) -> bool {
         *self == Self::Normal
+    }
+
+    /// Sort key: lower paints first. Deeper back levels come first.
+    fn rank(self) -> (u8, std::cmp::Reverse<u32>) {
+        match self {
+            Self::Back(level) => (0, std::cmp::Reverse(level)),
+            Self::Normal => (1, std::cmp::Reverse(0)),
+            Self::Front => (2, std::cmp::Reverse(0)),
+        }
     }
 }
 
@@ -112,9 +126,9 @@ impl Stroke {
     }
 }
 
-/// A vector drawing. Items paint in [`VectorDrawing::paint_order`]: normal
-/// fills, normal strokes, front fills, front strokes, each group in stored
-/// order (bottom-to-top).
+/// A vector drawing. Items paint in [`VectorDrawing::paint_order`]: back
+/// levels (deepest first, fills then strokes), normal fills, normal strokes,
+/// front fills, front strokes, each group in stored order (bottom-to-top).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct VectorDrawing {
     strokes: Vec<Stroke>,
@@ -219,26 +233,44 @@ impl VectorDrawing {
         }
     }
 
-    /// Every item in the order it is painted, bottom to top: normal fills,
-    /// normal strokes, front fills, front strokes (ADR-010). Reverse it for
-    /// topmost-first hit-testing.
-    pub fn paint_order(&self) -> impl DoubleEndedIterator<Item = PaintItem<'_>> + '_ {
-        self.tier(Placement::Normal)
-            .chain(self.tier(Placement::Front))
+    /// The placement for an item added "Behind": a back level one deeper
+    /// than any in this drawing, so it paints under everything already here
+    /// (ADR-011). Give a shape's fill and outline the same placement.
+    pub fn behind_placement(&self) -> Placement {
+        let deepest = self
+            .fills
+            .iter()
+            .map(|f| f.placement)
+            .chain(self.strokes.iter().map(|s| s.placement))
+            .filter_map(|p| match p {
+                Placement::Back(level) => Some(level),
+                Placement::Normal | Placement::Front => None,
+            })
+            .max()
+            .unwrap_or(0);
+        Placement::Back(deepest.saturating_add(1))
     }
 
-    /// One tier's fills, then its strokes.
-    fn tier(&self, placement: Placement) -> impl DoubleEndedIterator<Item = PaintItem<'_>> + '_ {
-        self.fills
+    /// Every item in the order it is painted, bottom to top: back levels
+    /// from the deepest up, then normal fills, normal strokes, front fills,
+    /// front strokes (ADR-010, ADR-011). Within a level fills paint under
+    /// strokes, and each kind keeps its stored order. Reverse it for
+    /// topmost-first hit-testing.
+    pub fn paint_order(&self) -> impl DoubleEndedIterator<Item = PaintItem<'_>> + '_ {
+        let mut items: Vec<PaintItem<'_>> = self
+            .fills
             .iter()
-            .filter(move |f| f.placement == placement)
             .map(PaintItem::Fill)
-            .chain(
-                self.strokes
-                    .iter()
-                    .filter(move |s| s.placement == placement)
-                    .map(PaintItem::Stroke),
+            .chain(self.strokes.iter().map(PaintItem::Stroke))
+            .collect();
+        // Stable, so stored order holds within each (tier, kind) group.
+        items.sort_by_key(|item| {
+            (
+                item.placement().rank(),
+                matches!(item, PaintItem::Stroke(_)),
             )
+        });
+        items.into_iter()
     }
 
     /// Strokes in paint order, bottom to top.
@@ -470,6 +502,67 @@ mod tests {
             vec![ids.1, ids.4, ids.0]
         );
         assert_eq!(d.all_items(), order(&d));
+    }
+
+    #[test]
+    fn behind_goes_under_every_existing_fill_and_stroke() {
+        use crate::ItemId::{Fill as F, Stroke as S};
+        let mut d = VectorDrawing::new();
+        let (normal_fill, normal_stroke) = (square_fill(), line());
+        let ids = (normal_fill.id, normal_stroke.id);
+        d.add_fill(normal_fill, false);
+        d.add_stroke(normal_stroke, false);
+        assert_eq!(d.behind_placement(), Placement::Back(1));
+
+        // A behind brush stroke paints under the normal fill.
+        let first = line().with_placement(d.behind_placement());
+        let first_id = first.id;
+        d.add_stroke(first, true);
+        assert_eq!(order(&d), vec![S(first_id), F(ids.0), S(ids.1)]);
+
+        // A behind shape (fill + outline on one level) goes under that
+        // stroke, with its outline still above its own fill.
+        let level = d.behind_placement();
+        assert_eq!(level, Placement::Back(2));
+        let (shape_fill, outline) = (
+            square_fill().with_placement(level),
+            line().with_placement(level),
+        );
+        let shape = (shape_fill.id, outline.id);
+        d.add_fill(shape_fill, true);
+        d.add_stroke(outline, true);
+        assert_eq!(
+            order(&d),
+            vec![F(shape.0), S(shape.1), S(first_id), F(ids.0), S(ids.1)]
+        );
+
+        // The next behind stroke goes under the behind shape's fill too.
+        let last = line().with_placement(d.behind_placement());
+        let last_id = last.id;
+        d.add_stroke(last, true);
+        assert_eq!(order(&d)[0], S(last_id));
+        assert_eq!(d.all_items(), order(&d));
+        // Hit-testing: the normal fill covers the behind items under it.
+        assert_eq!(d.fill_at(Vec2::new(15.0, 15.0)), Some(ids.0));
+        assert_eq!(d.strokes_painted().last().map(|s| s.id), Some(ids.1));
+    }
+
+    #[test]
+    fn erase_transform_and_duplicate_keep_the_back_level() {
+        let stroke = line().with_placement(Placement::Back(3));
+        let pieces = stroke
+            .erase(&[Vec2::new(5.0, 2.5)], 1.0)
+            .into_replacements()
+            .unwrap();
+        assert!(!pieces.is_empty());
+        assert!(pieces.iter().all(|p| p.placement == Placement::Back(3)));
+        let moved = stroke.transformed(&crate::select::Affine2::from_angle(1.0));
+        assert_eq!(moved.placement, Placement::Back(3));
+        let fill = square_fill().with_placement(Placement::Back(3));
+        assert_eq!(fill.translated(Vec2::ONE).placement, Placement::Back(3));
+        let mut d = VectorDrawing::new();
+        d.push_fill(fill);
+        assert_eq!(d.duplicate().fills()[0].placement, Placement::Back(3));
     }
 
     #[test]

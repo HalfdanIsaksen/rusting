@@ -54,7 +54,7 @@ Set `RUST_LOG=debug` for more log output.
 | Document | What it covers |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Crate dependency graph, data model, coordinate spaces, frame flow |
-| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-010) |
+| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-011) |
 | [docs/roadmap.md](docs/roadmap.md) | Development phases and their acceptance criteria |
 | [docs/smoke-test.md](docs/smoke-test.md) | Manual end-to-end test checklist |
 | [docs/releasing.md](docs/releasing.md) | How to tag a release and update the Homebrew tap |
@@ -82,7 +82,7 @@ The tool strip runs down the side of the canvas:
 | Paint Bucket | `K` | Fill areas enclosed by strokes, with optional gap closing. Click a stroke to recolour it. Recolouring a fill also recolours the strokes along its edge that had the fill's colour, and keeps its draw order |
 | Eyedropper | `I` | Click the canvas to pick the colour (and opacity) of the topmost stroke or fill on the active layer; a gradient fill gives its colour at that point, and empty canvas gives the background colour. Sets the brush and paint bucket colour. `Alt`+click with the Brush, Paint Bucket, Rectangle or Ellipse picks a colour without switching tools (shapes take it as their stroke or fill colour; an `Alt`+drag still draws from the centre) |
 
-**Draw order** (Brush, Rectangle, Ellipse, Paint Bucket): **Behind** puts the new item under everything already in the frame, **Normal** puts it on top, and **In front** keeps it on top of everything else, including what you draw later. The live preview shows where it lands. Erasing, moving and transforming keep an item's draw order.
+**Draw order** (Brush, Rectangle, Ellipse, Paint Bucket): **Behind** puts the new item under everything already in the frame, fills included, **Normal** puts it on top, and **In front** keeps it on top of everything else, including what you draw later. The live preview shows where it lands. Erasing, moving and transforming keep an item's draw order.
 
 ### Canvas
 - Pan with middle-drag or by holding Space, zoom with the wheel or pinch, press `F` to fit.

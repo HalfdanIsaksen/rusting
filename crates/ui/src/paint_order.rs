@@ -1,17 +1,18 @@
 //! Where a new brush stroke, shape or bucket fill goes in its drawing's
-//! paint order (ADR-010).
+//! paint order (ADR-010, ADR-011).
 
 use document::drawing::{Fill, Placement, Stroke, VectorDrawing};
 
 /// The "Behind / Normal / In front" choice of the brush, shape and fill
 /// tools.
 ///
-/// Behind and Normal put the new item in the normal tier, at the bottom or
-/// on top of it. In front puts it in the front tier, so it stays above
-/// everything drawn in the normal tier, also later.
+/// Behind puts the new item on a new back level, under everything already
+/// in the frame (fills included). Normal puts it on top of the normal tier.
+/// In front puts it in the front tier, so it stays above everything drawn
+/// in the normal tier, also later.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PaintOrder {
-    /// Under the frame's existing items (normal tier, at the bottom).
+    /// Under all of the frame's existing items (a new, deepest back level).
     Behind,
     /// On top of the frame's existing items, but under front items.
     #[default]
@@ -48,15 +49,19 @@ impl PaintOrder {
         }
     }
 
-    /// The stored draw-order tier.
-    pub const fn placement(self) -> Placement {
+    /// The stored draw-order tier for an item added to `drawing` (the
+    /// frame's drawing, `None` when the frame has none yet). Behind gives a
+    /// back level deeper than any in `drawing`; a shape's fill and outline
+    /// take the same placement.
+    pub fn placement(self, drawing: Option<&VectorDrawing>) -> Placement {
         match self {
-            Self::Behind | Self::Normal => Placement::Normal,
+            Self::Behind => drawing.map_or(Placement::Back(1), VectorDrawing::behind_placement),
+            Self::Normal => Placement::Normal,
             Self::InFront => Placement::Front,
         }
     }
 
-    /// Whether the item goes at the bottom of its tier.
+    /// Whether the item goes at the bottom of its tier's list.
     pub const fn at_bottom(self) -> bool {
         matches!(self, Self::Behind)
     }
@@ -70,12 +75,13 @@ pub fn with_preview(
     stroke: Option<Stroke>,
     order: PaintOrder,
 ) -> VectorDrawing {
+    let placement = order.placement(Some(drawing));
     let mut copy = drawing.clone();
     if let Some(fill) = fill {
-        copy.add_fill(fill.with_placement(order.placement()), order.at_bottom());
+        copy.add_fill(fill.with_placement(placement), order.at_bottom());
     }
     if let Some(stroke) = stroke {
-        copy.add_stroke(stroke.with_placement(order.placement()), order.at_bottom());
+        copy.add_stroke(stroke.with_placement(placement), order.at_bottom());
     }
     copy
 }
