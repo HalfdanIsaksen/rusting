@@ -48,6 +48,8 @@ pub enum ExportKind {
     Video,
     /// One image with each frame tag on its own row.
     SpriteSheet,
+    /// The animation as a looping GIF, if it is short enough.
+    Gif,
 }
 
 /// An action that throws away the current document.
