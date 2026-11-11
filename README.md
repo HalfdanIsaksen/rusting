@@ -52,7 +52,7 @@ Set `RUST_LOG=debug` for more log output.
 | Document | What it covers |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Crate dependency graph, data model, coordinate spaces, frame flow |
-| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-009) |
+| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-010) |
 | [docs/roadmap.md](docs/roadmap.md) | Development phases and their acceptance criteria |
 | [docs/smoke-test.md](docs/smoke-test.md) | Manual end-to-end test checklist |
 | [docs/releasing.md](docs/releasing.md) | How to tag a release and update the Homebrew tap |
@@ -73,11 +73,13 @@ The tool strip runs down the side of the canvas:
 | Selection | `V` | Select strokes and fills (click, or drag a box from anywhere), then move or delete them |
 | Lasso | `L` | Select strokes and fills by drawing a loop around them |
 | Transform | `Q` | Scale and rotate the selection with box handles |
-| Brush | `B` | Vector strokes with size, opacity, colour, a 0–100% smoothing slider, and paint in front of or behind the existing strokes. Hold `Shift` to draw a straight line |
-| Rectangle | `R` | Drag out a rectangle with a stroke and a fill. Set stroke width, stroke colour and fill colour (or turn either off) in Tool Settings. The fill can be solid or a gradient into a second colour, running left to right, top to bottom or diagonally. `Shift` makes a square, `Alt` draws from the centre |
+| Brush | `B` | Vector strokes with size, opacity, colour, a 0–100% smoothing slider and a draw order (see below). Hold `Shift` to draw a straight line |
+| Rectangle | `R` | Drag out a rectangle with a stroke and a fill. Set stroke width, stroke colour and fill colour (or turn either off) in Tool Settings. The fill can be solid or a gradient into a second colour, running left to right, top to bottom or diagonally. `Shift` makes a square, `Alt` draws from the centre. Draw order applies to both fill and stroke |
 | Ellipse | `O` | Like Rectangle, for ellipses; `Shift` makes a circle |
 | Eraser | `E` | Erase part of a stroke or whole strokes |
-| Paint Bucket | `K` | Fill areas enclosed by strokes, with optional gap closing. Click a stroke to recolour it. Recolouring a fill also recolours the strokes along its edge that had the fill's colour |
+| Paint Bucket | `K` | Fill areas enclosed by strokes, with optional gap closing. Click a stroke to recolour it. Recolouring a fill also recolours the strokes along its edge that had the fill's colour, and keeps its draw order |
+
+**Draw order** (Brush, Rectangle, Ellipse, Paint Bucket): **Behind** puts the new item under everything already in the frame, **Normal** puts it on top, and **In front** keeps it on top of everything else, including what you draw later. The live preview shows where it lands. Erasing, moving and transforming keep an item's draw order.
 
 ### Canvas
 - Pan with middle-drag or by holding Space, zoom with the wheel or pinch, press `F` to fit.

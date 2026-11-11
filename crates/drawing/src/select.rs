@@ -9,7 +9,7 @@ use animation_core::{FillId, StrokeId, Vec2};
 pub use glam::Affine2;
 
 use crate::fill::{Fill, FillShape};
-use crate::stroke::{Stroke, VectorDrawing};
+use crate::stroke::{PaintItem, Stroke, VectorDrawing};
 
 /// One selectable thing in a drawing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -23,6 +23,15 @@ pub enum ItemId {
 impl From<StrokeId> for ItemId {
     fn from(id: StrokeId) -> Self {
         Self::Stroke(id)
+    }
+}
+
+impl From<PaintItem<'_>> for ItemId {
+    fn from(item: PaintItem<'_>) -> Self {
+        match item {
+            PaintItem::Fill(f) => Self::Fill(f.id),
+            PaintItem::Stroke(s) => Self::Stroke(s.id),
+        }
     }
 }
 
@@ -171,13 +180,10 @@ impl VectorDrawing {
         }
     }
 
-    /// Every item: fills bottom-to-top, then strokes bottom-to-top.
+    /// Every item in paint order, bottom to top (see
+    /// [`VectorDrawing::paint_order`]).
     pub fn all_items(&self) -> Vec<ItemId> {
-        self.fills()
-            .iter()
-            .map(|f| ItemId::Fill(f.id))
-            .chain(self.strokes().iter().map(|s| ItemId::Stroke(s.id)))
-            .collect()
+        self.paint_order().map(ItemId::from).collect()
     }
 
     /// Bounds of one item (strokes include half the brush width). `None` if
@@ -197,16 +203,17 @@ impl VectorDrawing {
             .reduce(rect_union)
     }
 
-    /// The topmost item under `point`. Strokes are painted over fills, so they
-    /// are checked first, top to bottom; `tolerance` (document units) widens
-    /// strokes so thin lines are easy to click. Fills must contain the point.
+    /// The topmost item under `point`, checking items top to bottom in paint
+    /// order; `tolerance` (document units) widens strokes so thin lines are
+    /// easy to click. Fills must contain the point.
     pub fn item_at(&self, point: Vec2, tolerance: f32) -> Option<ItemId> {
-        self.strokes()
-            .iter()
+        self.paint_order()
             .rev()
-            .find(|s| s.hit_test(point, tolerance))
-            .map(|s| ItemId::Stroke(s.id))
-            .or_else(|| self.fill_at(point).map(ItemId::Fill))
+            .find(|item| match item {
+                PaintItem::Stroke(s) => s.hit_test(point, tolerance),
+                PaintItem::Fill(f) => f.contains(point),
+            })
+            .map(ItemId::from)
     }
 
     /// Items with any point (stroke point or fill contour point) inside

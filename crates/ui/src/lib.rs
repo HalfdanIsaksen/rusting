@@ -13,6 +13,7 @@
 pub mod icons;
 pub mod logo;
 pub mod onion;
+pub mod paint_order;
 pub mod panels;
 pub mod playback;
 pub mod preview;
@@ -22,6 +23,7 @@ pub mod theme;
 pub mod tools;
 
 pub use onion::{OnionDrawing, OnionSkin};
+pub use paint_order::PaintOrder;
 pub use panels::{preview_window, show};
 pub use playback::Playback;
 pub use preview::Preview;

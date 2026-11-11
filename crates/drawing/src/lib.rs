@@ -33,5 +33,7 @@ pub use erase::EraseResult;
 pub use fill::{Fill, FillError, FillShape, GapClosing, Gradient, fill_region};
 pub use fill_tessellate::tessellate_fill;
 pub use select::ItemId;
-pub use stroke::{BrushStyle, DrawingContent, Stroke, StrokePoint, VectorDrawing};
+pub use stroke::{
+    BrushStyle, DrawingContent, PaintItem, Placement, Stroke, StrokePoint, VectorDrawing,
+};
 pub use tessellate::{Mesh, TessellationOptions, tessellate, tessellate_with};

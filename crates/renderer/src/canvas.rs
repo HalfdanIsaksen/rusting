@@ -15,7 +15,7 @@ use animation_core::glam::{Mat4, Quat, Vec2};
 use animation_core::{LayerId, Rgba};
 use document::RenderList;
 use document::scene::{BlendMode, Transform2D};
-use drawing::{Fill, Gradient, Stroke};
+use drawing::{Fill, Gradient, PaintItem, Stroke};
 use std::ops::Range;
 
 const BACKGROUND_WGSL: &str = include_str!("../../../assets/shaders/background.wgsl");
@@ -284,7 +284,8 @@ impl CanvasRenderer {
 
     /// Makes sure every stroke and fill in `list` has a cached mesh (calling
     /// `tessellate` / `tessellate_fill` for new or changed ones) and returns
-    /// the draw list, bottom to top: per layer, its fills, then its strokes.
+    /// the draw list, bottom to top: per layer, its items in paint order
+    /// (ADR-010).
     /// Colours get the brush/fill and layer opacity applied.
     pub fn prepare_render_list<M: MeshSource, F: MeshSource>(
         &mut self,
@@ -296,33 +297,38 @@ impl CanvasRenderer {
         let mut draws = Vec::new();
         for layer in &list.layers {
             let transform = transform_matrix(&layer.transform);
-            for fill in layer.drawing.fills() {
-                self.strokes
-                    .ensure(device, fill.id, StrokeKey::of_fill(fill), || {
-                        tessellate_fill(fill)
-                    });
-                draws.push(StrokeDraw {
-                    id: fill.id.into(),
-                    color: fill_color(fill, layer.opacity),
-                    gradient: fill_gradient(fill, layer.opacity),
-                    transform,
-                    layer: Some(layer.layer_id),
-                    blend: layer.blend,
-                });
-            }
-            for stroke in layer.drawing.strokes() {
-                self.strokes
-                    .ensure(device, stroke.id, StrokeKey::of(stroke), || {
-                        tessellate(stroke)
-                    });
-                draws.push(StrokeDraw {
-                    id: stroke.id.into(),
-                    color: stroke_color(stroke, layer.opacity),
-                    gradient: None,
-                    transform,
-                    layer: Some(layer.layer_id),
-                    blend: layer.blend,
-                });
+            for item in layer.drawing.paint_order() {
+                let draw = match item {
+                    PaintItem::Fill(fill) => {
+                        self.strokes
+                            .ensure(device, fill.id, StrokeKey::of_fill(fill), || {
+                                tessellate_fill(fill)
+                            });
+                        StrokeDraw {
+                            id: fill.id.into(),
+                            color: fill_color(fill, layer.opacity),
+                            gradient: fill_gradient(fill, layer.opacity),
+                            transform,
+                            layer: Some(layer.layer_id),
+                            blend: layer.blend,
+                        }
+                    }
+                    PaintItem::Stroke(stroke) => {
+                        self.strokes
+                            .ensure(device, stroke.id, StrokeKey::of(stroke), || {
+                                tessellate(stroke)
+                            });
+                        StrokeDraw {
+                            id: stroke.id.into(),
+                            color: stroke_color(stroke, layer.opacity),
+                            gradient: None,
+                            transform,
+                            layer: Some(layer.layer_id),
+                            blend: layer.blend,
+                        }
+                    }
+                };
+                draws.push(draw);
             }
         }
         draws

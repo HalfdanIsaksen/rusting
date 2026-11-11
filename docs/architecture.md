@@ -42,7 +42,9 @@ Document
 │     Track = BTreeMap<FrameIndex, Keyframe>;  Keyframe = Drawing(DrawingId) | Empty
 └─ drawings: BTreeMap<DrawingId, DrawingContent>  (drawing crate)
       DrawingContent::Vector(VectorDrawing { strokes: Vec<Stroke>, fills: Vec<Fill> })
-      (fills draw under the drawing's strokes; ADR-007)
+      Stroke/Fill.placement: Normal | Front (draw-order tier; ADR-010)
+      paint order: normal fills → normal strokes → front fills → front strokes,
+      list order within each group (VectorDrawing::paint_order; ADR-007, ADR-010)
 ```
 Drawings live in a pool, separate from keyframes. Later this lets one drawing be exposed on several frames (cycles and holds) without copying it.
 
