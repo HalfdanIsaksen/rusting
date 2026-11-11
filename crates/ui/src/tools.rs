@@ -36,8 +36,8 @@ use document::drawing::{
 };
 use editor::Tool;
 use editor::commands::{
-    AddFill, AddStroke, Batch, RemoveFill, RemoveStroke, ReplaceFill, ReplaceStroke,
-    TransformItems, TranslateItems, remove_items,
+    AddFill, AddStroke, Batch, MergeSameColour, RemoveFill, RemoveStroke, ReplaceFill,
+    ReplaceStroke, TransformItems, TranslateItems, remove_items,
 };
 
 /// Smallest distance between recorded brush points, in screen points.
@@ -397,6 +397,9 @@ pub struct ToolController {
     pub fill_gap: GapClosing,
     /// Normal or gradient fill.
     pub fill_style: FillStyle,
+    /// New strokes and fills (brush, bucket, shapes) merge with touching
+    /// strokes and fills of the same colour into one fill (ADR-012).
+    pub merge_same_colour: bool,
     /// Colour a gradient fill blends into from the brush colour.
     pub gradient_color: Rgba,
     /// Stroke and fill of the rectangle and ellipse tools.
@@ -426,6 +429,7 @@ impl Default for ToolController {
             eraser_mode: EraserMode::default(),
             fill_gap: GapClosing::default(),
             fill_style: FillStyle::default(),
+            merge_same_colour: true,
             gradient_color: Rgba::WHITE,
             shape_style: ShapeStyle::default(),
             gradient_start: None,
@@ -1085,8 +1089,14 @@ impl Session {
         match document::drawing::fill_region(drawing, pos, self.tools.fill_gap, canvas) {
             Ok(shape) => {
                 let fill = paint(shape).with_placement(order.placement(Some(drawing)));
-                let command = AddFill::new(layer, frame, fill).behind(order.at_bottom());
-                let _ = self.execute(Box::new(command));
+                let id = fill.id;
+                let mut commands: Vec<Box<dyn editor::Command>> = vec![Box::new(
+                    AddFill::new(layer, frame, fill).behind(order.at_bottom()),
+                )];
+                if self.tools.merge_same_colour {
+                    commands.push(Box::new(MergeSameColour::new(layer, frame, id)));
+                }
+                let _ = self.execute(Box::new(Batch::new("Fill", commands)));
             }
             Err(err) => {
                 let mut text = err.to_string();
@@ -1370,9 +1380,14 @@ impl Session {
                     let order = self.tools.brush_order;
                     let drawing = vector_at(&self.document, layer, frame);
                     let stroke = stroke.with_placement(order.placement(drawing));
-                    let _ = self.execute(Box::new(
+                    let id = stroke.id;
+                    let mut commands: Vec<Box<dyn editor::Command>> = vec![Box::new(
                         AddStroke::new(layer, frame, stroke).behind(order.at_bottom()),
-                    ));
+                    )];
+                    if self.tools.merge_same_colour {
+                        commands.push(Box::new(MergeSameColour::new(layer, frame, id)));
+                    }
+                    let _ = self.execute(Box::new(Batch::new("Add Stroke", commands)));
                 }
             }
             Some(Gesture::Shape {
@@ -1400,13 +1415,23 @@ impl Session {
                 );
                 let at_bottom = self.tools.shape_style.order.at_bottom();
                 let mut commands: Vec<Box<dyn editor::Command>> = Vec::new();
+                let mut added: Vec<ItemId> = Vec::new();
                 if let Some(fill) = fill {
+                    added.push(fill.id.into());
                     commands.push(Box::new(AddFill::new(layer, frame, fill).behind(at_bottom)));
                 }
                 if let Some(stroke) = stroke {
+                    added.push(stroke.id.into());
                     commands.push(Box::new(
                         AddStroke::new(layer, frame, stroke).behind(at_bottom),
                     ));
+                }
+                // The fill merges with touching fills of its colour, then the
+                // outline merges into them if it has that colour too.
+                if self.tools.merge_same_colour {
+                    for item in added {
+                        commands.push(Box::new(MergeSameColour::new(layer, frame, item)));
+                    }
                 }
                 if !commands.is_empty() {
                     let _ = self.execute(Box::new(Batch::new(kind.label(), commands)));
@@ -1599,6 +1624,44 @@ mod tests {
 
     fn painted(s: &Session) -> Vec<ItemId> {
         s.active_drawing().unwrap().all_items()
+    }
+
+    #[test]
+    fn brush_stroke_merges_into_a_same_colour_fill() {
+        let mut s = Session::new();
+        let brown = Rgba::rgb(0.4, 0.15, 0.12);
+        s.state.brush.color = brown;
+        s.state.brush.width = 10.0;
+        s.tools.shape_style.stroke = false;
+        s.tools.shape_style.fill_color = brown;
+        rectangle(&mut s, Vec2::new(0.0, 0.0), Vec2::new(100.0, 100.0));
+        let fill = s.active_drawing().unwrap().fills()[0].clone();
+
+        // A stroke poking out of the fill becomes part of it, in one undo step.
+        s.state.tool = Tool::Brush;
+        draw(&mut s, Vec2::new(50.0, 50.0), Vec2::new(150.0, 50.0));
+        let d = s.active_drawing().unwrap();
+        assert_eq!((d.fills().len(), d.strokes().len()), (1, 0));
+        assert_eq!(d.fills()[0].id, fill.id);
+        assert!(d.fills()[0].contains(Vec2::new(140.0, 50.0)));
+        assert_eq!(
+            s.item_under(Vec2::new(140.0, 50.0), 1.0),
+            Some(ItemId::Fill(fill.id))
+        );
+        s.undo();
+        let d = s.active_drawing().unwrap();
+        assert_eq!(d.fills(), std::slice::from_ref(&fill));
+        assert!(d.strokes().is_empty());
+
+        // Another colour, or merging turned off, keeps the stroke separate.
+        s.state.brush.color = Rgba::BLACK;
+        draw(&mut s, Vec2::new(50.0, 50.0), Vec2::new(150.0, 50.0));
+        s.state.brush.color = brown;
+        s.tools.merge_same_colour = false;
+        draw(&mut s, Vec2::new(50.0, 20.0), Vec2::new(150.0, 20.0));
+        let d = s.active_drawing().unwrap();
+        assert_eq!((d.fills().len(), d.strokes().len()), (1, 2));
+        assert_eq!(d.fills()[0], fill);
     }
 
     #[test]
