@@ -2,8 +2,8 @@
 class Rusting < Formula
   desc "Open-source 2D vector animation software"
   homepage "https://github.com/HalfdanIsaksen/rusting"
-  url "https://github.com/HalfdanIsaksen/rusting/releases/download/v0.1.6/rusting-0.1.6-universal-apple-darwin.tar.gz"
-  sha256 "75bc74ca7b1f5024462143eb8d8f7558ea26505ab01632bf5de679ce30f1c04d"
+  url "https://github.com/HalfdanIsaksen/rusting/releases/download/v0.1.7/rusting-0.1.7-universal-apple-darwin.tar.gz"
+  sha256 "3f0355504c879e8ab38219ed6b43f0a8516dc92c1e447e6555f0b0c24a2990b3"
   license "MIT"
 
   depends_on :macos
