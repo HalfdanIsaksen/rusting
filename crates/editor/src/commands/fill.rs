@@ -18,6 +18,7 @@ pub struct AddFill {
     frame: FrameIndex,
     fill: Fill,
     new_drawing: DrawingId,
+    behind: bool,
     target: Option<StrokeTarget>,
 }
 
@@ -30,8 +31,16 @@ impl AddFill {
             frame,
             fill,
             new_drawing: DrawingId::new(),
+            behind: false,
             target: None,
         }
+    }
+
+    /// Puts the fill under the drawing's other fills of its tier instead of
+    /// on top (ADR-010).
+    pub fn behind(mut self, behind: bool) -> Self {
+        self.behind = behind;
+        self
     }
 
     /// ID of the fill this command adds.
@@ -50,7 +59,7 @@ impl Command for AddFill {
         frame_in_range(doc, self.frame)?;
         let target = match doc.drawing_at(self.layer, self.frame) {
             Some(id) => {
-                vector_mut(doc, id)?.push_fill(self.fill.clone());
+                vector_mut(doc, id)?.add_fill(self.fill.clone(), self.behind);
                 StrokeTarget::Existing(id)
             }
             None => {
@@ -231,6 +240,30 @@ mod tests {
         assert_eq!(fills(&doc, layer, 0), 0);
         history.undo(&mut doc).unwrap();
         assert_eq!(doc, with_fill);
+    }
+
+    #[test]
+    fn add_fill_behind_goes_under_other_fills_and_undoes() {
+        let (mut doc, layer) = setup();
+        let mut history = History::new();
+        let (top, bottom) = (square(), square());
+        let ids = [bottom.id, top.id];
+        history
+            .execute(&mut doc, Box::new(AddFill::new(layer, FrameIndex(0), top)))
+            .unwrap();
+        let before = doc.clone();
+        history
+            .execute(
+                &mut doc,
+                Box::new(AddFill::new(layer, FrameIndex(0), bottom).behind(true)),
+            )
+            .unwrap();
+        let drawing = doc.drawing_at(layer, FrameIndex(0)).unwrap();
+        let v = doc.drawing(drawing).unwrap().as_vector().unwrap();
+        let order: Vec<_> = v.fills().iter().map(|f| f.id).collect();
+        assert_eq!(order, ids);
+        history.undo(&mut doc).unwrap();
+        assert_eq!(doc, before);
     }
 
     #[test]

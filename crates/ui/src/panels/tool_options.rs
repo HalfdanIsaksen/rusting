@@ -1,8 +1,10 @@
 //! The tool settings panel on the right of the canvas: settings for the
-//! active tool (size, opacity, colour, eraser mode, gap closing) and the
+//! active tool (size, opacity, colour, draw order, eraser mode, gap closing)
+//! and the
 //! "drawing is blocked" warning.
 
 use super::toolbar::TOOLS;
+use crate::paint_order::PaintOrder;
 use crate::session::Session;
 use crate::shapes::GradientDirection;
 use crate::tools::{EraserMode, FillStyle};
@@ -69,6 +71,17 @@ pub(crate) fn gap_choices(ui: &mut egui::Ui, session: &mut Session) -> bool {
     picked
 }
 
+/// The "Draw order" choice: Behind, Normal or In front (ADR-010).
+fn paint_order(ui: &mut egui::Ui, order: &mut PaintOrder) {
+    ui.label("Draw order");
+    ui.horizontal_wrapped(|ui| {
+        for option in PaintOrder::ALL {
+            ui.selectable_value(order, option, option.label())
+                .on_hover_text(option.hint());
+        }
+    });
+}
+
 /// Draws the tool settings panel.
 pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
     // Leave room for the value box beside each slider.
@@ -102,11 +115,7 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
             brush_size(ui, session);
             brush_smoothing(ui, session);
             ui.separator();
-            let behind = &mut session.tools.brush_behind;
-            ui.selectable_value(behind, false, "Paint in front")
-                .on_hover_text("New strokes go on top of the frame's existing strokes.");
-            ui.selectable_value(behind, true, "Paint behind")
-                .on_hover_text("New strokes go under the frame's existing strokes.");
+            paint_order(ui, &mut session.tools.brush_order);
             ui.separator();
             paint_settings(ui, session);
             ui.separator();
@@ -125,6 +134,8 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
             ui.separator();
             ui.label("Close gaps").on_hover_text(FILL_HINT);
             gap_choices(ui, session);
+            ui.separator();
+            paint_order(ui, &mut session.tools.fill_order);
             ui.separator();
             paint_settings(ui, session);
         }
@@ -221,6 +232,8 @@ fn shape_settings(ui: &mut egui::Ui, session: &mut Session) {
             });
         }
     });
+    ui.separator();
+    paint_order(ui, &mut style.order);
     ui.separator();
     ui.weak(SHAPE_HINT);
 }

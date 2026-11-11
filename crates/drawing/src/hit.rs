@@ -64,11 +64,10 @@ impl Stroke {
 
 impl VectorDrawing {
     /// IDs of all strokes that a circle at `point` with `radius` touches, in
-    /// drawing order (bottom-to-top). For "erase only the topmost", take the
+    /// paint order (bottom-to-top). For "erase only the topmost", take the
     /// last element.
     pub fn strokes_hit(&self, point: Vec2, radius: f32) -> Vec<StrokeId> {
-        self.strokes()
-            .iter()
+        self.strokes_painted()
             .filter(|s| s.hit_test(point, radius))
             .map(|s| s.id)
             .collect()

@@ -194,7 +194,9 @@ impl AddStroke {
     }
 
     /// Puts the stroke under the drawing's other strokes instead of on top.
-    /// Fills still draw under every stroke (ADR-007).
+    /// The stroke's [`Placement`](document::drawing::Placement) tier still
+    /// applies: a front stroke added at the bottom stays above every normal
+    /// item (ADR-010), and normal fills stay under normal strokes (ADR-007).
     pub fn behind(mut self, behind: bool) -> Self {
         self.behind = behind;
         self
@@ -221,12 +223,7 @@ impl Command for AddStroke {
         frame_in_range(doc, self.frame)?;
         let target = match doc.drawing_at(self.layer, self.frame) {
             Some(id) => {
-                let drawing = vector_mut(doc, id)?;
-                if self.behind {
-                    drawing.insert_stroke(0, self.stroke.clone());
-                } else {
-                    drawing.push_stroke(self.stroke.clone());
-                }
+                vector_mut(doc, id)?.add_stroke(self.stroke.clone(), self.behind);
                 StrokeTarget::Existing(id)
             }
             None => {

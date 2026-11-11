@@ -1,8 +1,8 @@
 //! Fills and the fill bucket's region finder (ADR-007).
 //!
 //! A [`Fill`] is a filled area stored as vector contours in document
-//! coordinates. It belongs to a [`VectorDrawing`] and is drawn under all of
-//! that drawing's strokes.
+//! coordinates. It belongs to a [`VectorDrawing`] and is drawn under the
+//! strokes of its draw-order tier (ADR-010).
 //!
 //! [`fill_region`] finds the area enclosed by strokes around a click. It
 //! works on a temporary raster (a coverage grid), but only the traced vector
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fmt;
 
-use crate::stroke::{Stroke, VectorDrawing};
+use crate::stroke::{Placement, Stroke, VectorDrawing};
 use crate::tessellate::collect_nodes;
 
 /// Gap radius for [`GapClosing::Small`], in document units. Gaps up to about
@@ -142,7 +142,8 @@ pub struct Gradient {
     pub end_color: Rgba,
 }
 
-/// A filled area of a drawing, drawn under the drawing's strokes.
+/// A filled area of a drawing, drawn under the strokes of its tier
+/// ([`Placement`], ADR-010).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Fill {
     /// Stable identifier.
@@ -156,6 +157,9 @@ pub struct Fill {
     /// Blends `color` into a second colour; `None` is a solid fill.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gradient: Option<Gradient>,
+    /// Draw-order tier; absent in files means [`Placement::Normal`].
+    #[serde(default, skip_serializing_if = "Placement::is_normal")]
+    pub placement: Placement,
 }
 
 impl Fill {
@@ -167,7 +171,14 @@ impl Fill {
             color,
             opacity,
             gradient: None,
+            placement: Placement::Normal,
         }
+    }
+
+    /// The same fill in `placement`'s tier.
+    pub fn with_placement(mut self, placement: Placement) -> Self {
+        self.placement = placement;
+        self
     }
 
     /// The same fill with `gradient`.

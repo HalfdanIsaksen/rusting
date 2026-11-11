@@ -9,6 +9,8 @@
 use document::animation_core::{FillId, Rgba, StrokeId, Vec2};
 use document::drawing::{BrushStyle, Fill, FillShape, Gradient, Stroke, StrokePoint};
 
+use crate::paint_order::PaintOrder;
+
 /// Smallest side of a shape, in document units. Smaller drags (a click)
 /// draw nothing.
 pub const MIN_SHAPE_SIZE: f32 = 0.5;
@@ -88,6 +90,8 @@ pub struct ShapeStyle {
     pub gradient_color: Rgba,
     /// Which way the gradient runs.
     pub gradient_direction: GradientDirection,
+    /// Where the shape's fill and outline go in the frame's paint order.
+    pub order: PaintOrder,
 }
 
 impl Default for ShapeStyle {
@@ -101,6 +105,7 @@ impl Default for ShapeStyle {
             gradient: false,
             gradient_color: Rgba::BLACK,
             gradient_direction: GradientDirection::default(),
+            order: PaintOrder::default(),
         }
     }
 }
@@ -145,7 +150,8 @@ pub fn outline(kind: ShapeKind, (min, max): (Vec2, Vec2)) -> Vec<Vec2> {
 }
 
 /// The fill and outline stroke for a shape in the box `bounds`, with the
-/// given IDs (fixed ones for a live preview, fresh ones to commit). `None`
+/// given IDs (fixed ones for a live preview, fresh ones to commit), both in
+/// the tier `style.order` picks. `None`
 /// for a part that is switched off, or for both when the box is too small.
 pub fn shape_items(
     kind: ShapeKind,
@@ -177,6 +183,7 @@ pub fn shape_items(
             }
         });
         fill.with_gradient(gradient)
+            .with_placement(style.order.placement())
     });
     let stroke = style.stroke.then(|| {
         let mut points: Vec<StrokePoint> = polygon.iter().copied().map(StrokePoint::new).collect();
@@ -189,6 +196,7 @@ pub fn shape_items(
                 width: style.stroke_width.max(0.1),
                 opacity: 1.0,
             },
+            placement: style.order.placement(),
         }
     });
     (fill, stroke)

@@ -24,6 +24,7 @@
 //! drag is previewed and committed as one `TransformItems` on release. A
 //! press anywhere else selects, like the select tool.
 
+use crate::paint_order::PaintOrder;
 use crate::session::Session;
 use crate::shapes::{ShapeKind, ShapeStyle, shape_box, shape_items};
 use document::animation_core::{FillId, FrameIndex, LayerId, Rgba, StrokeId, Vec2};
@@ -372,8 +373,10 @@ pub struct ToolController {
     /// Brush smoothing in percent (`0.0..=100.0`). Higher irons out more of
     /// the hand and tablet wobble.
     pub brush_smoothing: f32,
-    /// Brush paints under the frame's existing strokes instead of on top.
-    pub brush_behind: bool,
+    /// Where new brush strokes go in the frame's paint order (ADR-010).
+    pub brush_order: PaintOrder,
+    /// Where new bucket fills go in the frame's paint order (ADR-010).
+    pub fill_order: PaintOrder,
     /// Eraser radius in document units.
     pub eraser_radius: f32,
     /// Partial or whole-stroke erasing.
@@ -405,7 +408,8 @@ impl Default for ToolController {
     fn default() -> Self {
         Self {
             brush_smoothing: DEFAULT_BRUSH_SMOOTHING,
-            brush_behind: false,
+            brush_order: PaintOrder::default(),
+            fill_order: PaintOrder::default(),
             eraser_radius: 12.0,
             eraser_mode: EraserMode::default(),
             fill_gap: GapClosing::default(),
@@ -587,10 +591,20 @@ impl ToolController {
                         id: *preview_id,
                         points,
                         style: *builder.style(),
+                        placement: self.brush_order.placement(),
                     },
                 ))
             }
             _ => None,
+        }
+    }
+
+    /// Where the brush stroke or shape being drawn will go in the paint
+    /// order; pass it to [`crate::paint_order::with_preview`].
+    pub fn preview_order(&self) -> PaintOrder {
+        match &self.gesture {
+            Some(Gesture::Shape { .. }) => self.shape_style.order,
+            _ => self.brush_order,
         }
     }
 
@@ -932,6 +946,7 @@ impl Session {
             end,
             end_color: self.tools.gradient_color,
         });
+        let order = self.tools.fill_order;
         let paint = |shape: FillShape| Fill::new(shape, color, opacity).with_gradient(gradient);
         let recolour = |stroke: &Stroke| -> Option<Box<dyn editor::Command>> {
             let style = &stroke.style;
@@ -947,13 +962,11 @@ impl Session {
                 )) as Box<dyn editor::Command>
             })
         };
-        // Strokes paint over fills, so a click on a line recolours the line.
+        // A click on a line recolours the line, unless a front fill covers it.
         let tolerance = SELECT_TOLERANCE_SCREEN / zoom.max(f32::EPSILON);
-        let clicked_stroke = drawing.and_then(|d| {
-            d.strokes()
-                .iter()
-                .rev()
-                .find(|s| s.hit_test(pos, tolerance))
+        let clicked_stroke = drawing.and_then(|d| match d.item_at(pos, tolerance)? {
+            ItemId::Stroke(id) => d.stroke(id),
+            ItemId::Fill(_) => None,
         });
         if let (Some(stroke), None) = (clicked_stroke, gradient_to) {
             if let Some(command) = recolour(stroke) {
@@ -966,7 +979,8 @@ impl Session {
             .and_then(|d| d.fill_at(pos))
             .and_then(|id| drawing.and_then(|d| d.fill(id)).cloned())
         {
-            let recoloured = paint(existing.shape());
+            // Keep the fill's tier (ADR-010).
+            let recoloured = paint(existing.shape()).with_placement(existing.placement);
             if (existing.color, existing.opacity, existing.gradient)
                 == (color, opacity, recoloured.gradient)
             {
@@ -993,8 +1007,9 @@ impl Session {
         let drawing = drawing.unwrap_or(&empty);
         match document::drawing::fill_region(drawing, pos, self.tools.fill_gap, canvas) {
             Ok(shape) => {
-                let fill = paint(shape);
-                let _ = self.execute(Box::new(AddFill::new(layer, frame, fill)));
+                let fill = paint(shape).with_placement(order.placement());
+                let command = AddFill::new(layer, frame, fill).behind(order.at_bottom());
+                let _ = self.execute(Box::new(command));
             }
             Err(err) => {
                 let mut text = err.to_string();
@@ -1275,9 +1290,10 @@ impl Session {
                     builder.finish()
                 };
                 if let Some(stroke) = stroke {
-                    let behind = self.tools.brush_behind;
+                    let order = self.tools.brush_order;
+                    let stroke = stroke.with_placement(order.placement());
                     let _ = self.execute(Box::new(
-                        AddStroke::new(layer, frame, stroke).behind(behind),
+                        AddStroke::new(layer, frame, stroke).behind(order.at_bottom()),
                     ));
                 }
             }
@@ -1297,12 +1313,15 @@ impl Session {
                     FillId::new(),
                     StrokeId::new(),
                 );
+                let at_bottom = self.tools.shape_style.order.at_bottom();
                 let mut commands: Vec<Box<dyn editor::Command>> = Vec::new();
                 if let Some(fill) = fill {
-                    commands.push(Box::new(AddFill::new(layer, frame, fill)));
+                    commands.push(Box::new(AddFill::new(layer, frame, fill).behind(at_bottom)));
                 }
                 if let Some(stroke) = stroke {
-                    commands.push(Box::new(AddStroke::new(layer, frame, stroke)));
+                    commands.push(Box::new(
+                        AddStroke::new(layer, frame, stroke).behind(at_bottom),
+                    ));
                 }
                 if !commands.is_empty() {
                     let _ = self.execute(Box::new(Batch::new(kind.label(), commands)));
@@ -1372,6 +1391,7 @@ fn vector_at(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use document::drawing::Placement;
     use editor::commands::SetLayerLocked;
 
     fn strokes_at(s: &Session, frame: u32) -> usize {
@@ -1426,6 +1446,142 @@ mod tests {
         assert!(s.pointer_down(Vec2::new(5.0, 5.0), 1.0));
         s.pointer_up();
         assert_eq!(s.active_drawing().unwrap().fills().len(), 1);
+    }
+
+    fn rectangle(s: &mut Session, from: Vec2, to: Vec2) {
+        s.state.tool = Tool::Rectangle;
+        assert!(s.pointer_down(from, 1.0));
+        s.pointer_move(to);
+        s.pointer_up();
+    }
+
+    fn painted(s: &Session) -> Vec<ItemId> {
+        s.active_drawing().unwrap().all_items()
+    }
+
+    #[test]
+    fn front_brush_stroke_stays_above_a_later_rectangle() {
+        let mut s = Session::new();
+        s.state.tool = Tool::Brush;
+        s.tools.brush_order = PaintOrder::InFront;
+        draw(&mut s, Vec2::new(0.0, 50.0), Vec2::new(100.0, 50.0));
+        let front = s.active_drawing().unwrap().strokes()[0].clone();
+        assert_eq!(front.placement, Placement::Front);
+
+        // A normal rectangle drawn later, right over the stroke.
+        rectangle(&mut s, Vec2::new(20.0, 20.0), Vec2::new(80.0, 80.0));
+        let d = s.active_drawing().unwrap();
+        let (fill, outline) = (d.fills()[0].id, d.strokes()[1].id);
+        assert_eq!(
+            painted(&s),
+            vec![
+                ItemId::Fill(fill),
+                ItemId::Stroke(outline),
+                ItemId::Stroke(front.id)
+            ]
+        );
+        // Clicking where they overlap picks the front stroke.
+        assert_eq!(
+            s.item_under(Vec2::new(50.0, 50.0), 1.0),
+            Some(ItemId::Stroke(front.id))
+        );
+
+        // An in-front rectangle goes into the front tier too: its fill above
+        // the normal rectangle but, as fills sit under strokes within a tier,
+        // under the front brush stroke; its outline on top.
+        s.tools.shape_style.order = PaintOrder::InFront;
+        rectangle(&mut s, Vec2::new(30.0, 30.0), Vec2::new(70.0, 70.0));
+        let d = s.active_drawing().unwrap();
+        let (front_fill, front_outline) = (&d.fills()[1], &d.strokes()[2]);
+        assert_eq!(front_fill.placement, Placement::Front);
+        assert_eq!(
+            painted(&s),
+            vec![
+                ItemId::Fill(fill),
+                ItemId::Stroke(outline),
+                ItemId::Fill(front_fill.id),
+                ItemId::Stroke(front.id),
+                ItemId::Stroke(front_outline.id)
+            ]
+        );
+        assert_eq!(
+            s.item_under(Vec2::new(40.0, 40.0), 1.0),
+            Some(ItemId::Fill(front_fill.id))
+        );
+        // Undo takes the whole in-front rectangle back in one step.
+        s.undo();
+        assert_eq!(painted(&s).len(), 3);
+    }
+
+    #[test]
+    fn behind_rectangle_sits_under_existing_strokes() {
+        let mut s = Session::new();
+        s.state.tool = Tool::Brush;
+        draw(&mut s, Vec2::new(0.0, 50.0), Vec2::new(100.0, 50.0));
+        let line = s.active_drawing().unwrap().strokes()[0].id;
+        s.tools.shape_style.order = PaintOrder::Behind;
+        // The live preview already shows it underneath.
+        s.state.tool = Tool::Rectangle;
+        assert!(s.pointer_down(Vec2::new(20.0, 20.0), 1.0));
+        s.pointer_move(Vec2::new(80.0, 80.0));
+        assert_eq!(s.tools.preview_order(), PaintOrder::Behind);
+        let (_, fill, outline) = s.tools.shape_preview().unwrap();
+        let preview = crate::paint_order::with_preview(
+            s.active_drawing().unwrap(),
+            fill,
+            outline,
+            s.tools.preview_order(),
+        );
+        assert_eq!(preview.all_items().last(), Some(&ItemId::Stroke(line)));
+        s.pointer_up();
+        let d = s.active_drawing().unwrap();
+        assert_eq!(
+            painted(&s),
+            vec![
+                ItemId::Fill(d.fills()[0].id),
+                ItemId::Stroke(d.strokes()[0].id),
+                ItemId::Stroke(line)
+            ]
+        );
+        assert!(d.fills()[0].placement == Placement::Normal);
+        // The existing line is still what a click on it finds.
+        assert_eq!(
+            s.item_under(Vec2::new(50.0, 50.0), 1.0),
+            Some(ItemId::Stroke(line))
+        );
+    }
+
+    #[test]
+    fn bucket_keeps_the_tier_and_can_fill_in_front() {
+        let mut s = Session::new();
+        s.tools.shape_style.fill = false;
+        s.tools.shape_style.order = PaintOrder::InFront;
+        rectangle(&mut s, Vec2::new(10.0, 10.0), Vec2::new(90.0, 90.0));
+        let layer = s.state.active_layer.unwrap();
+        s.tools.fill_order = PaintOrder::InFront;
+        s.fill_at(layer, FrameIndex(0), Vec2::new(50.0, 50.0), 1.0);
+        let fill = s.active_drawing().unwrap().fills()[0].clone();
+        assert_eq!(fill.placement, Placement::Front);
+        // Recolouring with the bucket in Normal mode keeps the fill in front.
+        s.tools.fill_order = PaintOrder::Normal;
+        s.state.brush.color = Rgba::new(0.2, 0.6, 0.2, 1.0);
+        s.fill_at(layer, FrameIndex(0), Vec2::new(50.0, 50.0), 1.0);
+        let recoloured = &s.active_drawing().unwrap().fills()[0];
+        assert_eq!(recoloured.color, s.state.brush.color);
+        assert_eq!(recoloured.placement, Placement::Front);
+        // Partly erasing the in-front outline keeps the pieces in front.
+        let outline = s.active_drawing().unwrap().strokes()[0].id;
+        s.state.tool = Tool::Eraser;
+        s.tools.eraser_mode = EraserMode::Partial;
+        draw(&mut s, Vec2::new(5.0, 50.0), Vec2::new(15.0, 50.0));
+        let d = s.active_drawing().unwrap();
+        assert!(d.stroke(outline).is_none(), "outline was cut");
+        assert!(!d.strokes().is_empty());
+        assert!(
+            d.strokes()
+                .iter()
+                .all(|st| st.placement == Placement::Front)
+        );
     }
 
     #[test]

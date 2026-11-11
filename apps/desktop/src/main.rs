@@ -11,7 +11,7 @@ mod shell;
 use document::animation_core::Rgba;
 use document::animation_core::Vec2;
 use document::animation_core::glam::Mat4;
-use document::drawing::{Fill, ItemId, Stroke};
+use document::drawing::{Fill, ItemId, PaintItem, Stroke};
 use document::scene::BlendMode;
 use renderer::{
     CanvasFrame, CanvasRenderer, DrawListBuilder, Gpu, Mesh, OffscreenRenderer, StrokeDraw,
@@ -404,15 +404,17 @@ fn collect_draws(
 
     for skin in session.onion.collect(doc, frame) {
         let transform = transform_matrix(&skin.transform);
-        for fill in skin.drawing.fills() {
-            draws.fill(fill, skin.color.with_opacity(fill.opacity), None, transform);
-        }
-        for stroke in skin.drawing.strokes() {
-            draws.stroke(
-                stroke,
-                skin.color.with_opacity(stroke.style.opacity),
-                transform,
-            );
+        for item in skin.drawing.paint_order() {
+            match item {
+                PaintItem::Fill(fill) => {
+                    draws.fill(fill, skin.color.with_opacity(fill.opacity), None, transform);
+                }
+                PaintItem::Stroke(stroke) => draws.stroke(
+                    stroke,
+                    skin.color.with_opacity(stroke.style.opacity),
+                    transform,
+                ),
+            }
         }
     }
 
@@ -423,6 +425,7 @@ fn collect_draws(
         .preview()
         .map(|(layer, stroke)| (layer, None, Some(stroke)))
         .or_else(|| session.tools.shape_preview());
+    let preview_order = session.tools.preview_order();
     // Selected items being dragged are drawn moved by the drag offset, or
     // scaled/rotated copies while the transform tool drags (copies, so brush
     // widths match what release commits).
@@ -445,40 +448,50 @@ fn collect_draws(
                 transform
             }
         };
-        for fill in layer.drawing.fills() {
-            let item = ItemId::Fill(fill.id);
-            if let Some(t) = reshaping(item) {
-                let fill = fill.transformed(&t);
-                draws.fill(
-                    &fill,
-                    fill_color(&fill, layer.opacity),
-                    fill_gradient(&fill, layer.opacity),
-                    transform,
-                );
-            } else {
-                draws.fill(
-                    fill,
-                    fill_color(fill, layer.opacity),
-                    fill_gradient(fill, layer.opacity),
-                    place(item),
-                );
-            }
-        }
-        for stroke in layer.drawing.strokes() {
-            let item = ItemId::Stroke(stroke.id);
-            if let Some(t) = reshaping(item) {
-                let stroke = stroke.transformed(&t);
-                draws.stroke(&stroke, stroke_color(&stroke, layer.opacity), transform);
-            } else if !erasing.contains(&stroke.id) {
-                draws.stroke(stroke, stroke_color(stroke, layer.opacity), place(item));
-            } else {
-                for piece in session.tools.erase_preview(stroke.id) {
-                    draws.stroke(piece, stroke_color(piece, layer.opacity), transform);
+        // The stroke or shape being drawn on this layer is drawn where it
+        // will land in the paint order (ADR-010).
+        let with_preview =
+            preview
+                .take_if(|(id, ..)| *id == layer.layer_id)
+                .map(|(_, fill, stroke)| {
+                    ui::paint_order::with_preview(layer.drawing, fill, stroke, preview_order)
+                });
+        let drawing = with_preview.as_ref().unwrap_or(layer.drawing);
+        for painted in drawing.paint_order() {
+            match painted {
+                PaintItem::Fill(fill) => {
+                    let item = ItemId::Fill(fill.id);
+                    if let Some(t) = reshaping(item) {
+                        let fill = fill.transformed(&t);
+                        draws.fill(
+                            &fill,
+                            fill_color(&fill, layer.opacity),
+                            fill_gradient(&fill, layer.opacity),
+                            transform,
+                        );
+                    } else {
+                        draws.fill(
+                            fill,
+                            fill_color(fill, layer.opacity),
+                            fill_gradient(fill, layer.opacity),
+                            place(item),
+                        );
+                    }
+                }
+                PaintItem::Stroke(stroke) => {
+                    let item = ItemId::Stroke(stroke.id);
+                    if let Some(t) = reshaping(item) {
+                        let stroke = stroke.transformed(&t);
+                        draws.stroke(&stroke, stroke_color(&stroke, layer.opacity), transform);
+                    } else if !erasing.contains(&stroke.id) {
+                        draws.stroke(stroke, stroke_color(stroke, layer.opacity), place(item));
+                    } else {
+                        for piece in session.tools.erase_preview(stroke.id) {
+                            draws.stroke(piece, stroke_color(piece, layer.opacity), transform);
+                        }
+                    }
                 }
             }
-        }
-        if let Some((_, fill, stroke)) = preview.take_if(|(id, ..)| *id == layer.layer_id) {
-            draw_preview(&mut draws, fill, stroke, layer.opacity, transform);
         }
     }
     // The active layer shows nothing yet at this frame: draw the preview on top.
