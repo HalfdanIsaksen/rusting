@@ -885,6 +885,92 @@ mod tests {
         assert!(shape.area() > 85.0 * 85.0);
     }
 
+    /// A box (100..300 x 200..350, width 4) whose top edge opens between
+    /// `left` and `right` into a tube whose walls run up to `top_left` and
+    /// `top_right`, optionally closed by a cap across the top.
+    fn box_with_tube(
+        left: f32,
+        right: f32,
+        top_left: f32,
+        top_right: f32,
+        cap: bool,
+    ) -> VectorDrawing {
+        let mut strokes = vec![
+            polyline(
+                &[
+                    (left, 200.0),
+                    (100.0, 200.0),
+                    (100.0, 350.0),
+                    (300.0, 350.0),
+                    (300.0, 200.0),
+                    (right, 200.0),
+                ],
+                4.0,
+            ),
+            // Walls start inside the box, crossing its outline.
+            polyline(&[(left, 205.0), (top_left, 60.0)], 4.0),
+            polyline(&[(right, 205.0), (top_right, 60.0)], 4.0),
+        ];
+        if cap {
+            strokes.push(polyline(&[(top_left, 60.0), (top_right, 60.0)], 4.0));
+        }
+        drawing(strokes)
+    }
+
+    #[test]
+    fn open_tube_is_not_closed_across_its_mouth() {
+        // A straight tube 40 wide, open at the top: wider than any gap
+        // setting closes, so the fill leaks out.
+        let open = box_with_tube(180.0, 220.0, 180.0, 220.0, false);
+        let click = Vec2::new(200.0, 300.0);
+        for gap in GapClosing::ALL {
+            assert_eq!(
+                fill_region(&open, click, gap, CANVAS),
+                Err(FillError::NotClosed)
+            );
+        }
+        // Capped, it fills the box and the whole tube, and nothing beside it.
+        let capped = box_with_tube(180.0, 220.0, 180.0, 220.0, true);
+        for gap in GapClosing::ALL {
+            let shape = fill_region(&capped, click, gap, CANVAS).unwrap();
+            assert_inside(&shape, Vec2::new(95.0, 55.0), Vec2::new(305.0, 355.0));
+            for p in [
+                Vec2::new(110.0, 340.0),
+                Vec2::new(200.0, 120.0),
+                Vec2::new(200.0, 66.0),
+            ] {
+                assert!(shape.contains(p), "{gap:?}: {p}");
+            }
+            assert!(!shape.contains(Vec2::new(150.0, 120.0)), "{gap:?}");
+            assert!(!shape.contains(Vec2::new(250.0, 120.0)), "{gap:?}");
+        }
+    }
+
+    #[test]
+    fn gap_closing_seals_a_flared_tube_only_at_its_narrow_neck() {
+        // The walls are 16 apart at the box (12 between the lines) and
+        // flare out to 120 apart. Medium closes the neck; the fill must not
+        // run up the flare or bridge its wide open end.
+        let flared = box_with_tube(192.0, 208.0, 140.0, 260.0, false);
+        let click = Vec2::new(200.0, 300.0);
+        let shape = fill_region(&flared, click, GapClosing::Medium, CANVAS).unwrap();
+        // It may round over the neck a little, but stays at the box.
+        assert_inside(&shape, Vec2::new(95.0, 185.0), Vec2::new(305.0, 355.0));
+        assert!(shape.contains(Vec2::new(110.0, 340.0)));
+        for p in [
+            Vec2::new(200.0, 150.0),
+            Vec2::new(200.0, 70.0),
+            Vec2::new(140.0, 120.0),
+        ] {
+            assert!(!shape.contains(p), "{p}");
+        }
+        // Without gap closing it leaks out through the neck.
+        assert_eq!(
+            fill_region(&flared, click, GapClosing::None, CANVAS),
+            Err(FillError::NotClosed)
+        );
+    }
+
     #[test]
     fn click_outside_shape_or_on_line_or_canvas_fails() {
         let d = square_with_gap(0.0);
