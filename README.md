@@ -1,6 +1,8 @@
 # Rusting
 
-Open-source 2D animation software written in Rust. It is vector-first and frame-by-frame, with a GPU-accelerated canvas (wgpu) and our own animation, timeline, drawing, and document engines.
+Free, open-source 2D animation software for macOS, Windows and Linux. Draw vector frames and animate them frame by frame on a timeline with layers and onion skin, then export MP4, PNG or sprite sheets. Written in Rust, with a GPU-accelerated canvas (wgpu) and our own animation, timeline, drawing, and document engines.
+
+Website, downloads and docs: [rusting-animation.org](https://rusting-animation.org)
 
 ## Install
 
