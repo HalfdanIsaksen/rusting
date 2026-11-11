@@ -1,6 +1,6 @@
 [package]
 name = "export"
-description = "Encoding exported frames: PNG/JPEG images and H.264 MP4 video. GPU-free."
+description = "Encoding exported frames: PNG/JPEG images, H.264 MP4 video and animated GIF. GPU-free."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
 openh264 = "0.9"
 mp4 = "0.14"
 thiserror.workspace = true
