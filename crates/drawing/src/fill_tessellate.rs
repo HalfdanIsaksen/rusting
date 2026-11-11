@@ -160,6 +160,12 @@ fn strictly_inside_triangle(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> bool {
     (b - a).perp_dot(p - a) > 0.0 && (c - b).perp_dot(p - b) > 0.0 && (a - c).perp_dot(p - c) > 0.0
 }
 
+fn inside_or_on_triangle(p: Vec2, a: Vec2, b: Vec2, c: Vec2) -> bool {
+    (b - a).perp_dot(p - a) >= 0.0
+        && (c - b).perp_dot(p - b) >= 0.0
+        && (a - c).perp_dot(p - c) >= 0.0
+}
+
 /// Ear clipping of a positively oriented polygon (bridges allowed). Appends
 /// the polygon's points as vertices and its triangles to `mesh`.
 fn ear_clip(polygon: &[Vec2], mesh: &mut Mesh) {
@@ -181,17 +187,24 @@ fn ear_clip(polygon: &[Vec2], mesh: &mut Mesh) {
         let degenerate = cross.abs() <= f32::EPSILON * (b - a).length() * (c - b).length()
             || a.distance(b) <= MERGE_EPSILON
             || b.distance(c) <= MERGE_EPSILON;
+        // A vertex on the triangle's edge blocks the ear too when the
+        // boundary turns into the triangle there (a reflex or straight
+        // vertex): traced fill outlines lie on a half-cell grid, so such
+        // touching vertices are common, and clipping past them makes
+        // triangles that overlap or reach across erased channels.
         let is_ear = !degenerate
             && cross > 0.0
-            && !ring.iter().any(|&j| {
+            && !ring.iter().enumerate().any(|(n, &j)| {
                 let p = polygon[j];
-                j != ia
-                    && j != ib
-                    && j != ic
-                    && p != a
-                    && p != b
-                    && p != c
-                    && strictly_inside_triangle(p, a, b, c)
+                if j == ia || j == ib || j == ic || p == a || p == b || p == c {
+                    return false;
+                }
+                if strictly_inside_triangle(p, a, b, c) {
+                    return true;
+                }
+                let prev = polygon[ring[(n + k - 1) % k]];
+                let next = polygon[ring[(n + 1) % k]];
+                (p - prev).perp_dot(next - p) <= 0.0 && inside_or_on_triangle(p, a, b, c)
             });
         if is_ear || (degenerate && !is_spike(a, b, c)) || misses >= k {
             // A forced removal (no ear found: bad input) may be reflex; it
