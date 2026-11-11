@@ -25,6 +25,10 @@ const SWATCHES: [[f32; 3]; 8] = [
 const GRADIENT_HINT: &str = "Click where the gradient starts (the brush colour), then where it \
                              ends (this colour). The area under the first click is filled. \
                              Esc cancels.";
+const EYEDROPPER_HINT: &str = "Click the canvas to pick the colour of the topmost stroke or \
+                               fill on the active layer (empty canvas picks the background). \
+                               Sets the brush and paint bucket colour. Alt-click with the \
+                               brush, paint bucket or a shape tool picks without switching.";
 const PARTIAL_HINT: &str =
     "Cuts away the part of each stroke it passes over on the active layer and frame.";
 const STROKE_HINT: &str = "Removes every stroke it touches on the active layer and frame.";
@@ -74,7 +78,11 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
     // Leave room for the value box beside each slider.
     ui.spacing_mut().slider_width = (ui.available_width() - 60.0).max(60.0);
     ui.horizontal(|ui| active_tool_label(ui, session));
-    if let Some(reason) = session.draw_block_reason() {
+    // The eyedropper only reads the canvas, so a locked layer is no problem.
+    if let Some(reason) = session
+        .draw_block_reason()
+        .filter(|_| session.state.tool != Tool::Eyedropper)
+    {
         ui.colored_label(ui.visuals().warn_fg_color, format!("⚠ {reason}"));
     }
     ui.separator();
@@ -129,6 +137,11 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
             paint_settings(ui, session);
         }
         Tool::Rectangle | Tool::Ellipse => shape_settings(ui, session),
+        Tool::Eyedropper => {
+            ui.weak(EYEDROPPER_HINT);
+            ui.separator();
+            paint_settings(ui, session);
+        }
         Tool::Eraser => {
             eraser_size(ui, session);
             ui.separator();
