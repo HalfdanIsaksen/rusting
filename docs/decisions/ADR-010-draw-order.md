@@ -1,6 +1,6 @@
 # ADR-010: Draw order (Behind / Normal / In front)
 
-**Status:** Proposed (draw-order branch)
+**Status:** Proposed (draw-order branch). *Behind* is amended by ADR-011: it now uses back levels, so it also goes under existing fills.
 
 ## Context
 Users want to draw shapes and brush strokes **behind** or **in front of** what is already on the canvas, and anything set to **in front** must stay on top of everything else in the frame, including what is drawn later.

@@ -86,6 +86,17 @@ fn paint_order(ui: &mut egui::Ui, order: &mut PaintOrder) {
     });
 }
 
+const MERGE_HINT: &str = "A new stroke or fill that touches fills of the same colour and \
+                          opacity becomes one fill with them, so they select, move and erase \
+                          as one shape. Existing strokes are never merged, so line art keeps \
+                          working with the paint bucket.";
+
+/// The "Merge same colour" checkbox (ADR-012).
+fn merge_same_colour(ui: &mut egui::Ui, session: &mut Session) {
+    ui.checkbox(&mut session.tools.merge_same_colour, "Merge same colour")
+        .on_hover_text(MERGE_HINT);
+}
+
 /// Draws the tool settings panel.
 pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
     // Leave room for the value box beside each slider.
@@ -124,6 +135,7 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
             brush_smoothing(ui, session);
             ui.separator();
             paint_order(ui, &mut session.tools.brush_order);
+            merge_same_colour(ui, session);
             ui.separator();
             paint_settings(ui, session);
             ui.separator();
@@ -144,6 +156,7 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
             gap_choices(ui, session);
             ui.separator();
             paint_order(ui, &mut session.tools.fill_order);
+            merge_same_colour(ui, session);
             ui.separator();
             paint_settings(ui, session);
         }
@@ -247,6 +260,7 @@ fn shape_settings(ui: &mut egui::Ui, session: &mut Session) {
     });
     ui.separator();
     paint_order(ui, &mut style.order);
+    merge_same_colour(ui, session);
     ui.separator();
     ui.weak(SHAPE_HINT);
 }

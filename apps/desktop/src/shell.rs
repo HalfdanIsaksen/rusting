@@ -166,46 +166,69 @@ fn handle_tool_input(
     let to_canvas =
         |p: egui::Pos2| viewport.screen_to_canvas(Vec2::new(p.x - rect.min.x, p.y - rect.min.y));
     let typing = ui.ctx().egui_wants_keyboard_input();
-    let (pressed, released, down, origin, space, shift, alt, moves) = ui.input(|i| {
-        let moves: Vec<egui::Pos2> = i
-            .events
-            .iter()
-            .filter_map(|e| match e {
-                egui::Event::PointerMoved(p) => Some(*p),
-                _ => None,
-            })
-            .collect();
+    let (down, space, shift, alt, steps) = ui.input(|i| {
         (
-            i.pointer.primary_pressed(),
-            i.pointer.primary_released(),
             i.pointer.primary_down(),
-            i.pointer.press_origin(),
             i.key_down(egui::Key::Space) && !typing,
             i.modifiers.shift,
             i.modifiers.alt,
-            moves,
+            pointer_steps(&i.events),
         )
     });
     session.tools.set_modifiers(shift, alt);
 
-    if pressed
-        && response.hovered()
-        && !space
-        && !panning
-        && !session.tools.is_active()
-        && let Some(origin) = origin
-    {
-        session.pointer_down_with(to_canvas(origin), viewport.zoom as f32, shift);
+    // One UI frame can hold many pointer events, more so when frames are
+    // slow (for example while the preview window plays). Replay them in
+    // order, so moves from before the press or after the release never
+    // become part of the gesture.
+    let can_start = response.hovered() && !space && !panning;
+    for step in steps {
+        match step {
+            PointerStep::Press(p) if can_start && !session.tools.is_active() => {
+                session.pointer_down_with(to_canvas(p), viewport.zoom as f32, shift);
+            }
+            PointerStep::Move(p) if session.tools.is_active() => {
+                session.pointer_move(to_canvas(p));
+            }
+            PointerStep::Release if session.tools.is_active() => session.pointer_up(),
+            _ => {}
+        }
     }
     if session.tools.is_active() {
-        for p in moves {
-            session.pointer_move(to_canvas(p));
-        }
-        if released || !down {
+        if !down {
             session.pointer_up();
         }
         ui.ctx().request_repaint();
     }
+}
+
+/// A primary-button pointer event, in the order it happened.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PointerStep {
+    Press(egui::Pos2),
+    Move(egui::Pos2),
+    Release,
+}
+
+/// The frame's pointer moves and primary presses and releases, in order.
+fn pointer_steps(events: &[egui::Event]) -> Vec<PointerStep> {
+    events
+        .iter()
+        .filter_map(|event| match *event {
+            egui::Event::PointerMoved(p) => Some(PointerStep::Move(p)),
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                ..
+            } => Some(if pressed {
+                PointerStep::Press(pos)
+            } else {
+                PointerStep::Release
+            }),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Brush/eraser cursor and the "can't draw here" banner.
@@ -586,4 +609,170 @@ fn handle_view_input(
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
     }
     panning
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use document::drawing::Stroke;
+
+    /// Drives the shell's UI without a window or GPU.
+    struct Harness {
+        ctx: egui::Context,
+        shell: Shell,
+        time: f64,
+    }
+
+    impl Harness {
+        fn new() -> Self {
+            let mut shell = Shell::new(Session::new());
+            shell.session.state.tool = Tool::Brush;
+            shell.session.tools.brush_smoothing = 0.0;
+            let mut h = Self {
+                ctx: egui::Context::default(),
+                shell,
+                time: 0.0,
+            };
+            // Lay out the panels and fit the viewport.
+            h.frame(vec![]);
+            h.frame(vec![]);
+            h
+        }
+
+        fn frame(&mut self, events: Vec<egui::Event>) {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1280.0, 800.0),
+                )),
+                time: Some(self.time),
+                events,
+                ..Default::default()
+            };
+            self.time += 1.0 / 60.0;
+            let shell = &mut self.shell;
+            self.ctx
+                .run_ui(input, |ui| shell.ui(ui, egui::TextureId::default(), None))
+                .drop_without_applying_deltas();
+        }
+
+        fn play_preview(&mut self) {
+            self.shell.session.preview.set_open(true);
+            self.frame(vec![]);
+            self.shell.session.toggle_preview_playback();
+            assert!(self.shell.session.preview.is_playing());
+        }
+
+        /// A screen-space offset in canvas units.
+        fn canvas_delta(&self, d: egui::Vec2) -> Vec2 {
+            let viewport = self.shell.viewport.expect("viewport after first frame");
+            viewport.screen_to_canvas(Vec2::new(d.x, d.y)) - viewport.screen_to_canvas(Vec2::ZERO)
+        }
+
+        fn strokes(&self) -> Vec<Stroke> {
+            let s = &self.shell.session;
+            let layer = s.state.active_layer.expect("a layer");
+            s.document
+                .drawing_at(layer, s.current_frame())
+                .and_then(|id| s.document.drawing(id))
+                .and_then(|d| d.as_vector())
+                .map(|d| d.strokes().to_vec())
+                .unwrap_or_default()
+        }
+    }
+
+    fn press(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        }
+    }
+
+    #[test]
+    fn pointer_steps_keep_event_order() {
+        let (a, b) = (egui::pos2(1.0, 2.0), egui::pos2(3.0, 4.0));
+        let events = [
+            egui::Event::PointerMoved(a),
+            press(a, true),
+            egui::Event::PointerMoved(b),
+            egui::Event::PointerButton {
+                pos: b,
+                button: egui::PointerButton::Secondary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            },
+            press(b, false),
+        ];
+        assert_eq!(
+            pointer_steps(&events),
+            vec![
+                PointerStep::Move(a),
+                PointerStep::Press(a),
+                PointerStep::Move(b),
+                PointerStep::Release,
+            ]
+        );
+    }
+
+    /// Slow frames (the preview window playing) batch pointer events: the
+    /// approach to the press and the move away after the release land in
+    /// the same frame as the press and release. Only what happened while
+    /// the button was down may become stroke points.
+    #[test]
+    fn brush_ignores_moves_before_press_and_after_release_in_one_frame() {
+        for preview in [false, true] {
+            let mut h = Harness::new();
+            if preview {
+                h.play_preview();
+            }
+            let start = egui::pos2(600.0, 300.0);
+            let end = egui::pos2(700.0, 350.0);
+            h.frame(vec![
+                egui::Event::PointerMoved(egui::pos2(150.0, 700.0)),
+                egui::Event::PointerMoved(start),
+                press(start, true),
+                egui::Event::PointerMoved(egui::pos2(650.0, 325.0)),
+            ]);
+            h.frame(vec![
+                egui::Event::PointerMoved(end),
+                press(end, false),
+                egui::Event::PointerMoved(egui::pos2(1100.0, 80.0)),
+            ]);
+            if preview {
+                assert!(h.shell.session.preview.is_playing());
+            }
+
+            let strokes = h.strokes();
+            assert_eq!(strokes.len(), 1, "preview: {preview}");
+            let points: Vec<Vec2> = strokes[0].points.iter().map(|p| p.pos).collect();
+            // The stroke runs exactly from the press to the release.
+            let (a, b) = (points[0], points[points.len() - 1]);
+            let drag = h.canvas_delta(end - start);
+            assert!((b - a - drag).length() < 1e-2, "preview: {preview}");
+            // Every point lies on the straight drag from start to end.
+            for p in &points {
+                let t = (*p - a).dot(b - a) / (b - a).length_squared();
+                assert!((-1e-3..=1.0 + 1e-3).contains(&t), "{p} off the drag");
+                assert!((a.lerp(b, t) - *p).length() < 1e-2, "{p} off the drag");
+            }
+        }
+    }
+
+    #[test]
+    fn click_in_one_frame_still_draws_a_dot() {
+        let mut h = Harness::new();
+        h.play_preview();
+        let at = egui::pos2(640.0, 320.0);
+        h.frame(vec![
+            egui::Event::PointerMoved(at),
+            press(at, true),
+            press(at, false),
+        ]);
+        let strokes = h.strokes();
+        assert_eq!(strokes.len(), 1);
+        assert_eq!(strokes[0].points.len(), 1);
+        assert!(!h.shell.session.tools.is_active());
+    }
 }

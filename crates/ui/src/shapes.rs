@@ -7,7 +7,9 @@
 //! like hand-drawn art.
 
 use document::animation_core::{FillId, Rgba, StrokeId, Vec2};
-use document::drawing::{BrushStyle, Fill, FillShape, Gradient, Stroke, StrokePoint};
+use document::drawing::{
+    BrushStyle, Fill, FillShape, Gradient, Stroke, StrokePoint, VectorDrawing,
+};
 
 use crate::paint_order::PaintOrder;
 
@@ -151,15 +153,17 @@ pub fn outline(kind: ShapeKind, (min, max): (Vec2, Vec2)) -> Vec<Vec2> {
 
 /// The fill and outline stroke for a shape in the box `bounds`, with the
 /// given IDs (fixed ones for a live preview, fresh ones to commit), both in
-/// the tier `style.order` picks. `None`
-/// for a part that is switched off, or for both when the box is too small.
+/// the tier `style.order` picks for `drawing`, the frame's drawing they go
+/// into (ADR-011). `None` for a part that is switched off, or for both when
+/// the box is too small.
 pub fn shape_items(
     kind: ShapeKind,
     bounds: (Vec2, Vec2),
     style: &ShapeStyle,
-    fill_id: FillId,
-    stroke_id: StrokeId,
+    (fill_id, stroke_id): (FillId, StrokeId),
+    drawing: Option<&VectorDrawing>,
 ) -> (Option<Fill>, Option<Stroke>) {
+    let placement = style.order.placement(drawing);
     let size = bounds.1 - bounds.0;
     if !(size.x >= MIN_SHAPE_SIZE || size.y >= MIN_SHAPE_SIZE) || !size.is_finite() {
         return (None, None);
@@ -182,8 +186,7 @@ pub fn shape_items(
                 end_color: style.gradient_color,
             }
         });
-        fill.with_gradient(gradient)
-            .with_placement(style.order.placement())
+        fill.with_gradient(gradient).with_placement(placement)
     });
     let stroke = style.stroke.then(|| {
         let mut points: Vec<StrokePoint> = polygon.iter().copied().map(StrokePoint::new).collect();
@@ -196,7 +199,7 @@ pub fn shape_items(
                 width: style.stroke_width.max(0.1),
                 opacity: 1.0,
             },
-            placement: style.order.placement(),
+            placement,
         }
     });
     (fill, stroke)
@@ -248,8 +251,8 @@ mod tests {
             ShapeKind::Rectangle,
             bounds,
             &style,
-            FillId::new(),
-            StrokeId::new(),
+            (FillId::new(), StrokeId::new()),
+            None,
         );
         let g = fill.unwrap().gradient.unwrap();
         assert_eq!(g.start, Vec2::new(30.0, 20.0));
@@ -259,8 +262,8 @@ mod tests {
             ShapeKind::Rectangle,
             bounds,
             &ShapeStyle::default(),
-            FillId::new(),
-            StrokeId::new(),
+            (FillId::new(), StrokeId::new()),
+            None,
         );
         assert!(solid.0.unwrap().gradient.is_none());
     }
@@ -273,8 +276,8 @@ mod tests {
             ShapeKind::Ellipse,
             bounds,
             &style,
-            FillId::new(),
-            StrokeId::new(),
+            (FillId::new(), StrokeId::new()),
+            None,
         );
         let stroke = stroke.unwrap();
         assert_eq!(stroke.points.first(), stroke.points.last(), "closed");
@@ -288,8 +291,8 @@ mod tests {
             ShapeKind::Rectangle,
             bounds,
             &no_fill,
-            FillId::new(),
-            StrokeId::new(),
+            (FillId::new(), StrokeId::new()),
+            None,
         );
         assert!(fill.is_none() && stroke.is_some());
 
@@ -298,8 +301,8 @@ mod tests {
             ShapeKind::Rectangle,
             tiny,
             &style,
-            FillId::new(),
-            StrokeId::new(),
+            (FillId::new(), StrokeId::new()),
+            None,
         );
         assert!(fill.is_none() && stroke.is_none());
     }
