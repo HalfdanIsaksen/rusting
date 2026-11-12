@@ -493,4 +493,133 @@ mod tests {
         assert_eq!(pieces.len(), 1);
         assert!(!pieces[0].contains(v(2000.0, 2000.0)));
     }
+
+    /// Triangles of `fill`'s mesh covering `p` (edges included).
+    fn mesh_hits(mesh: &crate::Mesh, p: Vec2) -> usize {
+        mesh.indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .filter(|t| {
+                let [a, b, c] = t.map(|i| Vec2::from(mesh.vertices[i as usize]));
+                (b - a).perp_dot(p - a) >= 0.0
+                    && (c - b).perp_dot(p - b) >= 0.0
+                    && (a - c).perp_dot(p - c) >= 0.0
+            })
+            .count()
+    }
+
+    /// Points every `step` along the segments of `path`.
+    fn along(path: &[Vec2], step: f32) -> Vec<Vec2> {
+        path.windows(2)
+            .flat_map(|w| {
+                let n = (w[0].distance(w[1]) / step).ceil().max(1.0) as usize;
+                (0..=n).map(move |i| w[0].lerp(w[1], i as f32 / n as f32))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_fast_drag_cuts_one_unbroken_channel() {
+        // Widely spaced samples (60 units apart, eraser radius 5): the cut
+        // must be the swept capsules, with no fill left between samples, in
+        // the traced shape and in the rendered mesh.
+        let fill = square();
+        let path = [
+            v(80.0, 120.0),
+            v(140.0, 125.0),
+            v(200.0, 160.0),
+            v(130.0, 185.0),
+            v(110.0, 140.0),
+        ];
+        let mut eraser = FillEraser::new(&fill).unwrap();
+        for pair in path.windows(2) {
+            eraser.erase(pair, 5.0);
+        }
+        let pieces = split(eraser.result());
+        let meshes: Vec<_> = pieces.iter().map(crate::tessellate_fill).collect();
+        for p in along(&path, 0.5) {
+            for perp in [-3.0, 0.0, 3.0] {
+                let q = p + Vec2::new(0.0, perp);
+                assert!(!pieces.iter().any(|f| f.contains(q)), "fill left at {q}");
+                assert!(
+                    meshes.iter().all(|m| mesh_hits(m, q) == 0),
+                    "mesh bridges the cut at {q}"
+                );
+            }
+        }
+        // Next to the cut the fill is still there.
+        assert!(pieces.iter().any(|f| f.contains(v(110.0, 110.0))));
+        assert!(pieces.iter().any(|f| f.contains(v(190.0, 190.0))));
+    }
+
+    #[test]
+    fn scribbled_pieces_tessellate_to_exactly_their_shape() {
+        // Scribbles in and out of a wavy blob, erased again on the pieces,
+        // leave thin necks and notches on the half-cell grid. The mesh must
+        // cover each piece once and nothing outside it: overlapping or
+        // stray triangles show as fill bridging the erased channels. Equal
+        // area and every triangle inside means exactly covered.
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut rand = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 40) as f32 / (1u64 << 24) as f32
+        };
+        let c = v(150.0, 150.0);
+        let blob: Vec<Vec2> = (0..160)
+            .map(|i| {
+                let a = i as f32 / 160.0 * std::f32::consts::TAU;
+                c + Vec2::from_angle(a) * (100.0 + 25.0 * (a * 5.0).sin())
+            })
+            .collect();
+        let blob = Fill::new(
+            FillShape {
+                contours: vec![blob],
+            },
+            Rgba::BLACK,
+            1.0,
+        );
+        for _ in 0..4 {
+            let mut pieces = vec![blob.clone()];
+            for _ in 0..3 {
+                let mut at = c + (v(rand(), rand()) - 0.5) * 260.0;
+                let path: Vec<Vec2> = (0..12)
+                    .map(|_| {
+                        at += (v(rand(), rand()) - 0.5) * 90.0;
+                        at
+                    })
+                    .collect();
+                let radius = 2.0 + rand() * 8.0;
+                pieces = pieces
+                    .iter()
+                    .flat_map(|f| match erase_fill(f, &path, radius) {
+                        FillEraseResult::Unchanged => vec![f.clone()],
+                        other => other.into_replacements().unwrap_or_default(),
+                    })
+                    .collect();
+            }
+            for piece in &pieces {
+                let mesh = crate::tessellate_fill(piece);
+                let mesh_area: f32 = mesh
+                    .indices
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .map(|t| {
+                        let [a, b, c] = t.map(|i| Vec2::from(mesh.vertices[i as usize]));
+                        (b - a).perp_dot(c - a) * 0.5
+                    })
+                    .sum();
+                let want = area(piece);
+                assert!((mesh_area - want).abs() < 0.5, "{mesh_area} vs {want}");
+                for t in mesh.indices.as_chunks::<3>().0 {
+                    let [a, b, c] = t.map(|i| Vec2::from(mesh.vertices[i as usize]));
+                    let centroid = (a + b + c) / 3.0;
+                    assert!(piece.contains(centroid), "triangle outside at {centroid}");
+                }
+            }
+        }
+    }
 }

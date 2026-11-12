@@ -4,11 +4,13 @@ mod canvas;
 mod fill;
 mod frames;
 mod layers;
+mod merge;
 mod select;
 pub use canvas::ResizeCanvas;
 pub use fill::{AddFill, RemoveFill, ReplaceFill};
 pub use frames::{DuplicateFrame, InsertFrames, MoveFrames, RemoveFrames};
 pub use layers::DuplicateLayer;
+pub use merge::MergeSameColour;
 pub use select::{TransformItems, TranslateItems, remove_items};
 
 use crate::{Command, CommandError};
@@ -197,6 +199,8 @@ impl AddStroke {
     /// The stroke's [`Placement`](document::drawing::Placement) tier still
     /// applies: a front stroke added at the bottom stays above every normal
     /// item (ADR-010), and normal fills stay under normal strokes (ADR-007).
+    /// To go under everything in the frame, fills included, give the stroke
+    /// [`VectorDrawing::behind_placement`] (ADR-011).
     pub fn behind(mut self, behind: bool) -> Self {
         self.behind = behind;
         self

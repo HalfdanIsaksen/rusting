@@ -41,7 +41,10 @@ use std::path::{Path, PathBuf};
 ///   (absent means `Normal`, so v5 needs no migration; ADR-010). Older builds
 ///   must reject these files: they would drop the tier and change the
 ///   picture.
-pub const FORMAT_VERSION: u32 = 6;
+/// - 7: `placement` may also be a back level, `{"Back": n}`, for items drawn
+///   "Behind" (ADR-011). v6 needs no migration; older builds must reject
+///   these files.
+pub const FORMAT_VERSION: u32 = 7;
 
 /// File extension for project files (without the dot).
 pub const FILE_EXTENSION: &str = "rusting";
@@ -671,6 +674,38 @@ mod tests {
         let text = to_string(&doc).unwrap();
         assert!(text.contains(&format!("\"format_version\": {FORMAT_VERSION}")));
         assert_eq!(from_str(&text).unwrap(), doc);
+    }
+
+    #[test]
+    fn back_levels_roundtrip_and_v6_files_load_unchanged() {
+        let doc = sample();
+        let mut with_back = doc.clone();
+        {
+            let id = *with_back.drawings().keys().next().unwrap();
+            let v = with_back.drawing_mut(id).unwrap().as_vector_mut().unwrap();
+            let fill = v.fills()[0].id;
+            v.fill_mut(fill).unwrap().placement = Placement::Back(2);
+        }
+        let text = to_string(&with_back).unwrap();
+        assert!(text.contains("\"Back\": 2"), "{text}");
+        let reloaded = from_str(&text).unwrap();
+        assert_eq!(reloaded, with_back);
+        let v = reloaded.drawings().values().next().unwrap();
+        assert_eq!(
+            v.as_vector().unwrap().fills()[0].placement,
+            Placement::Back(2)
+        );
+
+        // A v6 file (front tier, no back levels) loads as it was saved.
+        let v6 = edit_json(&doc, |json| json["format_version"] = 6.into());
+        let (old, report) = from_str_with_report(&v6).unwrap();
+        assert!(report.is_clean(), "{report:?}");
+        assert_eq!(old, doc);
+
+        // A malformed back level is rejected, not a panic.
+        let bad = text.replace("\"Back\": 2", "\"Back\": -1");
+        assert_ne!(bad, text);
+        assert!(matches!(from_str(&bad), Err(FileFormatError::Malformed(_))));
     }
 
     #[test]

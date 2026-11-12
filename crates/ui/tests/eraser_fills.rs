@@ -224,3 +224,56 @@ fn locked_layer_refuses_the_eraser() {
     assert_eq!(fills(&s), before);
     assert_eq!(s.history.undo_len(), undo_len + 1, "only the lock");
 }
+
+#[test]
+fn fast_partial_drag_cuts_a_clean_channel_in_one_step() {
+    let mut s = two_filled_squares();
+    let before_fills = fills(&s);
+    let red = before_fills[0].clone();
+    let undo_len = s.history.undo_len();
+    s.tools.eraser_radius = 6.0;
+    // Few, widely spaced pointer moves: in at the left edge, a zigzag, out
+    // at the bottom.
+    let path = [
+        v(90.0, 130.0),
+        v(150.0, 115.0),
+        v(170.0, 170.0),
+        v(125.0, 160.0),
+        v(140.0, 215.0),
+    ];
+    erase(&mut s, &path);
+    let preview = s.tools.fill_erase_preview(red.id).to_vec();
+    assert!(!preview.is_empty());
+    s.pointer_up();
+    let after = fills(&s);
+    assert_eq!(after[..preview.len()], preview[..], "commits the preview");
+    assert_eq!(s.history.undo_len(), undo_len + 1, "one undo step");
+
+    // Nothing of the red fill is left along the swept path, in the shape or
+    // in its triangles.
+    let pieces = &after[..preview.len()];
+    let meshes: Vec<_> = pieces
+        .iter()
+        .map(document::drawing::tessellate_fill)
+        .collect();
+    for pair in path.windows(2) {
+        for i in 0..=100 {
+            let q = pair[0].lerp(pair[1], i as f32 / 100.0);
+            assert!(!pieces.iter().any(|f| f.contains(q)), "fill left at {q}");
+            for mesh in &meshes {
+                for t in mesh.indices.as_chunks::<3>().0 {
+                    let [a, b, c] = t.map(|i| Vec2::from(mesh.vertices[i as usize]));
+                    let inside = (b - a).perp_dot(q - a) > 0.0
+                        && (c - b).perp_dot(q - b) > 0.0
+                        && (a - c).perp_dot(q - c) > 0.0;
+                    assert!(!inside, "mesh bridges the cut at {q}");
+                }
+            }
+        }
+    }
+    assert!(pieces.iter().any(|f| f.contains(v(110.0, 190.0))));
+    assert!(pieces.iter().any(|f| f.contains(v(190.0, 110.0))));
+
+    s.undo();
+    assert_eq!(fills(&s), before_fills);
+}
