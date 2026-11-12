@@ -1,7 +1,7 @@
 //! The layer column on the left of the timeline: one row per layer with
 //! show/hide, lock, the name (click to select, Cmd/Ctrl+click or
 //! Shift+click to select several, double-click or F2 to rename, drag to
-//! reorder) and the blend mode, and a header with add, duplicate, remove, move up/down and
+//! reorder), the opacity and the blend mode, and a header with add, duplicate, remove, move up/down and
 //! show/lock-all toggles.
 
 use super::timeline::{NUMBERS_HEIGHT, ROW_HEIGHT, RULER_HEIGHT, Row};
@@ -12,14 +12,16 @@ use document::scene::BlendMode;
 use editor::Command;
 use editor::commands::{
     AddLayer, Batch, DuplicateLayer, MoveLayer, RemoveLayer, RenameLayer, SetLayerBlend,
-    SetLayerLocked, SetLayerVisible,
+    SetLayerLocked, SetLayerOpacity, SetLayerVisible,
 };
 use egui::{Pos2, Rect, Sense, Stroke, vec2};
 
 /// Width of the layer column.
-pub(super) const COLUMN_WIDTH: f32 = 270.0;
+pub(super) const COLUMN_WIDTH: f32 = 316.0;
 /// Width of the blend mode dropdown.
 const BLEND_WIDTH: f32 = 90.0;
+/// Width of the opacity field.
+const OPACITY_WIDTH: f32 = 46.0;
 /// Width of the eye and lock cells.
 const TOGGLE_WIDTH: f32 = 22.0;
 /// Width of a header button.
@@ -111,8 +113,20 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
             row_rect.right() - BLEND_WIDTH..=row_rect.right(),
             row_rect.y_range(),
         );
+        let opacity_rect = Rect::from_x_y_ranges(
+            blend_rect.left() - OPACITY_WIDTH..=blend_rect.left(),
+            row_rect.y_range(),
+        );
         let name_rect =
-            Rect::from_x_y_ranges(lock_rect.right()..=blend_rect.left(), row_rect.y_range());
+            Rect::from_x_y_ranges(lock_rect.right()..=opacity_rect.left(), row_rect.y_range());
+
+        if let Some((opacity, gesture)) =
+            opacity_field(ui, opacity_rect, ("layer_opacity", row.id), row.opacity)
+        {
+            commands.push(Box::new(
+                SetLayerOpacity::new(row.id, opacity).in_gesture(gesture),
+            ));
+        }
 
         let mut blend = row.blend;
         ui.scope_builder(
@@ -254,6 +268,7 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
         }
         painter.vline(eye_rect.right(), row_rect.y_range(), line);
         painter.vline(lock_rect.right(), row_rect.y_range(), line);
+        painter.vline(opacity_rect.left(), row_rect.y_range(), line);
         painter.vline(blend_rect.left(), row_rect.y_range(), line);
         painter.hline(rect.x_range(), row_rect.bottom(), line);
     }
@@ -417,6 +432,43 @@ fn header_controls(
         }
         x += BUTTON_WIDTH;
     }
+}
+
+/// An opacity field in `rect` showing `opacity` as a percentage: drag it
+/// sideways or click to type. Returns the new opacity and the gesture it
+/// belongs to (the pass the drag or edit started in), so the caller can make
+/// one undo step per gesture.
+fn opacity_field(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    opacity: f32,
+) -> Option<(f32, u64)> {
+    let gesture_id = ui.scope_id().with(id).with("gesture");
+    let mut percent = (opacity * 100.0).round();
+    let before = percent;
+    let response = ui
+        .put(
+            rect.shrink2(vec2(3.0, 2.0)),
+            egui::DragValue::new(&mut percent)
+                .range(0.0..=100.0)
+                .speed(0.5)
+                .fixed_decimals(0)
+                .suffix("%"),
+        )
+        .on_hover_text("Opacity: drag sideways, or click to type");
+    let mut gesture: Option<u64> = ui.data(|d| d.get_temp(gesture_id));
+    let changed = percent != before;
+    if changed && gesture.is_none() {
+        gesture = Some(ui.ctx().cumulative_pass_nr());
+    }
+    if !(response.dragged() || response.has_focus()) {
+        ui.data_mut(|d| d.remove::<u64>(gesture_id));
+    } else if let Some(g) = gesture {
+        ui.data_mut(|d| d.insert_temp(gesture_id, g));
+    }
+    let gesture = gesture?;
+    changed.then_some((percent / 100.0, gesture))
 }
 
 /// A clickable icon in `rect`. `strong` draws it at full contrast, otherwise

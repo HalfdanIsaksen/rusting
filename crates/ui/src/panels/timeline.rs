@@ -325,6 +325,7 @@ pub(super) struct Row {
     pub(super) visible: bool,
     pub(super) locked: bool,
     pub(super) blend: BlendMode,
+    pub(super) opacity: f32,
 }
 
 fn rows(doc: &Document) -> Vec<Row> {
@@ -337,6 +338,7 @@ fn rows(doc: &Document) -> Vec<Row> {
             visible: l.visible,
             locked: l.locked,
             blend: l.blend,
+            opacity: l.opacity,
         })
         .collect()
 }

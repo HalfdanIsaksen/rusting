@@ -2,6 +2,7 @@
 
 use animation_core::FrameIndex;
 use document::Document;
+use std::any::Any;
 use std::collections::VecDeque;
 use std::fmt;
 
@@ -46,13 +47,22 @@ pub enum CommandError {
 ///
 /// `apply` and `undo` must be exact inverses: applying then undoing a command
 /// leaves the document equal to how it was.
-pub trait Command: fmt::Debug {
+pub trait Command: fmt::Debug + Any {
     /// Short, user-visible name, e.g. "Add Layer".
     fn label(&self) -> &str;
     /// Performs the change.
     fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError>;
     /// Reverts the change.
     fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError>;
+    /// Folds `next`, which was just applied right after this command, into
+    /// this one, so both undo as one step (e.g. every value of one slider
+    /// drag). Returns whether it did; by default commands never merge.
+    ///
+    /// After a merge, undoing `self` must revert both changes.
+    fn merge(&mut self, next: &dyn Command) -> bool {
+        let _ = next;
+        false
+    }
 }
 
 /// Default maximum number of undo steps kept by [`History::new`].
@@ -120,7 +130,8 @@ impl History {
     }
 
     /// Applies `command` and records it. Clears the redo stack.
-    /// If the command fails, nothing is recorded.
+    /// If the command fails, nothing is recorded. If the last recorded
+    /// command [merges](Command::merge) it, no new undo step is added.
     pub fn execute(
         &mut self,
         doc: &mut Document,
@@ -129,11 +140,18 @@ impl History {
         command.apply(doc)?;
         let state_after = self.next_state;
         self.next_state += 1;
+        self.redo.clear();
+        if let Some(last) = self.undo.back_mut()
+            && last.command.merge(command.as_ref())
+        {
+            // The state changed, so it gets a new token (keeps is_dirty right).
+            last.state_after = state_after;
+            return Ok(());
+        }
         self.undo.push_back(Entry {
             command,
             state_after,
         });
-        self.redo.clear();
         self.trim();
         Ok(())
     }
