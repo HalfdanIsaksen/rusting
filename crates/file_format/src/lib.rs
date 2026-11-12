@@ -19,7 +19,7 @@
 //! them silently, [`from_str_with_report`] and [`load_with_report`] list them
 //! in a [`LoadReport`] so the app can warn before overwriting the file.
 
-use animation_core::{DrawingId, FillId, FrameIndex, LayerId, StrokeId};
+use animation_core::{DrawingId, FillId, FrameIndex, GroupId, LayerId, StrokeId};
 use document::Document;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -44,7 +44,11 @@ use std::path::{Path, PathBuf};
 /// - 7: `placement` may also be a back level, `{"Back": n}`, for items drawn
 ///   "Behind" (ADR-011). v6 needs no migration; older builds must reject
 ///   these files.
-pub const FORMAT_VERSION: u32 = 7;
+/// - 8: the layer stack may have `groups`, and layers a `group` (absent
+///   means none, so v7 needs no migration; ADR-013). Older builds must reject
+///   these files: they would drop group visibility and opacity and change
+///   the picture.
+pub const FORMAT_VERSION: u32 = 8;
 
 /// File extension for project files (without the dot).
 pub const FILE_EXTENSION: &str = "rusting";
@@ -113,6 +117,22 @@ pub enum ValidationError {
     /// Two layers share an ID.
     #[error("layer ID {0} is used by more than one layer")]
     DuplicateLayer(LayerId),
+    /// A layer is in a group that does not exist.
+    #[error("layer \"{name}\" ({id}) is in group {group}, which is not in the file")]
+    MissingGroup {
+        /// The layer.
+        id: LayerId,
+        /// Its name.
+        name: String,
+        /// The missing group.
+        group: GroupId,
+    },
+    /// A group's layers are not next to each other in the stack.
+    #[error("the layers of group {0} are not next to each other")]
+    SplitGroup(GroupId),
+    /// Two groups share an ID.
+    #[error("group ID {0} is used by more than one group")]
+    DuplicateGroup(GroupId),
     /// Two strokes share an ID.
     #[error("stroke ID {stroke} is used more than once (found again in drawing {drawing})")]
     DuplicateStroke {
@@ -198,12 +218,14 @@ struct EnvelopeOld {
     document: serde_json::Value,
 }
 
-/// Serializes a document to a JSON string. Drawings no keyframe refers to are
-/// left out; the document passed in is not changed.
+/// Serializes a document to a JSON string. Drawings no keyframe refers to,
+/// and groups with no layers, are left out; the document passed in is not
+/// changed.
 pub fn to_string(doc: &Document) -> Result<String, FileFormatError> {
-    let doc: Cow<'_, Document> = if doc.has_unreferenced_drawings() {
+    let doc: Cow<'_, Document> = if doc.has_unreferenced_drawings() || doc.has_empty_groups() {
         let mut copy = doc.clone();
         copy.garbage_collect_drawings();
+        copy.remove_empty_groups();
         Cow::Owned(copy)
     } else {
         Cow::Borrowed(doc)
@@ -438,6 +460,28 @@ pub fn validate(doc: &Document) -> Result<(), ValidationError> {
         }
     }
 
+    for group in doc.layers().groups() {
+        check_range(
+            || format!("group \"{}\" opacity", group.name),
+            group.opacity,
+            unit(group.opacity),
+            "0..=1",
+        )?;
+    }
+    doc.layers().check_groups().map_err(|e| match e {
+        document::scene::GroupError::MissingGroup(id, group) => ValidationError::MissingGroup {
+            id,
+            name: doc
+                .layers()
+                .get(id)
+                .map(|l| l.name.clone())
+                .unwrap_or_default(),
+            group,
+        },
+        document::scene::GroupError::Split(g) => ValidationError::SplitGroup(g),
+        document::scene::GroupError::Duplicate(g) => ValidationError::DuplicateGroup(g),
+    })?;
+
     for (&layer, track) in doc.tracks() {
         let Some(layer_info) = doc.layers().get(layer) else {
             return Err(ValidationError::OrphanTrack(layer));
@@ -609,6 +653,62 @@ mod tests {
             .set_key(FrameIndex(6), Keyframe::Empty);
         d.layer_mut(l2).unwrap().locked = true;
         d
+    }
+
+    /// `sample` with "Color" in a half-transparent group.
+    fn grouped_sample() -> (Document, GroupId) {
+        let mut d = sample();
+        let mut group = document::scene::LayerGroup::new("Paint");
+        group.opacity = 0.5;
+        let g = group.id;
+        d.add_group(group);
+        let color = d.layers().iter().nth(1).unwrap().id;
+        d.move_layer_to_group(color, 1, Some(g));
+        (d, g)
+    }
+
+    #[test]
+    fn groups_roundtrip_and_empty_groups_are_not_saved() {
+        let (mut doc, g) = grouped_sample();
+        let loaded = from_str(&to_string(&doc).unwrap()).unwrap();
+        assert_eq!(loaded, doc);
+        assert_eq!(loaded.layers().group(g).unwrap().opacity, 0.5);
+
+        doc.add_group(document::scene::LayerGroup::new("Empty"));
+        let loaded = from_str(&to_string(&doc).unwrap()).unwrap();
+        assert_eq!(loaded.layers().groups().count(), 1);
+        assert_eq!(
+            doc.layers().groups().count(),
+            2,
+            "the open document keeps it"
+        );
+    }
+
+    #[test]
+    fn corrupt_groups_are_rejected() {
+        let (doc, g) = grouped_sample();
+        let text = edit_json(&doc, |v| {
+            v["document"]["layers"]["groups"] = serde_json::json!([]);
+        });
+        assert!(matches!(
+            invalid(&text),
+            ValidationError::MissingGroup { .. }
+        ));
+
+        let mut split = doc.clone();
+        split.add_layer("Top");
+        let text = edit_json(&split, |v| {
+            let layers = &mut v["document"]["layers"]["layers"];
+            layers[0]["group"] = serde_json::json!(g);
+            layers[1]["group"] = serde_json::Value::Null;
+            layers[2]["group"] = serde_json::json!(g);
+        });
+        assert_eq!(invalid(&text), ValidationError::SplitGroup(g));
+
+        let text = edit_json(&doc, |v| {
+            v["document"]["layers"]["groups"][0]["opacity"] = 2.0.into();
+        });
+        assert!(matches!(invalid(&text), ValidationError::OutOfRange { .. }));
     }
 
     #[test]

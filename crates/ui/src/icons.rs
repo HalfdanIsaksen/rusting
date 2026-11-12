@@ -413,6 +413,52 @@ pub fn chevron_up(painter: &Painter, rect: Rect, color: Color32) {
     ));
 }
 
+/// Rightward chevron (a collapsed group).
+pub fn chevron_right(painter: &Painter, rect: Rect, color: Color32) {
+    painter.add(PathShape::line(
+        points(rect, &[(0.36, 0.22), (0.66, 0.5), (0.36, 0.78)]),
+        Stroke::new(line_width(rect) * 1.5, color),
+    ));
+}
+
+/// A folder (a layer group).
+pub fn folder(painter: &Painter, rect: Rect, color: Color32) {
+    outline(
+        painter,
+        rect,
+        color,
+        &[
+            (0.1, 0.22),
+            (0.4, 0.22),
+            (0.48, 0.32),
+            (0.9, 0.32),
+            (0.9, 0.8),
+            (0.1, 0.8),
+        ],
+    );
+}
+
+/// A folder with a plus (group the selected layers).
+pub fn group_layers(painter: &Painter, rect: Rect, color: Color32) {
+    folder(painter, rect, color);
+    let w = line_width(rect) * 1.2;
+    line(painter, rect, color, w, (0.5, 0.42), (0.5, 0.7));
+    line(painter, rect, color, w, (0.36, 0.56), (0.64, 0.56));
+}
+
+/// A folder with a minus (ungroup).
+pub fn ungroup_layers(painter: &Painter, rect: Rect, color: Color32) {
+    folder(painter, rect, color);
+    line(
+        painter,
+        rect,
+        color,
+        line_width(rect) * 1.2,
+        (0.36, 0.56),
+        (0.64, 0.56),
+    );
+}
+
 /// Downward chevron (move down).
 pub fn chevron_down(painter: &Painter, rect: Rect, color: Color32) {
     painter.add(PathShape::line(

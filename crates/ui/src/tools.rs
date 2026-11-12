@@ -715,12 +715,17 @@ impl Session {
         else {
             return Some("No layer selected — add a layer first".into());
         };
+        let group = self.document.layers().group_of(layer.id);
         if layer.locked {
             Some(format!("Layer “{}” is locked", layer.name))
+        } else if let Some(g) = group.filter(|g| g.locked) {
+            Some(format!("Group “{}” is locked", g.name))
         } else if !layer.visible {
             Some(format!("Layer “{}” is hidden", layer.name))
         } else {
-            None
+            group
+                .filter(|g| !g.visible)
+                .map(|g| format!("Group “{}” is hidden", g.name))
         }
     }
 
@@ -1307,11 +1312,7 @@ impl Session {
         let Some((layer, frame)) = self.tools.selection_at else {
             return;
         };
-        let editable = self
-            .document
-            .layers()
-            .get(layer)
-            .is_some_and(|l| l.is_editable());
+        let editable = self.document.layers().is_editable(layer);
         let same_place = self.state.active_layer == Some(layer) && self.current_frame() == frame;
         if !self.state.tool.uses_selection() || !editable || !same_place {
             self.tools.clear_selection();

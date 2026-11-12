@@ -15,6 +15,12 @@ pub enum CommandError {
     /// The command referred to a drawing or stroke that does not exist.
     #[error("drawing content not found")]
     DrawingNotFound,
+    /// The command referred to a layer group that does not exist.
+    #[error("layer group not found")]
+    GroupNotFound,
+    /// The move would put a group inside another group.
+    #[error("a group cannot go inside another group")]
+    GroupInGroup,
     /// The target layer is locked.
     #[error("layer is locked")]
     LayerLocked,

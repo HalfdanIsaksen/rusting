@@ -60,6 +60,10 @@ define_id!(
     LayerId
 );
 define_id!(
+    /// Identifies a layer group (a folder of layers).
+    GroupId
+);
+define_id!(
     /// Identifies a drawing (the content shown by a drawing keyframe).
     DrawingId
 );
