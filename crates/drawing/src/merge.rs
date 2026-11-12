@@ -7,21 +7,27 @@
 //! finds every item of the same look connected to a starting item and
 //! returns the single fill that replaces them.
 //!
-//! Only the start item can be a stroke. Fills never absorb existing
-//! strokes, and strokes never merge with strokes: line art stays strokes, so
-//! it keeps bounding later bucket fills (which only see strokes, ADR-007).
+//! A new fill also absorbs the existing strokes of its look that touch it,
+//! or touch a fill it merges with, so a fill painted against a same-colour
+//! outline becomes one shape with it. Strokes never merge with strokes on
+//! their own: a stroke joins only through a fill it touches, so a new stroke
+//! never pulls in other strokes, and line art in other colours (or not
+//! touching a same-colour fill) stays strokes and keeps bounding later
+//! bucket fills (which only see strokes, ADR-007).
 //!
 //! Like the fill bucket and the fill eraser, the union is computed on a
 //! temporary raster:
 //!
 //! 1. Candidates are the start item and the drawing's solid (not gradient)
-//!    fills with the same colour, opacity and draw-order tier.
+//!    fills with the same colour, opacity and draw-order tier, plus, when
+//!    the start item is a fill, the strokes with that look.
 //! 2. Each candidate near the start item is rasterized (cell centres inside
 //!    the fill, or inside the stroke's painted shape) on one grid of
 //!    [`MERGE_CELL_SIZE`] cells, growing for very large areas so the grid
 //!    stays under [`MAX_GRID_CELLS`].
-//! 3. Starting from the start item, every candidate that overlaps or touches
-//!    (within one cell) what is collected so far joins it.
+//! 3. Starting from the start item, every fill that overlaps or touches
+//!    (within one cell) what is collected so far joins it, and every stroke
+//!    candidate that overlaps or touches a joined fill.
 //! 4. If more than one item joined, the boundary of their union is traced
 //!    and simplified exactly as for a bucket fill.
 //!
@@ -54,7 +60,8 @@ pub struct Merge {
     /// Every fill the merge replaces, in stored order; the first is the one
     /// whose ID [`Self::fill`] keeps.
     pub fills: Vec<FillId>,
-    /// The stroke the merge absorbs: the start item, if it was a stroke.
+    /// The strokes the merge absorbs, in stored order: the start item if it
+    /// was a stroke, or the touching strokes of the new fill's look.
     pub strokes: Vec<StrokeId>,
 }
 
@@ -117,8 +124,9 @@ enum Kind<'a> {
 impl VectorDrawing {
     /// Merges `item` (a stroke or a fill) with every fill of the same colour,
     /// opacity and tier that it overlaps or touches, directly or through
-    /// other such fills, into one fill. Other strokes are never merged. See
-    /// the [module docs](crate::merge).
+    /// other such fills, into one fill. If `item` is a fill, the strokes of
+    /// that look touching any of those fills are merged too. See the
+    /// [module docs](crate::merge).
     ///
     /// Returns `None` if nothing merges: `item` is missing or a gradient
     /// fill, or it touches no fill of its look. The drawing is not changed;
@@ -144,15 +152,21 @@ impl VectorDrawing {
                 });
             }
         }
-        if let ItemId::Stroke(id) = item
-            && let Some(i) = self.strokes().iter().position(|s| s.id == id)
-            && let Some(bounds) = finite_bounds(self.strokes()[i].bounds())
-        {
-            start = Some(candidates.len());
-            candidates.push(Candidate {
-                kind: Kind::Stroke(i, &self.strokes()[i]),
-                bounds,
-            });
+        for (i, stroke) in self.strokes().iter().enumerate() {
+            let wanted = match item {
+                ItemId::Stroke(id) => stroke.id == id,
+                // A new fill absorbs the same-look strokes it touches.
+                ItemId::Fill(_) => Look::of_stroke(stroke).matches(&look),
+            };
+            if wanted && let Some(bounds) = finite_bounds(stroke.bounds()) {
+                if item == ItemId::Stroke(stroke.id) {
+                    start = Some(candidates.len());
+                }
+                candidates.push(Candidate {
+                    kind: Kind::Stroke(i, stroke),
+                    bounds,
+                });
+            }
         }
         let start = start?;
 
@@ -175,30 +189,39 @@ impl VectorDrawing {
             })
             .collect();
 
-        // Grow the merged area from the start item.
+        // Grow the merged area from the start item. Fills join anything
+        // joined; strokes other than the start item only join fills, so
+        // strokes never chain through strokes.
+        let is_fill = |k: usize| matches!(candidates[near[k]].kind, Kind::Fill(..));
         let mut mask = vec![false; grid.len()];
         let mut reach = vec![false; grid.len()];
+        let mut fill_reach = vec![false; grid.len()];
         let mut joined = vec![false; near.len()];
         let first = near.iter().position(|&i| i == start)?;
         if cells[first].is_empty() {
             return None;
         }
-        let add = |k: usize, mask: &mut [bool], reach: &mut [bool]| {
+        let add = |k: usize, mask: &mut [bool], reach: &mut [bool], fill_reach: &mut [bool]| {
+            let fill = is_fill(k);
             for &c in &cells[k] {
                 mask[c] = true;
                 for n in neighbours8(&grid, c) {
                     reach[n] = true;
+                    if fill {
+                        fill_reach[n] = true;
+                    }
                 }
             }
         };
         joined[first] = true;
-        add(first, &mut mask, &mut reach);
+        add(first, &mut mask, &mut reach, &mut fill_reach);
         loop {
             let mut grew = false;
             for k in 0..near.len() {
-                if !joined[k] && cells[k].iter().any(|&c| reach[c]) {
+                let touch: &[bool] = if is_fill(k) { &reach } else { &fill_reach };
+                if !joined[k] && cells[k].iter().any(|&c| touch[c]) {
                     joined[k] = true;
-                    add(k, &mut mask, &mut reach);
+                    add(k, &mut mask, &mut reach, &mut fill_reach);
                     grew = true;
                 }
             }
@@ -500,13 +523,13 @@ mod tests {
     }
 
     #[test]
-    fn a_new_fill_merges_with_fills_but_leaves_strokes_alone() {
+    fn a_new_fill_merges_with_fills_and_their_outline() {
         let mut d = VectorDrawing::new();
-        // A same-colour outline the fill touches: line art, so it stays.
+        // A same-colour outline both fills touch: it becomes part of them.
         let outline = line(v(0.0, 50.0), v(100.0, 50.0), 6.0, BROWN);
         let old = square(v(0.0, 50.0), v(100.0, 100.0), BROWN);
         let new = square(v(0.0, 0.0), v(100.0, 50.0), BROWN);
-        let (old_id, new_id) = (old.id, new.id);
+        let (outline_id, old_id, new_id) = (outline.id, old.id, new.id);
         d.push_stroke(outline);
         d.push_fill(old);
         d.push_fill(new);
@@ -519,7 +542,7 @@ mod tests {
         );
         let merge = d.merge_same_colour(ItemId::Fill(new_id)).unwrap();
         assert_eq!(merge.fills, [old_id, new_id]);
-        assert!(merge.strokes.is_empty());
+        assert_eq!(merge.strokes, [outline_id]);
         assert!(merge.fill.contains(v(50.0, 25.0)));
         assert!(merge.fill.contains(v(50.0, 75.0)));
         let area = merge.fill.shape().area();
@@ -527,14 +550,51 @@ mod tests {
     }
 
     #[test]
-    fn a_new_fill_does_not_absorb_its_outline() {
+    fn a_new_fill_absorbs_its_same_colour_outline() {
         let mut d = VectorDrawing::new();
-        let outline = line(v(0.0, 50.0), v(100.0, 50.0), 6.0, BROWN);
+        // The stroke pokes 20 units out past the fill on the right.
+        let outline = line(v(0.0, 50.0), v(120.0, 50.0), 6.0, BROWN);
         let fill = square(v(0.0, 0.0), v(100.0, 50.0), BROWN);
-        let fill_id = fill.id;
+        let (outline_id, fill_id) = (outline.id, fill.id);
         d.push_stroke(outline);
         d.push_fill(fill);
+        let merge = d.merge_same_colour(ItemId::Fill(fill_id)).unwrap();
+        assert_eq!(merge.fills, [fill_id]);
+        assert_eq!(merge.strokes, [outline_id]);
+        // The fill now covers the whole stroke, not just up to its centre.
+        assert!(merge.fill.contains(v(50.0, 52.0)));
+        assert!(merge.fill.contains(v(115.0, 50.0)));
+        assert!(merge.fill.contains(v(50.0, 25.0)));
+        assert!(!merge.fill.contains(v(110.0, 25.0)));
+    }
+
+    #[test]
+    fn a_new_fill_leaves_other_colours_and_far_strokes_alone() {
+        let mut d = VectorDrawing::new();
+        let black = line(v(0.0, 50.0), v(100.0, 50.0), 6.0, Rgba::BLACK);
+        let far = line(v(200.0, 0.0), v(200.0, 50.0), 6.0, BROWN);
+        let fill = square(v(0.0, 0.0), v(100.0, 50.0), BROWN);
+        let fill_id = fill.id;
+        d.push_stroke(black);
+        d.push_stroke(far);
+        d.push_fill(fill);
         assert_eq!(d.merge_same_colour(ItemId::Fill(fill_id)), None);
+    }
+
+    #[test]
+    fn a_new_fill_does_not_chain_through_strokes() {
+        let mut d = VectorDrawing::new();
+        // `touching` touches the fill; `beyond` only touches `touching`.
+        let touching = line(v(100.0, 25.0), v(150.0, 25.0), 6.0, BROWN);
+        let beyond = line(v(150.0, 0.0), v(150.0, 50.0), 6.0, BROWN);
+        let fill = square(v(0.0, 0.0), v(100.0, 50.0), BROWN);
+        let (touching_id, beyond_id, fill_id) = (touching.id, beyond.id, fill.id);
+        d.push_stroke(touching);
+        d.push_stroke(beyond);
+        d.push_fill(fill);
+        let merge = d.merge_same_colour(ItemId::Fill(fill_id)).unwrap();
+        assert_eq!(merge.strokes, [touching_id]);
+        assert!(!merge.items().any(|i| i == ItemId::Stroke(beyond_id)));
     }
 
     #[test]
