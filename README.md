@@ -1,6 +1,6 @@
 # Rusting
 
-Free, open-source 2D animation software for macOS, Windows and Linux. Draw vector frames and animate them frame by frame on a timeline with layers and onion skin, then export MP4, PNG or sprite sheets. Written in Rust, with a GPU-accelerated canvas (wgpu) and our own animation, timeline, drawing, and document engines.
+Free, open-source 2D animation software for macOS, Windows and Linux. Draw vector frames and animate them frame by frame on a timeline with layers and onion skin, then export MP4, GIF, PNG or sprite sheets. Written in Rust, with a GPU-accelerated canvas (wgpu) and our own animation, timeline, drawing, and document engines.
 
 Website, downloads and docs: [rusting-animation.org](https://rusting-animation.org)
 
@@ -41,7 +41,7 @@ Set `RUST_LOG=debug` for more log output.
 | `crates/document` | The project document and per-frame evaluation (`RenderList`) |
 | `crates/file_format` | Versioned `.rusting` save/load and validation |
 | `crates/editor` | Editor state, commands, undo/redo |
-| `crates/export` | Encoding exported frames: PNG/JPEG images, image sequences and H.264 video (no GPU) |
+| `crates/export` | Encoding exported frames: PNG/JPEG images, image sequences, H.264 video and animated GIF (no GPU) |
 | `crates/renderer` | wgpu device, surface, canvas and stroke rendering, offscreen rendering for export |
 | `crates/ui` | The editing session and its egui panels |
 | `apps/desktop` | The executable: window, event loop, file dialogs, export wiring |
@@ -116,6 +116,7 @@ The tool strip runs down the side of the canvas:
 - Save and open versioned `.rusting` project files.
 - Undo/redo for every edit (up to 500 steps).
 - Export the current frame as PNG/JPG, an image sequence, or an H.264 video as MP4 or MOV (QuickTime).
+- **Export GIF**: the frame range as a looping animated GIF at the document frame rate, for animations up to 15 seconds. A longer range is refused with a message to export it as a video or image sequence instead.
 - **Export Sprite Sheet**: every frame tag becomes its own row of frames in one PNG/JPG image. Without tags, the chosen frame range goes on one row.
 
 ## Contributing workflow

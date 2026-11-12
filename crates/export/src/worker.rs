@@ -1,6 +1,8 @@
 //! Encoding on a background thread, so the UI stays responsive.
 
-use crate::{ExportError, ImageFormat, Mp4Encoder, RgbaImage, VideoSettings};
+use crate::{
+    ExportError, GifEncoder, GifSettings, ImageFormat, Mp4Encoder, RgbaImage, VideoSettings,
+};
 use crate::{sequence_path, write_image};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -35,6 +37,13 @@ pub enum ExportTarget {
         path: PathBuf,
         /// Size and frame rate.
         settings: VideoSettings,
+    },
+    /// One looping animated GIF.
+    Gif {
+        /// Output file.
+        path: PathBuf,
+        /// Frame rate.
+        settings: GifSettings,
     },
     /// One image with the frames on a grid: row `i` holds the next
     /// `rows[i]` frames, left to right.
@@ -215,6 +224,13 @@ fn run(
             Err(err) => return WorkerEvent::Failed(err),
         }
     }
+    let mut gif = None;
+    if let ExportTarget::Gif { path, settings } = &target {
+        match GifEncoder::create(path, *settings) {
+            Ok(encoder) => gif = Some(encoder),
+            Err(err) => return WorkerEvent::Failed(err),
+        }
+    }
     let mut first_file = None;
     let mut sheet: Option<RgbaImage> = None;
     for (index, Message::Frame { number, image }) in frames.iter().enumerate() {
@@ -224,6 +240,10 @@ fn run(
         }
         let result = match (&target, video.as_mut()) {
             (_, Some(encoder)) => encoder.push_frame(&image),
+            (ExportTarget::Gif { .. }, None) => match gif.as_mut() {
+                Some(encoder) => encoder.push_frame(&image),
+                None => Err(ExportError::Cancelled),
+            },
             (ExportTarget::Image { path, format }, None) => {
                 first_file.get_or_insert_with(|| path.clone());
                 write_image(path, &image, *format)
@@ -258,7 +278,7 @@ fn run(
             (ExportTarget::Video { .. }, None) => Err(ExportError::Cancelled),
         };
         if let Err(err) = result {
-            // Dropping `video` deletes the partial file.
+            // Dropping `video` or `gif` deletes the partial file.
             return WorkerEvent::Failed(err);
         }
         let done = u32::try_from(index + 1).unwrap_or(u32::MAX);
@@ -266,7 +286,14 @@ fn run(
     }
     if cancelled.load(Ordering::Acquire) {
         drop(video);
+        drop(gif);
         return WorkerEvent::Cancelled;
+    }
+    if let Some(encoder) = gif {
+        return match encoder.finish() {
+            Ok(path) => WorkerEvent::Finished(path),
+            Err(err) => WorkerEvent::Failed(err),
+        };
     }
     match video {
         Some(encoder) => match encoder.finish() {
@@ -353,6 +380,27 @@ mod tests {
             let img = image::open(dir.join(format!("walk_{n:04}.png"))).unwrap();
             assert_eq!(img.to_rgba8().get_pixel(0, 0).0, [n as u8, 0, 0, 255]);
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn writes_a_gif() {
+        let dir = temp_dir("gif");
+        let path = dir.join("loop.gif");
+        let mut worker = ExportWorker::spawn(ExportTarget::Gif {
+            path: path.clone(),
+            settings: GifSettings {
+                fps_numerator: 12,
+                fps_denominator: 1,
+            },
+        })
+        .unwrap();
+        for n in 1..=3u8 {
+            assert!(worker.send(u32::from(n), RgbaImage::filled(4, 4, [n * 60, 0, 0, 255])));
+        }
+        worker.finish();
+        assert!(matches!(last(worker.join()), WorkerEvent::Finished(p) if p == path));
+        assert_eq!(&std::fs::read(&path).unwrap()[..6], b"GIF89a");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

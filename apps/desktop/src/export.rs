@@ -8,7 +8,10 @@
 
 use document::animation_core::{FrameIndex, Rgba};
 use document::{Document, RenderList};
-use export::{ExportTarget, ExportWorker, ImageFormat, RgbaImage, VideoSettings, WorkerEvent};
+use export::{
+    ExportTarget, ExportWorker, GifSettings, ImageFormat, MAX_GIF_SECONDS, RgbaImage,
+    VideoSettings, WorkerEvent, check_gif_length,
+};
 use renderer::{DrawListBuilder, OffscreenFrame, OffscreenRenderer, RendererError, output_size};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -65,8 +68,30 @@ impl ExportSettings {
         match self.kind {
             ExportKind::Video if self.mov => "mov",
             ExportKind::Video => "mp4",
+            ExportKind::Gif => "gif",
             _ => self.image_format().extension(),
         }
+    }
+
+    /// Video or GIF: one file that plays, no image format or transparency.
+    fn is_animation(&self) -> bool {
+        matches!(self.kind, ExportKind::Video | ExportKind::Gif)
+    }
+
+    /// How many frames the chosen range holds.
+    fn range_len(&self) -> u32 {
+        let first = self.first.max(1);
+        self.last.max(first) - first + 1
+    }
+
+    /// GIF only: an error message if the range plays too long for a GIF.
+    fn gif_too_long(&self, doc: &Document) -> Option<String> {
+        if self.kind != ExportKind::Gif {
+            return None;
+        }
+        check_gif_length(self.range_len(), gif_settings(doc))
+            .err()
+            .map(|_| too_long_message(self.range_len(), doc))
     }
 
     fn scale(&self) -> f32 {
@@ -74,11 +99,11 @@ impl ExportSettings {
     }
 
     /// The canvas colour to render: `None` (transparent) only for PNG with
-    /// transparency on. JPEG and MP4 have no alpha, so they always get the
-    /// document background (white if the document has none).
+    /// transparency on. JPEG, MP4 and GIF exports are opaque, so they always
+    /// get the document background (white if the document has none).
     fn background(&self, document: &Document) -> Option<Rgba> {
         let transparent =
-            self.transparent && self.kind != ExportKind::Video && self.file_type == FileType::Png;
+            self.transparent && !self.is_animation() && self.file_type == FileType::Png;
         if transparent {
             None
         } else {
@@ -103,6 +128,22 @@ impl ExportSettings {
             _ => vec![range],
         }
     }
+}
+
+fn gif_settings(doc: &Document) -> GifSettings {
+    GifSettings {
+        fps_numerator: doc.fps.numerator(),
+        fps_denominator: doc.fps.denominator(),
+    }
+}
+
+/// The message shown when a GIF export plays too long.
+fn too_long_message(frames: u32, doc: &Document) -> String {
+    let seconds = gif_settings(doc).duration_seconds(frames);
+    format!(
+        "Animation too long for GIF ({seconds:.1} s, at most {MAX_GIF_SECONDS:.0} s). \
+         Export it as a video or image sequence instead, or choose a shorter frame range."
+    )
 }
 
 /// How an export ended.
@@ -231,6 +272,8 @@ pub struct ExportPanel {
     confirmed: Option<ExportSettings>,
     /// The last confirmed options, to start the next dialog from.
     last: Option<ExportSettings>,
+    /// Shown in the dialog after Export was refused (GIF too long).
+    refused: Option<String>,
     job: Option<Job>,
 }
 
@@ -241,6 +284,7 @@ impl ExportPanel {
             dialog: None,
             confirmed: None,
             last: None,
+            refused: None,
             job: None,
         }
     }
@@ -274,6 +318,7 @@ impl ExportPanel {
         } else {
             frame_count
         };
+        self.refused = None;
         self.dialog = Some(settings);
     }
 
@@ -312,6 +357,16 @@ impl ExportPanel {
                     fps_denominator: document.fps.denominator(),
                 },
             },
+            ExportKind::Gif => {
+                let frames = rows.iter().map(Vec::len).sum::<usize>() as u32;
+                if check_gif_length(frames, gif_settings(&document)).is_err() {
+                    return Err(too_long_message(frames, &document));
+                }
+                ExportTarget::Gif {
+                    path: path.to_owned(),
+                    settings: gif_settings(&document),
+                }
+            }
             ExportKind::SpriteSheet => ExportTarget::SpriteSheet {
                 path: path.to_owned(),
                 format: settings.image_format(),
@@ -364,8 +419,18 @@ impl ExportPanel {
         };
         let mut action = None;
         let response = egui::Modal::new(egui::Id::unique("export_dialog")).show(ctx, |ui| {
-            action = options_ui(ui, settings, &session.document);
+            action = options_ui(ui, settings, &session.document, self.refused.as_deref());
         });
+        if self.refused.is_some() && settings.gif_too_long(&session.document).is_none() {
+            // The range was shortened: the warning no longer applies.
+            self.refused = None;
+        }
+        if action == Some(true)
+            && let Some(message) = settings.gif_too_long(&session.document)
+        {
+            self.refused = Some(message);
+            action = None;
+        }
         let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
         if response.should_close() || escape {
             action = Some(false);
@@ -383,13 +448,19 @@ impl ExportPanel {
 }
 
 /// The options form. Returns `Some(true)` to export, `Some(false)` to cancel.
-fn options_ui(ui: &mut egui::Ui, s: &mut ExportSettings, doc: &Document) -> Option<bool> {
+fn options_ui(
+    ui: &mut egui::Ui,
+    s: &mut ExportSettings,
+    doc: &Document,
+    refused: Option<&str>,
+) -> Option<bool> {
     ui.set_min_width(340.0);
     ui.heading(match s.kind {
         ExportKind::Frame => "Export Frame",
         ExportKind::Sequence => "Export Image Sequence",
         ExportKind::Video => "Export Video",
         ExportKind::SpriteSheet => "Export Sprite Sheet",
+        ExportKind::Gif => "Export GIF",
     });
     ui.add_space(8.0);
     let frame_count = doc.frame_count.max(1);
@@ -397,7 +468,7 @@ fn options_ui(ui: &mut egui::Ui, s: &mut ExportSettings, doc: &Document) -> Opti
         .num_columns(2)
         .spacing([12.0, 8.0])
         .show(ui, |ui| {
-            if s.kind != ExportKind::Video {
+            if !s.is_animation() {
                 ui.label("Format");
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut s.file_type, FileType::Png, "PNG");
@@ -456,19 +527,30 @@ fn options_ui(ui: &mut egui::Ui, s: &mut ExportSettings, doc: &Document) -> Opti
                 ui.end_row();
             }
 
-            if s.kind != ExportKind::Video && s.file_type == FileType::Jpeg {
+            if s.kind == ExportKind::Gif {
+                ui.label("Frame rate");
+                ui.label(format!("{:.3} fps (document)", doc.fps.as_f64()));
+                ui.end_row();
+
+                ui.label("Duration");
+                let seconds = gif_settings(doc).duration_seconds(s.range_len());
+                ui.label(format!("{seconds:.2} s (GIF max {MAX_GIF_SECONDS:.0} s)"));
+                ui.end_row();
+            }
+
+            if !s.is_animation() && s.file_type == FileType::Jpeg {
                 ui.label("Quality");
                 ui.add(egui::Slider::new(&mut s.jpeg_quality, 1..=100));
                 ui.end_row();
             }
 
-            if s.kind != ExportKind::Video && s.file_type == FileType::Png {
+            if !s.is_animation() && s.file_type == FileType::Png {
                 ui.label("Background");
                 ui.checkbox(&mut s.transparent, "Transparent");
                 ui.end_row();
             }
         });
-    if s.kind == ExportKind::Video || s.file_type == FileType::Jpeg {
+    if s.is_animation() || s.file_type == FileType::Jpeg {
         ui.add_space(4.0);
         ui.weak("No transparency: frames are drawn on the document background.");
     }
@@ -477,6 +559,13 @@ fn options_ui(ui: &mut egui::Ui, s: &mut ExportSettings, doc: &Document) -> Opti
     }
     if s.kind == ExportKind::SpriteSheet && doc.tags.is_empty() {
         ui.weak("No frame tags: the frames go on one row. Tag frames to get a row per tag.");
+    }
+    if s.kind == ExportKind::Gif {
+        ui.weak("The GIF loops forever. Colours are reduced to 256 per frame.");
+    }
+    if let Some(message) = refused {
+        ui.add_space(6.0);
+        ui.colored_label(ui.visuals().error_fg_color, message);
     }
     ui.add_space(10.0);
     let mut action = None;
@@ -504,6 +593,7 @@ fn progress_window(ctx: &egui::Context, job: &mut Job) {
                 ExportKind::Sequence => "image sequence",
                 ExportKind::Video => "video",
                 ExportKind::SpriteSheet => "sprite sheet",
+                ExportKind::Gif => "GIF",
             };
             if job.cancelling {
                 ui.label("Cancelling…");
@@ -531,6 +621,7 @@ pub fn ask_path(settings: &ExportSettings, session: &Session) -> Option<PathBuf>
         ExportKind::Video if settings.mov => ("QuickTime movie".to_owned(), "Export Video"),
         ExportKind::Video => ("MP4 video".to_owned(), "Export Video"),
         ExportKind::SpriteSheet => (ext.to_uppercase(), "Export Sprite Sheet"),
+        ExportKind::Gif => ("GIF animation".to_owned(), "Export GIF"),
     };
     let stem = session
         .path
@@ -801,9 +892,57 @@ mod tests {
         let bytes = std::fs::read(&mov).expect("mov");
         assert_eq!(&bytes[4..12], b"ftypqt  ");
 
+        // All six frames as a GIF.
+        let gif = dir.join("clip.gif");
+        let gif_settings = ExportSettings {
+            kind: ExportKind::Gif,
+            ..base
+        };
+        let outcome = run(gif_settings, &gif, &session, &gpu);
+        assert!(matches!(outcome, Outcome::Done(_, 6)), "{outcome:?}");
+        let img = image::open(&gif).expect("gif").to_rgba8();
+        assert_eq!(img.dimensions(), (128, 66));
+
         if keep.is_none() {
             std::fs::remove_dir_all(dir).expect("cleanup");
         }
+    }
+
+    #[test]
+    fn gif_longer_than_the_limit_is_refused() {
+        let mut session = demo_session();
+        // 24 fps by default: 15 s is 360 frames.
+        session.document.frame_count = 400;
+        let fps = session.document.fps.as_f64();
+        let limit = (MAX_GIF_SECONDS * fps).round() as u32;
+        let mut s = ExportSettings {
+            kind: ExportKind::Gif,
+            first: 1,
+            last: limit,
+            ..settings(ExportKind::Gif)
+        };
+        assert_eq!(s.gif_too_long(&session.document), None);
+        s.last = limit + 1;
+        let message = s.gif_too_long(&session.document).expect("too long");
+        assert!(
+            message.starts_with("Animation too long for GIF"),
+            "{message}"
+        );
+        let path = std::env::temp_dir().join("rusting-never-written.gif");
+        let err = ExportPanel::new()
+            .start(s, &path, &session)
+            .expect_err("refused");
+        assert_eq!(err, message);
+        assert!(!path.exists());
+        // Other kinds have no length limit.
+        assert_eq!(
+            ExportSettings {
+                kind: ExportKind::Video,
+                ..s
+            }
+            .gif_too_long(&session.document),
+            None
+        );
     }
 
     #[test]
