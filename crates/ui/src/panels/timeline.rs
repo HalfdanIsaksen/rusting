@@ -398,7 +398,7 @@ pub(super) fn rows(doc: &Document, collapsed: &BTreeSet<GroupId>) -> Vec<Row> {
 }
 
 /// Layer controls on the left, frames on the right.
-fn grid(ui: &mut egui::Ui, session: &mut Session) {
+pub(super) fn grid(ui: &mut egui::Ui, session: &mut Session) {
     let rows = rows(&session.document, &session.timeline.collapsed_groups);
     let height = RULER_HEIGHT + rows.len() as f32 * ROW_HEIGHT;
     egui::ScrollArea::vertical()

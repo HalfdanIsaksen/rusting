@@ -1000,4 +1000,79 @@ mod tests {
             Some(true)
         );
     }
+
+    /// Runs the timeline grid headless for one pass with `events`.
+    fn pass(ctx: &egui::Context, s: &mut Session, events: Vec<egui::Event>) {
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1200.0, 500.0))),
+            events,
+            ..Default::default()
+        };
+        let output = ctx.run_ui(input, |ui| super::super::timeline::grid(ui, s));
+        output.drop_without_applying_deltas();
+    }
+
+    fn press(pos: Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn headless_opacity_drag_is_one_step_and_fold_hides_rows() {
+        let (mut s, ids, g) = stack(true);
+        let g = g.unwrap();
+        let ctx = egui::Context::default();
+        pass(&ctx, &mut s, Vec::new());
+
+        // Rows: D, [G], C, B, A. Drag C's opacity field 40 points left.
+        let row_y = |i: usize| RULER_HEIGHT + (i as f32 + 0.5) * ROW_HEIGHT;
+        let field = Pos2::new(COLUMN_WIDTH - BLEND_WIDTH - OPACITY_WIDTH * 0.5, row_y(2));
+        let undo_before = s.history.undo_len();
+        pass(&ctx, &mut s, vec![egui::Event::PointerMoved(field)]);
+        pass(&ctx, &mut s, vec![press(field, true)]);
+        for step in 1..=8 {
+            let p = field - vec2(5.0 * step as f32, 0.0);
+            pass(&ctx, &mut s, vec![egui::Event::PointerMoved(p)]);
+        }
+        pass(&ctx, &mut s, vec![press(field - vec2(40.0, 0.0), false)]);
+        pass(&ctx, &mut s, Vec::new());
+        let opacity = s.document.layers().get(ids[2]).unwrap().opacity;
+        assert!(opacity < 0.95, "dragging lowered the opacity: {opacity}");
+        assert_eq!(
+            s.history.undo_len(),
+            undo_before + 1,
+            "one drag, one undo step"
+        );
+        s.undo();
+        assert_eq!(s.document.layers().get(ids[2]).unwrap().opacity, 1.0);
+
+        // Drag D's name (row 0) to just under the group header: into G.
+        let name = Pos2::new(2.0 * TOGGLE_WIDTH + 60.0, row_y(0));
+        let gap = Pos2::new(name.x, RULER_HEIGHT + 2.0 * ROW_HEIGHT + 2.0);
+        pass(&ctx, &mut s, vec![egui::Event::PointerMoved(name)]);
+        pass(&ctx, &mut s, vec![press(name, true)]);
+        for step in 1..=6 {
+            let p = name.lerp(gap, step as f32 / 6.0);
+            pass(&ctx, &mut s, vec![egui::Event::PointerMoved(p)]);
+        }
+        pass(&ctx, &mut s, vec![press(gap, false)]);
+        pass(&ctx, &mut s, Vec::new());
+        let layers = s.document.layers();
+        assert_eq!(layers.get(ids[3]).unwrap().group, Some(g), "D joined G");
+        assert_eq!(layers.index_of(ids[3]), Some(3), "as its top layer");
+
+        // Rows are now [G], D, C, B, A. Click the group's fold arrow.
+        let arrow = Pos2::new(2.0 * TOGGLE_WIDTH + FOLD_WIDTH * 0.5, row_y(0));
+        pass(&ctx, &mut s, vec![egui::Event::PointerMoved(arrow)]);
+        pass(&ctx, &mut s, vec![press(arrow, true)]);
+        pass(&ctx, &mut s, vec![press(arrow, false)]);
+        pass(&ctx, &mut s, Vec::new());
+        assert!(s.timeline.collapsed_groups.contains(&g));
+        let rows = super::super::timeline::rows(&s.document, &s.timeline.collapsed_groups);
+        assert_eq!(rows.len(), 2, "only the header and A are left");
+    }
 }
