@@ -68,8 +68,7 @@ impl EditorState {
     /// Whether the active tool may draw on the active layer right now.
     pub fn can_draw(&self, doc: &Document) -> bool {
         self.active_layer
-            .and_then(|id| doc.layers().get(id))
-            .is_some_and(|layer| layer.is_editable())
+            .is_some_and(|id| doc.layers().is_editable(id))
     }
 }
 

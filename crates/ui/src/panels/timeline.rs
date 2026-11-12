@@ -8,7 +8,7 @@ use crate::icons::{self, IconFn};
 use crate::onion::MAX_ONION_RANGE;
 use crate::session::{Session, TimelineView};
 use document::Document;
-use document::animation_core::{Fps, FrameIndex, LayerId};
+use document::animation_core::{Fps, FrameIndex, GroupId, LayerId};
 use document::drawing::DrawingContent;
 use document::scene::BlendMode;
 use document::timeline::Keyframe;
@@ -17,6 +17,7 @@ use editor::commands::{
     SetFrameCount,
 };
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, vec2};
+use std::collections::BTreeSet;
 
 /// Height of one layer row.
 pub(super) const ROW_HEIGHT: f32 = 22.0;
@@ -217,7 +218,7 @@ fn keys_and_onion(ui: &mut egui::Ui, session: &mut Session) {
         let drawn = editable
             && layer.is_some_and(|id| {
                 let doc = &session.document;
-                doc.layers().get(id).is_some_and(|l| l.is_editable())
+                doc.layers().is_editable(id)
                     && doc
                         .drawing_at(id, frame)
                         .and_then(|d| doc.drawing(d))
@@ -318,32 +319,87 @@ fn committed_drag_value(
     }
 }
 
-/// One timeline row.
-pub(super) struct Row {
-    pub(super) id: LayerId,
-    pub(super) name: String,
-    pub(super) visible: bool,
-    pub(super) locked: bool,
-    pub(super) blend: BlendMode,
+/// What a timeline row shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum RowKind {
+    /// A layer and its track.
+    Layer(LayerId),
+    /// A group's header, above its layers.
+    Group(GroupId),
 }
 
-fn rows(doc: &Document) -> Vec<Row> {
-    doc.layers()
-        .iter()
-        .rev()
-        .map(|l| Row {
-            id: l.id,
+/// One timeline row: a layer, or a group header.
+pub(super) struct Row {
+    pub(super) kind: RowKind,
+    pub(super) name: String,
+    /// The row's own visibility flag.
+    pub(super) visible: bool,
+    /// Whether it is actually shown (its group is visible too).
+    pub(super) shown: bool,
+    pub(super) locked: bool,
+    /// Layers only; groups are Normal.
+    pub(super) blend: BlendMode,
+    pub(super) opacity: f32,
+    /// A layer's group (for the indent), or a header's own group.
+    pub(super) group: Option<GroupId>,
+    /// Group headers: whether the group is folded.
+    pub(super) collapsed: bool,
+}
+
+impl Row {
+    /// The layer of a layer row.
+    pub(super) fn layer(&self) -> Option<LayerId> {
+        match self.kind {
+            RowKind::Layer(id) => Some(id),
+            RowKind::Group(_) => None,
+        }
+    }
+}
+
+/// Rows top of the stack first: each group's header goes right above its
+/// layers, which are left out while the group is collapsed.
+pub(super) fn rows(doc: &Document, collapsed: &BTreeSet<GroupId>) -> Vec<Row> {
+    let stack = doc.layers();
+    let mut rows = Vec::new();
+    let mut current = None;
+    for l in stack.iter().rev() {
+        if l.group != current
+            && let Some(g) = l.group.and_then(|g| stack.group(g))
+        {
+            rows.push(Row {
+                kind: RowKind::Group(g.id),
+                name: g.name.clone(),
+                visible: g.visible,
+                shown: g.visible,
+                locked: g.locked,
+                blend: BlendMode::Normal,
+                opacity: g.opacity,
+                group: Some(g.id),
+                collapsed: collapsed.contains(&g.id),
+            });
+        }
+        current = l.group;
+        if l.group.is_some_and(|g| collapsed.contains(&g)) {
+            continue;
+        }
+        rows.push(Row {
+            kind: RowKind::Layer(l.id),
             name: l.name.clone(),
             visible: l.visible,
+            shown: stack.is_visible(l.id),
             locked: l.locked,
             blend: l.blend,
-        })
-        .collect()
+            opacity: l.opacity,
+            group: l.group,
+            collapsed: false,
+        });
+    }
+    rows
 }
 
 /// Layer controls on the left, frames on the right.
-fn grid(ui: &mut egui::Ui, session: &mut Session) {
-    let rows = rows(&session.document);
+pub(super) fn grid(ui: &mut egui::Ui, session: &mut Session) {
+    let rows = rows(&session.document, &session.timeline.collapsed_groups);
     let height = RULER_HEIGHT + rows.len() as f32 * ROW_HEIGHT;
     egui::ScrollArea::vertical()
         .id_salt("timeline_vertical")
@@ -365,7 +421,7 @@ fn row_at(rows: &[Row], y: f32) -> Option<LayerId> {
     if index < 0.0 {
         return None;
     }
-    rows.get(index as usize).map(|r| r.id)
+    rows.get(index as usize).and_then(Row::layer)
 }
 
 fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
@@ -394,11 +450,7 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
     let movable_key = |pos: Pos2| {
         let layer = row_at(rows, pos.y - rect.top())?;
         let frame = frame_at(pos.x);
-        let unlocked = session
-            .document
-            .layers()
-            .get(layer)
-            .is_some_and(|l| !l.locked);
+        let unlocked = session.document.layers().is_editable(layer);
         let keyed = session.document.track(layer)?.key_at(frame).is_some();
         (unlocked && keyed).then_some((layer, frame))
     };
@@ -645,7 +697,7 @@ fn paint_key_drop(
     (layer, from): (LayerId, FrameIndex),
     to: FrameIndex,
 ) {
-    let Some(i) = rows.iter().position(|r| r.id == layer) else {
+    let Some(i) = rows.iter().position(|r| r.layer() == Some(layer)) else {
         return;
     };
     let taken = to != from
@@ -747,14 +799,22 @@ fn paint_frames(ui: &egui::Ui, session: &Session, rows: &[Row], rect: Rect, cell
     for (i, row) in rows.iter().enumerate() {
         let top = rect.top() + RULER_HEIGHT + i as f32 * ROW_HEIGHT;
         let row_rect = Rect::from_x_y_ranges(rect.x_range(), top..=top + ROW_HEIGHT);
-        if session.state.active_layer == Some(row.id) {
+        let id = match row.kind {
+            RowKind::Layer(id) => id,
+            RowKind::Group(_) => {
+                painter.rect_filled(row_rect, 0.0, visuals.faint_bg_color);
+                painter.hline(rect.x_range(), top + ROW_HEIGHT, line);
+                continue;
+            }
+        };
+        if session.state.active_layer == Some(id) {
             painter.rect_filled(row_rect, 0.0, accent.gamma_multiply(0.18));
-        } else if session.is_layer_selected(row.id) {
+        } else if session.is_layer_selected(id) {
             painter.rect_filled(row_rect, 0.0, accent.gamma_multiply(0.1));
         }
         painter.hline(rect.x_range(), top + ROW_HEIGHT, line);
-        let alpha = if row.visible { 1.0 } else { 0.4 };
-        let Some(track) = doc.track(row.id) else {
+        let alpha = if row.shown { 1.0 } else { 0.4 };
+        let Some(track) = doc.track(id) else {
             continue;
         };
         for (frame, key) in track.keys() {

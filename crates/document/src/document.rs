@@ -1,8 +1,8 @@
 //! The [`Document`] type.
 
-use animation_core::{DocumentId, DrawingId, Fps, FrameIndex, FrameRange, LayerId, Rgba};
+use animation_core::{DocumentId, DrawingId, Fps, FrameIndex, FrameRange, GroupId, LayerId, Rgba};
 use drawing::DrawingContent;
-use scene::{Layer, LayerStack};
+use scene::{Arrangement, Layer, LayerGroup, LayerStack};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use timeline::Track;
@@ -95,6 +95,61 @@ impl Document {
     /// Moves a layer to `new_index` in the stack. Returns the old index.
     pub fn move_layer(&mut self, id: LayerId, new_index: usize) -> Option<usize> {
         self.layers.move_to(id, new_index)
+    }
+
+    /// Moves a layer to `new_index` and into `group` (see
+    /// [`LayerStack::move_to_group`]). Returns the old index and group.
+    pub fn move_layer_to_group(
+        &mut self,
+        id: LayerId,
+        new_index: usize,
+        group: Option<GroupId>,
+    ) -> Option<(usize, Option<GroupId>)> {
+        self.layers.move_to_group(id, new_index, group)
+    }
+
+    /// Adds a group record (see [`LayerStack::add_group`]).
+    pub fn add_group(&mut self, group: LayerGroup) {
+        self.layers.add_group(group);
+    }
+
+    /// Removes a group, taking its layers out of it. Returns its index in
+    /// the group list and the group.
+    pub fn remove_group(&mut self, id: GroupId) -> Option<(usize, LayerGroup)> {
+        self.layers.remove_group(id)
+    }
+
+    /// Puts back a group removed by [`Document::remove_group`].
+    pub fn insert_group(&mut self, index: usize, group: LayerGroup) {
+        self.layers.insert_group(index, group);
+    }
+
+    /// Mutable access to a group's properties.
+    pub fn group_mut(&mut self, id: GroupId) -> Option<&mut LayerGroup> {
+        self.layers.group_mut(id)
+    }
+
+    /// Moves a whole group (see [`LayerStack::move_group`]).
+    pub fn move_group(&mut self, id: GroupId, new_bottom: usize) -> Option<usize> {
+        self.layers.move_group(id, new_bottom)
+    }
+
+    /// Reorders and regroups the layers (see [`LayerStack::set_arrangement`]).
+    pub fn set_arrangement(&mut self, arrangement: &Arrangement) -> bool {
+        self.layers.set_arrangement(arrangement)
+    }
+
+    /// Drops groups with no layers (only on a copy about to be saved, or
+    /// when the undo history is cleared). Returns how many were dropped.
+    pub fn remove_empty_groups(&mut self) -> usize {
+        self.layers.remove_empty_groups()
+    }
+
+    /// Whether some group has no layers.
+    pub fn has_empty_groups(&self) -> bool {
+        self.layers
+            .groups()
+            .any(|g| self.layers.group_range(g.id).is_none())
     }
 
     /// Inserts a layer at `index` with an empty track. Returns its ID.

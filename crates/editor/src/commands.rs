@@ -3,18 +3,22 @@
 mod canvas;
 mod fill;
 mod frames;
+mod groups;
 mod layers;
 mod merge;
+mod opacity;
 mod select;
 pub use canvas::ResizeCanvas;
 pub use fill::{AddFill, RemoveFill, ReplaceFill};
 pub use frames::{DuplicateFrame, InsertFrames, MoveFrames, RemoveFrames};
+pub use groups::{GroupLayers, MoveGroup, SetGroup, UngroupLayers};
 pub use layers::DuplicateLayer;
 pub use merge::MergeSameColour;
+pub use opacity::SetOpacity;
 pub use select::{TransformItems, TranslateItems, remove_items};
 
 use crate::{Command, CommandError};
-use animation_core::{DrawingId, Fps, FrameIndex, LayerId, StrokeId};
+use animation_core::{DrawingId, Fps, FrameIndex, GroupId, LayerId, StrokeId};
 use document::drawing::{DrawingContent, Stroke, VectorDrawing};
 use document::scene::{BlendMode, Layer};
 use document::timeline::Keyframe;
@@ -131,8 +135,10 @@ impl Command for RenameLayer {
 
 /// Fails with [`CommandError::LayerLocked`] unless `layer` exists and is editable.
 fn editable_layer(doc: &Document, layer: LayerId) -> Result<(), CommandError> {
-    let layer = doc.layers().get(layer).ok_or(CommandError::LayerNotFound)?;
-    if layer.is_editable() {
+    if doc.layers().get(layer).is_none() {
+        return Err(CommandError::LayerNotFound);
+    }
+    if doc.layers().is_editable(layer) {
         Ok(())
     } else {
         Err(CommandError::LayerLocked)
@@ -391,18 +397,36 @@ impl Command for ReplaceStroke {
     }
 }
 
-/// Moves a layer to a new position in the stack (0 = bottom).
+/// Moves a layer to a new position in the stack (0 = bottom), keeping
+/// groups together (see `LayerStack::move_to`).
 #[derive(Debug)]
 pub struct MoveLayer {
     id: LayerId,
     to: usize,
-    from: Option<usize>,
+    /// `Some(group)`: put the layer in `group` (`None`: in no group).
+    /// `None`: let the stack decide.
+    group: Option<Option<GroupId>>,
+    from: Option<(usize, Option<GroupId>)>,
 }
 
 impl MoveLayer {
     /// Creates the command. `to` is clamped to the top of the stack.
     pub fn new(id: LayerId, to: usize) -> Self {
-        Self { id, to, from: None }
+        Self {
+            id,
+            to,
+            group: None,
+            from: None,
+        }
+    }
+
+    /// Moves the layer to `to` and into `group` (`None`: out of any group).
+    /// If that would split a group, the stack picks the group instead.
+    pub fn into_group(id: LayerId, to: usize, group: Option<GroupId>) -> Self {
+        Self {
+            group: Some(group),
+            ..Self::new(id, to)
+        }
     }
 }
 
@@ -412,16 +436,22 @@ impl Command for MoveLayer {
     }
 
     fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        let current = doc
+            .layers()
+            .get(self.id)
+            .ok_or(CommandError::LayerNotFound)?
+            .group;
+        let group = self.group.unwrap_or(current);
         self.from = Some(
-            doc.move_layer(self.id, self.to)
+            doc.move_layer_to_group(self.id, self.to, group)
                 .ok_or(CommandError::LayerNotFound)?,
         );
         Ok(())
     }
 
     fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
-        let from = self.from.take().ok_or(CommandError::LayerNotFound)?;
-        doc.move_layer(self.id, from)
+        let (from, group) = self.from.take().ok_or(CommandError::LayerNotFound)?;
+        doc.move_layer_to_group(self.id, from, group)
             .map(|_| ())
             .ok_or(CommandError::LayerNotFound)
     }

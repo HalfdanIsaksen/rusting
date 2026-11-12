@@ -8,7 +8,7 @@ use crate::onion::OnionSkin;
 use crate::playback::Playback;
 use crate::preview::Preview;
 use crate::tools::ToolController;
-use document::animation_core::{FrameIndex, FrameRange, LayerId};
+use document::animation_core::{FrameIndex, FrameRange, GroupId, LayerId};
 use document::{CanvasAnchor, CanvasSize, Document, FrameTag, NewDocumentSettings, SettingsError};
 use editor::commands::{
     DuplicateFrame, InsertFrames, MoveFrames, RemoveFrames, ResizeCanvas, SetTags,
@@ -117,10 +117,12 @@ pub struct Status {
 }
 
 /// Layout state of the timeline panel.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TimelineView {
     /// Width of one frame column, in points.
     pub cell_width: f32,
+    /// Layer groups shown folded (their layers' rows hidden).
+    pub collapsed_groups: BTreeSet<GroupId>,
 }
 
 impl TimelineView {
@@ -132,7 +134,10 @@ impl TimelineView {
 
 impl Default for TimelineView {
     fn default() -> Self {
-        Self { cell_width: 16.0 }
+        Self {
+            cell_width: 16.0,
+            collapsed_groups: BTreeSet::new(),
+        }
     }
 }
 
@@ -507,6 +512,43 @@ impl Session {
     pub fn select_layers(&mut self, active: LayerId, layers: impl IntoIterator<Item = LayerId>) {
         self.select_layer(active);
         self.layer_selection.extend(layers);
+    }
+
+    /// Selects every layer of `group`, with its top layer active. With
+    /// `add`, keeps the current selection too.
+    pub fn select_group(&mut self, group: GroupId, add: bool) {
+        let layers = self.document.layers();
+        let Some(range) = layers.group_range(group) else {
+            return;
+        };
+        let members: Vec<LayerId> = layers
+            .iter()
+            .skip(*range.start())
+            .take(range.end() - range.start() + 1)
+            .map(|l| l.id)
+            .collect();
+        let Some(&top) = members.last() else {
+            return;
+        };
+        if add {
+            self.layer_selection.extend(self.state.active_layer);
+            self.layer_selection.extend(members);
+            self.set_active_layer(top);
+        } else {
+            self.select_layers(top, members);
+        }
+    }
+
+    /// Whether every layer of `group` is selected.
+    pub fn is_group_selected(&self, group: GroupId) -> bool {
+        let layers = self.document.layers();
+        layers.group_range(group).is_some_and(|range| {
+            layers
+                .iter()
+                .skip(*range.start())
+                .take(range.end() - range.start() + 1)
+                .all(|l| self.is_layer_selected(l.id))
+        })
     }
 
     /// Whether `layer` is selected in the timeline (the active layer always is).
@@ -899,6 +941,8 @@ pub fn new_document() -> Document {
 pub fn describe_error(err: &CommandError) -> String {
     match err {
         CommandError::LayerLocked => "the layer is locked".into(),
+        CommandError::GroupNotFound => "the group no longer exists".into(),
+        CommandError::GroupInGroup => "a group cannot go inside another group".into(),
         CommandError::KeyframeExists(frame) => {
             format!("frame {} already has a key", frame.display_number())
         }

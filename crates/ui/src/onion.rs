@@ -77,7 +77,8 @@ impl OnionSkin {
         let before = self.before.min(MAX_ONION_RANGE);
         let after = self.after.min(MAX_ONION_RANGE);
         let mut skins = Vec::new();
-        for layer in doc.layers().iter().filter(|l| l.visible) {
+        let stack = doc.layers();
+        for layer in stack.iter().filter(|l| stack.is_visible(l.id)) {
             let Some(track) = doc.track(layer.id) else {
                 continue;
             };
@@ -93,7 +94,9 @@ impl OnionSkin {
                         offset,
                         transform: layer.transform,
                         drawing,
-                        color: self.tint(offset).with_opacity(layer.opacity),
+                        color: self
+                            .tint(offset)
+                            .with_opacity(stack.effective_opacity(layer.id)),
                     })
                 })
                 .collect();

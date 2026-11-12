@@ -28,7 +28,7 @@ Arrows point from a dependency to its dependents. Rules:
 | `FrameIndex(u32)` | Zero-based frame. UI shows `display_number()` (one-based). |
 | `FrameRange` | Half-open `start..end` |
 | `Fps` | Rational frames/second (e.g. 24000/1001) |
-| `LayerId`, `DrawingId`, `StrokeId`, `FillId`, `DocumentId` | UUID v4 newtypes, stable across save and load |
+| `LayerId`, `GroupId`, `DrawingId`, `StrokeId`, `FillId`, `DocumentId` | UUID v4 newtypes, stable across save and load |
 | `Rgba` | Straight-alpha color, f32 components |
 | `Interpolation` | `Step`, `Linear` (Bezier later) |
 | `Vec2` | `glam::Vec2`, re-exported |
@@ -38,6 +38,8 @@ Arrows point from a dependency to its dependents. Rules:
 Document
 ├─ canvas: CanvasSize, background: Option<Rgba>, fps, frame_count
 ├─ layers: LayerStack            (bottom-to-top Vec<Layer>; scene crate)
+│     + groups: Vec<LayerGroup>; Layer.group: Option<GroupId>, members adjacent
+│     (one level, no nesting; group visibility/lock/opacity apply to members; ADR-013)
 ├─ tracks: BTreeMap<LayerId, Track>    (timeline crate)
 │     Track = BTreeMap<FrameIndex, Keyframe>;  Keyframe = Drawing(DrawingId) | Empty
 └─ drawings: BTreeMap<DrawingId, DrawingContent>  (drawing crate)
