@@ -23,6 +23,9 @@ The `Release` workflow (`.github/workflows/release.yml`) then:
   (`scripts/check-release-notes.sh`),
 - builds `rusting` for macOS (one universal binary for Apple Silicon and
   Intel), Windows and Linux,
+- wraps the macOS binary in a signed and notarized `Rusting.app` inside
+  `rusting-<version>-universal-apple-darwin.dmg` (`scripts/macos-dmg.sh`,
+  see [macOS signing and notarization](#macos-signing-and-notarization)),
 - publishes a GitHub Release whose text is `release-notes.md` (without
   comments and empty sections, `scripts/clean-release-notes.sh`), followed by
   GitHub's generated list of merged PRs, with `rusting-<version>-<target>.tar.gz` (or
@@ -63,6 +66,40 @@ Adds frame tags, sprite sheet export and MOV video export.
 - Write for users. Leave out internal changes (CI, refactors, CLAUDE.md);
   they still appear in GitHub's generated PR list below the notes.
 
+## macOS signing and notarization
+
+The release workflow signs `Rusting.app` with the maintainer's "Developer ID
+Application" certificate and notarizes the DMG with an App Store Connect API
+key (ADR-014). It needs these repository secrets (Settings → Secrets and
+variables → Actions):
+
+| Secret | Value |
+|---|---|
+| `MACOS_CERT_P12` | The certificate exported from Keychain Access as `.p12`, base64: `base64 -i DeveloperID.p12 \| pbcopy` |
+| `MACOS_CERT_PASSWORD` | The password chosen when exporting the `.p12` |
+| `MACOS_SIGN_IDENTITY` | `Developer ID Application: <name> (<team id>)`, as listed by `security find-identity -v -p codesigning` |
+| `NOTARY_KEY_P8` | The App Store Connect API key, base64: `base64 -i AuthKey_<key id>.p8 \| pbcopy` |
+| `NOTARY_KEY_ID` | The key ID (the part after `AuthKey_` in the file name) |
+| `NOTARY_ISSUER_ID` | The issuer ID shown above the Team Keys list. Leave it unset for an individual key |
+
+If a secret is missing or Apple rejects the DMG, the release fails before
+anything is published; the notary log is printed in the job output.
+
+To build the DMG locally, build the universal binary as the workflow does,
+then run:
+
+```bash
+MACOS_SIGN_IDENTITY="Developer ID Application: <name> (<team id>)" NOTARY_PROFILE=rusting-notary scripts/macos-dmg.sh <version>
+```
+
+`NOTARY_PROFILE` is a profile saved with `xcrun notarytool store-credentials`.
+Pass `--no-notarize` to only sign. The DMG lands in `dist/`.
+
+`assets/Rusting.icns` is made from `assets/logo.svg`. Regenerate it with
+`rsvg-convert` (`brew install librsvg`), `sips` and `iconutil` when the logo
+changes. The Developer ID certificate is valid for five years; renew it in
+the Apple Developer account and replace the two certificate secrets.
+
 ## Rules
 
 - Never move or delete a published tag or replace release files. Homebrew
@@ -75,9 +112,10 @@ Adds frame tags, sprite sheet export and MOV video export.
 
 - **winget:** the Windows zip is ready for a winget manifest
   (`HalfdanIsaksen.Rusting`), submitted to `microsoft/winget-pkgs`.
-- **Signed macOS app:** a notarized `Rusting.app` / `.dmg` would allow a cask
-  and a download on the website, and is required for the official
-  `homebrew/cask` repository.
+- **Homebrew cask:** the notarized DMG can back a cask, and is required for
+  the official `homebrew/cask` repository.
+- **Signed Windows build:** Authenticode signing (for example Azure Artifact
+  Signing) to avoid SmartScreen warnings.
 - **Official Homebrew:** when accepted, delete `Formula/rusting.rb` and add a
   `tap_migrations.json` here pointing `rusting` at the official repository, so
   existing users move over on their next `brew update`.
