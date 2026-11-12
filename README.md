@@ -54,7 +54,7 @@ Set `RUST_LOG=debug` for more log output.
 | Document | What it covers |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Crate dependency graph, data model, coordinate spaces, frame flow |
-| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-012) |
+| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-013) |
 | [docs/roadmap.md](docs/roadmap.md) | Development phases and their acceptance criteria |
 | [docs/smoke-test.md](docs/smoke-test.md) | Manual end-to-end test checklist |
 | [docs/releasing.md](docs/releasing.md) | How to tag a release and update the Homebrew tap |
@@ -98,6 +98,8 @@ The tool strip runs down the side of the canvas:
 - **Frame tags**: select frames and press the tag button (or right-click the frames) to name them, for example "walk" or "jump". Tags show in a strip above the frame numbers. Click a tag to select its frames, double-click it to rename it, and right-click it to rename or remove it. Playback started inside a tag loops that tag.
 - Playback with loop, first/previous/next/last frame. `Space` plays and pauses, and `←/→` and `↑/↓` step frames and keys.
 - Layer controls in the timeline's layer column: add, duplicate, remove, rename (`F2` or double-click), drag to reorder, show/hide and lock/unlock, per layer or all at once.
+- **Layer opacity**: each layer row has an opacity field (0–100%). Drag it sideways or click it to type a value; one drag is one undo step.
+- **Layer groups**: select layers and press the folder button to put them in a group (a folder). The group gets a header row with its own show/hide, lock and opacity, which apply to all its layers, and an arrow to fold it. Click the header to select the group's layers, double-click to rename it, drag it to move the whole group, and right-click it (or use the ungroup button) to ungroup. Drag a layer between a group's rows to put it in the group, or out of them to take it out.
 - Select several layers with `Cmd/Ctrl`+click (toggle) or `Shift`+click (range); duplicate and remove act on the whole selection.
 - Onion skin (View → Onion skin).
 
