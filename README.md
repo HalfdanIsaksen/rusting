@@ -15,6 +15,8 @@ brew install HalfdanIsaksen/rusting/rusting
 
 Then run `rusting`. `brew upgrade rusting` updates it.
 
+macOS, as an app: download `rusting-<version>-universal-apple-darwin.dmg` from [Releases](https://github.com/HalfdanIsaksen/rusting/releases) (from 0.1.8), open it and drag Rusting to Applications. The app is signed and notarized by Apple.
+
 Windows and Linux: download the zip or tarball from [Releases](https://github.com/HalfdanIsaksen/rusting/releases).
 
 ## Build and run
@@ -45,16 +47,16 @@ Set `RUST_LOG=debug` for more log output.
 | `crates/renderer` | wgpu device, surface, canvas and stroke rendering, offscreen rendering for export |
 | `crates/ui` | The editing session and its egui panels |
 | `apps/desktop` | The executable: window, event loop, file dialogs, export wiring |
-| `assets` | WGSL shaders and the app logo |
+| `assets` | WGSL shaders, the app logo and the macOS app icon |
 | `tests` | Cross-crate integration tests (`integration_tests` crate) |
-| `Formula`, `scripts` | The Homebrew formula and the script that regenerates it on release |
+| `Formula`, `scripts` | The Homebrew formula, the script that regenerates it on release, and the macOS DMG script |
 
 ## Documentation
 
 | Document | What it covers |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Crate dependency graph, data model, coordinate spaces, frame flow |
-| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-013) |
+| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-014) |
 | [docs/roadmap.md](docs/roadmap.md) | Development phases and their acceptance criteria |
 | [docs/smoke-test.md](docs/smoke-test.md) | Manual end-to-end test checklist |
 | [docs/releasing.md](docs/releasing.md) | How to tag a release and update the Homebrew tap |
