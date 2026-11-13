@@ -548,9 +548,11 @@ name = "drawing"
 version = "0.1.8"
 dependencies = [
  "animation_core",
+ "epaint_default_fonts",
  "glam",
  "serde",
  "serde_json",
+ "ttf-parser",
 ]
 
 [[package]]
@@ -2967,6 +2969,7 @@ dependencies = [
  "document",
  "editor",
  "egui",
+ "epaint_default_fonts",
  "file_format",
  "tracing",
 ]

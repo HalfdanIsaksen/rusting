@@ -289,6 +289,7 @@ impl Session {
         self.history.clear();
         self.path = path;
         self.tools.cancel();
+        self.cancel_text();
         self.sync_selection();
     }
 
@@ -306,9 +307,11 @@ impl Session {
         result
     }
 
-    /// Undoes the last command.
+    /// Undoes the last command. Text being typed is committed first, so
+    /// undo takes it back out.
     pub fn undo(&mut self) {
         self.tools.cancel();
+        self.commit_text();
         let label = self.history.undo_label().map(str::to_owned);
         match self.history.undo(&mut self.document) {
             Ok(true) => {
@@ -323,6 +326,7 @@ impl Session {
     /// Redoes the last undone command.
     pub fn redo(&mut self) {
         self.tools.cancel();
+        self.commit_text();
         let label = self.history.redo_label().map(str::to_owned);
         match self.history.redo(&mut self.document) {
             Ok(true) => {

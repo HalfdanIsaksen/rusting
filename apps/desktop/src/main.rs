@@ -429,7 +429,12 @@ fn collect_draws(
         .tools
         .preview()
         .map(|(layer, stroke)| (layer, None, Some(stroke)))
-        .or_else(|| session.tools.shape_preview());
+        .or_else(|| session.tools.shape_preview())
+        .or_else(|| {
+            session
+                .text_preview()
+                .map(|(layer, fill)| (layer, Some(fill), None))
+        });
     let preview_order = session.tools.preview_order();
     // Selected items being dragged are drawn moved by the drag offset, or
     // scaled/rotated copies while the transform tool drags (copies, so brush

@@ -155,6 +155,11 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
             for (keys, what) in [
                 ("B / E", "Brush / Eraser"),
                 ("I / Alt+click", "Eyedropper: pick a colour from the canvas"),
+                ("T", "Text: click the canvas and type"),
+                (
+                    "Enter / Cmd/Ctrl+Enter",
+                    "Text: new line / finish (Esc cancels)",
+                ),
                 ("Space", "Play / pause (hold and drag to pan)"),
                 ("← / →", "Previous / next frame"),
                 ("↑ / ↓", "Previous / next key"),

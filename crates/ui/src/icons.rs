@@ -241,6 +241,43 @@ pub fn eyedropper(painter: &Painter, rect: Rect, color: Color32) {
     painter.circle_filled(at(rect, 0.14, 0.90), rect.width() * 0.06, color);
 }
 
+/// Text tool: a capital T with small serifs at the ends of the bar.
+pub fn text(painter: &Painter, rect: Rect, color: Color32) {
+    // Bar.
+    filled(
+        painter,
+        rect,
+        color,
+        &[(0.18, 0.16), (0.82, 0.16), (0.82, 0.27), (0.18, 0.27)],
+    );
+    // Serifs hanging from the bar's ends.
+    filled(
+        painter,
+        rect,
+        color,
+        &[(0.18, 0.16), (0.26, 0.16), (0.26, 0.36), (0.18, 0.34)],
+    );
+    filled(
+        painter,
+        rect,
+        color,
+        &[(0.74, 0.16), (0.82, 0.16), (0.82, 0.34), (0.74, 0.36)],
+    );
+    // Stem and its foot.
+    filled(
+        painter,
+        rect,
+        color,
+        &[(0.44, 0.24), (0.56, 0.24), (0.56, 0.84), (0.44, 0.84)],
+    );
+    filled(
+        painter,
+        rect,
+        color,
+        &[(0.34, 0.80), (0.66, 0.80), (0.66, 0.88), (0.34, 0.88)],
+    );
+}
+
 /// Hand (pan) tool: palm with four fingers and a thumb.
 pub fn hand(painter: &Painter, rect: Rect, color: Color32) {
     let finger = line_width(rect) * 2.0;

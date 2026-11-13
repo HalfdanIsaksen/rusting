@@ -116,6 +116,7 @@ pub const TOOLS: &[ToolEntry] = &[
         "O",
         ToolGroup::Drawing,
     ),
+    ToolEntry::new(Tool::Text, icons::text, "Text", "T", ToolGroup::Drawing),
     ToolEntry::new(Tool::Eraser, icons::eraser, "Eraser", "E", ToolGroup::Paint)
         .with_options(eraser_popup),
     ToolEntry::new(

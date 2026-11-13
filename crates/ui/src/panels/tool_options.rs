@@ -34,6 +34,10 @@ const EYEDROPPER_HINT: &str = "Click the canvas to pick the colour of the topmos
 const PARTIAL_HINT: &str = "Cuts away the part of each stroke and fill it passes over on the \
                             active layer and frame.";
 const STROKE_HINT: &str = "Removes every stroke and fill it touches on the active layer and frame.";
+const TEXT_HINT: &str = "Click the canvas and type. Enter starts a new line; Cmd/Ctrl+Enter, a \
+                         click elsewhere or another tool finishes the text, Esc cancels it. \
+                         The text becomes vector shapes (one fill) in the brush colour: \
+                         select, move, transform or erase it like any fill.";
 const FILL_HINT: &str = "Fills the area enclosed by lines, with the brush colour and opacity. \
                          Click a fill to recolour it.";
 
@@ -165,6 +169,21 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
             ui.weak(EYEDROPPER_HINT);
             ui.separator();
             paint_settings(ui, session);
+        }
+        Tool::Text => {
+            ui.label("Font size");
+            ui.add(
+                egui::Slider::new(&mut session.tools.text_size, 4.0..=500.0)
+                    .logarithmic(true)
+                    .max_decimals(1),
+            )
+            .on_hover_text("Height of one em in document units.");
+            ui.separator();
+            paint_order(ui, &mut session.tools.text_order);
+            ui.separator();
+            paint_settings(ui, session);
+            ui.separator();
+            ui.weak(TEXT_HINT);
         }
         Tool::Eraser => {
             eraser_size(ui, session);

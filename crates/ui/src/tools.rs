@@ -24,6 +24,13 @@
 //! centre (Shift snaps to 15°), and dragging inside the box moves it. The
 //! drag is previewed and committed as one `TransformItems` on release. A
 //! press anywhere else selects, like the select tool.
+//!
+//! The text tool is not a drag gesture: a click places an insertion point
+//! ([`ToolController::is_typing`]), the keyboard handler feeds it with
+//! [`Session::type_text`] and [`Session::text_backspace`], and
+//! [`Session::commit_text`] adds the glyph outlines as one fill in one undo
+//! step (ADR-016). [`Session::sync_text`] commits when the tool, layer or
+//! frame changes.
 
 use crate::paint_order::PaintOrder;
 use crate::session::Session;
@@ -31,7 +38,7 @@ use crate::shapes::{ShapeKind, ShapeStyle, shape_box, shape_items};
 use document::animation_core::{FillId, FrameIndex, LayerId, Rgba, StrokeId, Vec2};
 use document::drawing::select::{Affine2, rect_from_corners, scale_rotate_about};
 use document::drawing::{
-    BrushStyle, Fill, FillEraser, FillShape, GapClosing, Gradient, ItemId, Placement, Stroke,
+    BrushStyle, Fill, FillEraser, FillShape, Font, GapClosing, Gradient, ItemId, Placement, Stroke,
     StrokeBuilder, StrokePoint, VectorDrawing,
 };
 use editor::Tool;
@@ -46,6 +53,13 @@ const MIN_POINT_SPACING_SCREEN: f32 = 0.75;
 /// Brush smoothing sigma at 100 % smoothing, in screen points. Scaled by
 /// zoom so the same setting feels the same at any zoom level.
 const MAX_SMOOTHING_SCREEN: f32 = 15.0;
+
+/// The font of the text tool: Ubuntu Light, the font egui bundles
+/// (Ubuntu Font Licence 1.0; see ADR-016).
+pub const TEXT_FONT: &[u8] = epaint_default_fonts::UBUNTU_LIGHT;
+
+/// Default font size of the text tool, in document units.
+pub const DEFAULT_TEXT_SIZE: f32 = 48.0;
 
 /// Default brush smoothing, in percent.
 pub const DEFAULT_BRUSH_SMOOTHING: f32 = 50.0;
@@ -369,6 +383,18 @@ fn borders(stroke: &Stroke, fill: &Fill) -> bool {
         .any(|&p| stroke.hit_test(p, SLACK))
 }
 
+/// Text being typed with the text tool, not yet in the document.
+#[derive(Clone, Debug)]
+struct TextEntry {
+    layer: LayerId,
+    frame: FrameIndex,
+    /// Top-left of the first line, in document coordinates.
+    origin: Vec2,
+    text: String,
+    /// Fill id used for the live preview mesh.
+    preview_id: FillId,
+}
+
 /// What the fill bucket paints an area with.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FillStyle {
@@ -404,6 +430,12 @@ pub struct ToolController {
     pub gradient_color: Rgba,
     /// Stroke and fill of the rectangle and ellipse tools.
     pub shape_style: ShapeStyle,
+    /// Font size of the text tool, in document units (the em height).
+    pub text_size: f32,
+    /// Where new text goes in the frame's paint order (ADR-010).
+    pub text_order: PaintOrder,
+    /// Text being typed, if any.
+    text: Option<TextEntry>,
     /// Gradient fill: the first click, waiting for the second, which sets
     /// where `gradient_color` is reached.
     gradient_start: Option<(LayerId, FrameIndex, Vec2)>,
@@ -432,6 +464,9 @@ impl Default for ToolController {
             merge_same_colour: true,
             gradient_color: Rgba::WHITE,
             shape_style: ShapeStyle::default(),
+            text_size: DEFAULT_TEXT_SIZE,
+            text_order: PaintOrder::default(),
+            text: None,
             gradient_start: None,
             gesture: None,
             selection: Vec::new(),
@@ -457,6 +492,17 @@ impl ToolController {
     /// Whether a gesture is in progress.
     pub fn is_active(&self) -> bool {
         self.gesture.is_some()
+    }
+
+    /// Whether the text tool has an insertion point and takes the keyboard:
+    /// canvas shortcuts must not fire while this is true.
+    pub fn is_typing(&self) -> bool {
+        self.text.is_some()
+    }
+
+    /// The text typed so far, while typing.
+    pub fn typed_text(&self) -> Option<&str> {
+        self.text.as_ref().map(|t| t.text.as_str())
     }
 
     /// The selected strokes and fills.
@@ -623,7 +669,9 @@ impl ToolController {
     pub fn preview_order(&self) -> PaintOrder {
         match &self.gesture {
             Some(Gesture::Shape { .. }) => self.shape_style.order,
-            _ => self.brush_order,
+            Some(_) => self.brush_order,
+            None if self.text.is_some() => self.text_order,
+            None => self.brush_order,
         }
     }
 
@@ -744,8 +792,12 @@ impl Session {
     /// [`ToolController::set_modifiers`]). The shape tools pick on an
     /// Alt-click, but an Alt-drag still draws from the centre. Picking works
     /// on locked and hidden layers too, since it changes nothing.
+    ///
+    /// With the text tool a press commits the text being typed, if any, and
+    /// places a new insertion point at `pos`.
     pub fn pointer_down_with(&mut self, pos: Vec2, zoom: f32, shift: bool) -> bool {
         self.tools.cancel();
+        self.commit_text();
         self.tools.shift = shift;
         let tool = self.state.tool;
         let alt = self.tools.alt;
@@ -840,6 +892,17 @@ impl Session {
             },
             // Picked above.
             Tool::Eyedropper => return true,
+            // Typing is not a drag: the keyboard feeds the insertion point.
+            Tool::Text => {
+                self.tools.text = Some(TextEntry {
+                    layer,
+                    frame,
+                    origin: pos,
+                    text: String::new(),
+                    preview_id: FillId::new(),
+                });
+                return true;
+            }
             Tool::Eraser => Gesture::Erase {
                 layer,
                 frame,
@@ -1325,6 +1388,95 @@ impl Session {
         if self.tools.selection.is_empty() {
             self.tools.clear_selection();
         }
+    }
+
+    /// Adds `text` at the insertion point of the text tool. Line breaks
+    /// (`\n`, `\r\n`) start a new line; other control characters except
+    /// tabs are dropped. Does nothing when not typing.
+    pub fn type_text(&mut self, text: &str) {
+        if let Some(entry) = &mut self.tools.text {
+            let text = text.replace("\r\n", "\n");
+            entry.text.extend(
+                text.chars()
+                    .filter(|c| matches!(c, '\n' | '\t') || !c.is_control()),
+            );
+        }
+    }
+
+    /// Removes the last typed character.
+    pub fn text_backspace(&mut self) {
+        if let Some(entry) = &mut self.tools.text {
+            entry.text.pop();
+        }
+    }
+
+    /// Drops the text being typed without changing the document.
+    pub fn cancel_text(&mut self) {
+        self.tools.text = None;
+    }
+
+    /// Ends typing: adds the typed text as one fill of glyph outlines, in
+    /// the brush colour and opacity and the text tool's draw order, as one
+    /// undo step ("Text"). Creates a key on the frame if it has none, like
+    /// the brush, and is refused on a locked layer. Text without visible
+    /// glyphs adds nothing. Same-colour merging is not applied, since it
+    /// would re-trace the glyphs on a grid (ADR-012, ADR-016).
+    pub fn commit_text(&mut self) {
+        let Some(entry) = self.tools.text.take() else {
+            return;
+        };
+        let Some(fill) = self.text_fill(&entry, FillId::new()) else {
+            return;
+        };
+        let order = self.tools.text_order;
+        let drawing = vector_at(&self.document, entry.layer, entry.frame);
+        let fill = fill.with_placement(order.placement(drawing));
+        let add = AddFill::new(entry.layer, entry.frame, fill).behind(order.at_bottom());
+        let _ = self.execute(Box::new(Batch::new("Text", vec![Box::new(add)])));
+    }
+
+    /// Commits the text being typed when its context is gone: another tool
+    /// was picked, or the active layer or the frame changed. Call once per
+    /// UI frame.
+    pub fn sync_text(&mut self) {
+        let Some(entry) = &self.tools.text else {
+            return;
+        };
+        let same_place =
+            self.state.active_layer == Some(entry.layer) && self.current_frame() == entry.frame;
+        if self.state.tool != Tool::Text || !same_place {
+            self.commit_text();
+        }
+    }
+
+    /// The text being typed as a fill, for the live preview, and the layer
+    /// it goes on. `None` before anything visible is typed.
+    pub fn text_preview(&self) -> Option<(LayerId, Fill)> {
+        let entry = self.tools.text.as_ref()?;
+        Some((entry.layer, self.text_fill(entry, entry.preview_id)?))
+    }
+
+    /// The text tool's caret: its top and its height, in document
+    /// coordinates. `None` when not typing.
+    pub fn text_caret(&self) -> Option<(Vec2, f32)> {
+        let entry = self.tools.text.as_ref()?;
+        let font = Font::parse(TEXT_FONT).ok()?;
+        let layout = font.layout(&entry.text, self.tools.text_size, entry.origin);
+        Some((layout.caret, layout.line_height))
+    }
+
+    /// `entry`'s glyph outlines as a fill with id `id`, in the brush colour
+    /// and opacity; `None` if nothing visible was typed.
+    fn text_fill(&self, entry: &TextEntry, id: FillId) -> Option<Fill> {
+        let font = Font::parse(TEXT_FONT).ok()?;
+        let layout = font.layout(&entry.text, self.tools.text_size, entry.origin);
+        if layout.shape.contours.is_empty() {
+            return None;
+        }
+        let brush = &self.state.brush;
+        let mut fill = Fill::new(layout.shape, brush.color, brush.opacity);
+        fill.id = id;
+        Some(fill)
     }
 
     /// Ends the gesture and commits it as one undoable command.
@@ -2553,5 +2705,163 @@ mod tests {
         click(&mut s, handle, false);
         drag(&mut s, handle, handle + Vec2::new(1.0, 0.0), false);
         assert_eq!(s.history.undo_len(), undo_len);
+    }
+
+    // ----- Text tool -----------------------------------------------------
+
+    fn fills_at(s: &Session, frame: u32) -> Vec<Fill> {
+        let layer = s.state.active_layer.unwrap();
+        vector_at(&s.document, layer, FrameIndex(frame)).map_or(Vec::new(), |d| d.fills().to_vec())
+    }
+
+    fn type_at(s: &mut Session, pos: Vec2, text: &str) {
+        s.state.tool = Tool::Text;
+        assert!(s.pointer_down(pos, 1.0));
+        s.pointer_up();
+        s.type_text(text);
+    }
+
+    #[test]
+    fn text_commits_as_one_fill_in_one_undo_step() {
+        let mut s = Session::new();
+        s.set_frame(FrameIndex(5));
+        let layer = s.state.active_layer.unwrap();
+        assert!(s.document.drawing_at(layer, FrameIndex(5)).is_none());
+        s.state.brush.color = Rgba::rgb(0.8, 0.1, 0.1);
+        s.state.brush.opacity = 0.5;
+        type_at(&mut s, Vec2::new(40.0, 40.0), "Bob");
+        // Previewed, not yet in the document.
+        let (preview_layer, preview) = s.text_preview().unwrap();
+        assert_eq!(preview_layer, layer);
+        assert!(fills_at(&s, 5).is_empty());
+        let (caret, height) = s.text_caret().unwrap();
+        assert!(caret.x > 40.0 && caret.y == 40.0 && height > 40.0);
+        let undo_len = s.history.undo_len();
+        s.commit_text();
+        assert!(!s.tools.is_typing());
+        assert_eq!(s.history.undo_len(), undo_len + 1);
+        assert_eq!(s.history.undo_label(), Some("Text"));
+        // A key was created on the frame, like the brush does.
+        assert!(
+            s.document
+                .track(layer)
+                .unwrap()
+                .key_at(FrameIndex(5))
+                .is_some()
+        );
+        let fills = fills_at(&s, 5);
+        assert_eq!(fills.len(), 1);
+        let fill = &fills[0];
+        assert_eq!(fill.contours, preview.contours);
+        assert_eq!((fill.color, fill.opacity), (s.state.brush.color, 0.5));
+        // "B" has two counters, "o" and "b" one each: the holes are kept.
+        let holes = fill
+            .contours
+            .iter()
+            .filter(|c| {
+                FillShape {
+                    contours: vec![(*c).clone()],
+                }
+                .area()
+                    < 0.0
+            })
+            .count();
+        assert_eq!(holes, 4);
+        // Undo removes the text and the key it made; redo brings both back.
+        s.undo();
+        assert!(s.document.drawing_at(layer, FrameIndex(5)).is_none());
+        s.redo();
+        assert_eq!(fills_at(&s, 5).len(), 1);
+    }
+
+    #[test]
+    fn text_selects_and_moves_as_one_item() {
+        let mut s = Session::new();
+        type_at(&mut s, Vec2::new(40.0, 40.0), "Hi");
+        s.commit_text();
+        let fill = fills_at(&s, 0)[0].clone();
+        let (min, max) = fill.bounds().unwrap();
+        s.state.tool = Tool::Select;
+        s.select_all();
+        assert_eq!(s.tools.selection(), &[ItemId::Fill(fill.id)]);
+        s.nudge_selection(Vec2::new(10.0, 0.0));
+        let moved = fills_at(&s, 0)[0].bounds().unwrap();
+        assert_eq!(moved, (min + Vec2::X * 10.0, max + Vec2::X * 10.0));
+    }
+
+    #[test]
+    fn escape_and_empty_text_add_nothing() {
+        let mut s = Session::new();
+        let undo_len = s.history.undo_len();
+        type_at(&mut s, Vec2::new(10.0, 10.0), "Hello");
+        s.cancel_text();
+        assert!(!s.tools.is_typing());
+        type_at(&mut s, Vec2::new(10.0, 10.0), "   \n");
+        s.commit_text();
+        assert_eq!(s.history.undo_len(), undo_len);
+        assert!(fills_at(&s, 0).is_empty());
+    }
+
+    #[test]
+    fn backspace_and_new_lines_edit_the_text() {
+        let mut s = Session::new();
+        type_at(&mut s, Vec2::ZERO, "ab");
+        s.text_backspace();
+        s.type_text("\r\nc\u{7}");
+        assert_eq!(s.tools.typed_text(), Some("a\nc"));
+        let (caret, height) = s.text_caret().unwrap();
+        assert!((caret.y - height).abs() < 1e-3);
+    }
+
+    #[test]
+    fn clicking_elsewhere_or_switching_tools_commits() {
+        let mut s = Session::new();
+        type_at(&mut s, Vec2::new(10.0, 10.0), "A");
+        // A second click commits "A" and starts a new insertion point.
+        type_at(&mut s, Vec2::new(10.0, 200.0), "B");
+        assert_eq!(fills_at(&s, 0).len(), 1);
+        assert_eq!(s.tools.typed_text(), Some("B"));
+        s.state.tool = Tool::Brush;
+        s.sync_text();
+        assert!(!s.tools.is_typing());
+        assert_eq!(fills_at(&s, 0).len(), 2);
+        // Changing the frame commits on the frame the text was typed on.
+        type_at(&mut s, Vec2::new(10.0, 300.0), "C");
+        s.set_frame(FrameIndex(3));
+        s.sync_text();
+        assert_eq!(fills_at(&s, 0).len(), 3);
+    }
+
+    #[test]
+    fn text_respects_locked_layers_and_draw_order() {
+        let mut s = Session::new();
+        let layer = s.state.active_layer.unwrap();
+        s.execute(Box::new(SetLayerLocked::new(layer, true)))
+            .unwrap();
+        s.state.tool = Tool::Text;
+        assert!(!s.pointer_down(Vec2::new(10.0, 10.0), 1.0));
+        assert!(!s.tools.is_typing());
+        s.undo();
+        // Behind: under an existing fill, on a back level.
+        rectangle(&mut s, Vec2::new(0.0, 0.0), Vec2::new(100.0, 100.0));
+        s.tools.text_order = PaintOrder::Behind;
+        type_at(&mut s, Vec2::new(10.0, 10.0), "x");
+        assert_eq!(s.tools.preview_order(), PaintOrder::Behind);
+        s.commit_text();
+        let fills = fills_at(&s, 0);
+        assert!(
+            fills
+                .iter()
+                .any(|f| matches!(f.placement, Placement::Back(_))),
+            "{fills:?}"
+        );
+        // Locking the layer while typing: the commit is refused with a message.
+        type_at(&mut s, Vec2::new(10.0, 10.0), "y");
+        s.execute(Box::new(SetLayerLocked::new(layer, true)))
+            .unwrap();
+        let undo_len = s.history.undo_len();
+        s.commit_text();
+        assert_eq!(s.history.undo_len(), undo_len);
+        assert!(s.status().unwrap().is_error);
     }
 }
