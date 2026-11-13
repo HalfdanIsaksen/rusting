@@ -75,7 +75,7 @@ The tool strip runs down the side of the canvas:
 | Tool | Key | What it does |
 |---|---|---|
 | Selection | `V` | Select strokes, fills and imported pictures (click, or drag a box from anywhere), then move or delete them |
-| Lasso | `L` | Select strokes and fills by drawing a loop around them |
+| Lasso | `L` | Select strokes, fills and pictures by drawing a loop around them |
 | Transform | `Q` | Scale and rotate the selection with box handles |
 | Brush | `B` | Vector strokes with size, opacity, colour, a 0–100% smoothing slider and a draw order (see below). Hold `Shift` to draw a straight line |
 | Rectangle | `R` | Drag out a rectangle with a stroke and a fill. Set stroke width, stroke colour and fill colour (or turn either off) in Tool Settings. The fill can be solid or a gradient into a second colour, running left to right, top to bottom or diagonally. `Shift` makes a square, `Alt` draws from the centre. Draw order applies to both fill and stroke |
