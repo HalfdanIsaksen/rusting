@@ -1802,10 +1802,31 @@ mod tests {
     }
 
     #[test]
+    fn bucket_fill_absorbs_its_same_colour_outline() {
+        let mut s = Session::new();
+        s.tools.shape_style.fill = false;
+        s.tools.shape_style.stroke_color = s.state.brush.color;
+        rectangle(&mut s, Vec2::new(10.0, 10.0), Vec2::new(90.0, 90.0));
+        let layer = s.state.active_layer.unwrap();
+        s.fill_at(layer, FrameIndex(0), Vec2::new(50.0, 50.0), 1.0);
+        let d = s.active_drawing().unwrap();
+        assert!(d.strokes().is_empty(), "outline merged into the fill");
+        assert_eq!(d.fills().len(), 1);
+        // The fill covers the outline's outer edge too.
+        assert!(d.fills()[0].contains(Vec2::new(9.0, 50.0)));
+        // One undo step brings back the outline alone.
+        s.undo();
+        let d = s.active_drawing().unwrap();
+        assert_eq!((d.strokes().len(), d.fills().len()), (1, 0));
+    }
+
+    #[test]
     fn bucket_keeps_the_tier_and_can_fill_in_front() {
         let mut s = Session::new();
         s.tools.shape_style.fill = false;
         s.tools.shape_style.order = PaintOrder::InFront;
+        // Not the bucket's colour, so the fill does not absorb the outline.
+        s.tools.shape_style.stroke_color = Rgba::new(0.1, 0.1, 0.5, 1.0);
         rectangle(&mut s, Vec2::new(10.0, 10.0), Vec2::new(90.0, 90.0));
         let layer = s.state.active_layer.unwrap();
         s.tools.fill_order = PaintOrder::InFront;
