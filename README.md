@@ -56,7 +56,7 @@ Set `RUST_LOG=debug` for more log output.
 | Document | What it covers |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Crate dependency graph, data model, coordinate spaces, frame flow |
-| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-014) |
+| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-015) |
 | [docs/roadmap.md](docs/roadmap.md) | Development phases and their acceptance criteria |
 | [docs/smoke-test.md](docs/smoke-test.md) | Manual end-to-end test checklist |
 | [docs/releasing.md](docs/releasing.md) | How to tag a release and update the Homebrew tap |
@@ -74,7 +74,7 @@ The tool strip runs down the side of the canvas:
 
 | Tool | Key | What it does |
 |---|---|---|
-| Selection | `V` | Select strokes and fills (click, or drag a box from anywhere), then move or delete them |
+| Selection | `V` | Select strokes, fills and imported pictures (click, or drag a box from anywhere), then move or delete them |
 | Lasso | `L` | Select strokes and fills by drawing a loop around them |
 | Transform | `Q` | Scale and rotate the selection with box handles |
 | Brush | `B` | Vector strokes with size, opacity, colour, a 0–100% smoothing slider and a draw order (see below). Hold `Shift` to draw a straight line |
@@ -122,6 +122,7 @@ The tool strip runs down the side of the canvas:
 - Export the current frame as PNG/JPG, an image sequence, or an H.264 video as MP4 or MOV (QuickTime).
 - **Export GIF**: the frame range as a looping animated GIF at the document frame rate, for animations up to 15 seconds. A longer range is refused with a message to export it as a video or image sequence instead.
 - **Export Sprite Sheet**: every frame tag becomes its own row of frames in one PNG/JPG image. Without tags, the chosen frame range goes on one row.
+- **Import** (File → Import…, below Export): pick one or more PNG or JPEG pictures. Each goes onto the current layer and frame, centred on the canvas and shrunk to fit if it is larger, and is selected so you can move it right away. Pictures move, scale, rotate and delete with the selection tools like any other item, paint under the strokes and fills you draw on top of them (handy for tracing), show in the preview and in every export, and are saved inside the project file.
 
 ## Contributing workflow
 
