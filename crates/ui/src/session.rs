@@ -304,8 +304,8 @@ impl Session {
         result
     }
 
-    /// Undoes the last command.
-    /// Text being typed is committed first, so undo takes it back out.
+    /// Undoes the last command. Text being typed is committed first, so
+    /// undo takes it back out.
     pub fn undo(&mut self) {
         self.tools.cancel();
         self.commit_text();

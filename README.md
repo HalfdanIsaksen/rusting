@@ -56,7 +56,7 @@ Set `RUST_LOG=debug` for more log output.
 | Document | What it covers |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Crate dependency graph, data model, coordinate spaces, frame flow |
-| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-014) |
+| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-016) |
 | [docs/roadmap.md](docs/roadmap.md) | Development phases and their acceptance criteria |
 | [docs/smoke-test.md](docs/smoke-test.md) | Manual end-to-end test checklist |
 | [docs/releasing.md](docs/releasing.md) | How to tag a release and update the Homebrew tap |
@@ -80,13 +80,14 @@ The tool strip runs down the side of the canvas:
 | Brush | `B` | Vector strokes with size, opacity, colour, a 0–100% smoothing slider and a draw order (see below). Hold `Shift` to draw a straight line |
 | Rectangle | `R` | Drag out a rectangle with a stroke and a fill. Set stroke width, stroke colour and fill colour (or turn either off) in Tool Settings. The fill can be solid or a gradient into a second colour, running left to right, top to bottom or diagonally. `Shift` makes a square, `Alt` draws from the centre. Draw order applies to both fill and stroke |
 | Ellipse | `O` | Like Rectangle, for ellipses; `Shift` makes a circle |
+| Text | `T` | Click the canvas and type, with a live preview and caret. `Enter` starts a new line, `Backspace` deletes, `Esc` cancels; `Cmd/Ctrl+Enter`, a click elsewhere or another tool finishes. Set font size, colour, opacity and draw order in Tool Settings. The text becomes vector shapes (one fill per text block, letters keep their holes), so it selects, moves, transforms, erases and exports like any fill, but can't be edited as text afterwards. Tool and canvas shortcuts are off while you type. Font: Ubuntu Light |
 | Eraser | `E` | Erase part of a stroke or fill, or whole strokes and fills. Partial erasing cuts holes in fills or splits them into separate fills, with a live preview; every drag is one undo step |
 | Paint Bucket | `K` | Fill areas enclosed by strokes, with optional gap closing. Click a stroke to recolour it. Recolouring a fill also recolours the strokes along its edge that had the fill's colour, and keeps its draw order |
 | Eyedropper | `I` | Click the canvas to pick the colour (and opacity) of the topmost stroke or fill on the active layer; a gradient fill gives its colour at that point, and empty canvas gives the background colour. Sets the brush and paint bucket colour. `Alt`+click with the Brush, Paint Bucket, Rectangle or Ellipse picks a colour without switching tools (shapes take it as their stroke or fill colour; an `Alt`+drag still draws from the centre) |
 
 **Merge same colour** (Brush, Rectangle, Ellipse, Paint Bucket; on by default): a new stroke or fill that touches fills of the same colour, opacity and draw order becomes one fill with them, so the shape selects, moves and erases as one item. A new fill also takes in the strokes of its colour that touch it, so fill and outline become one shape; strokes in other colours stay line art and keep bounding bucket fills. Turn it off in Tool Settings to keep items separate.
 
-**Draw order** (Brush, Rectangle, Ellipse, Paint Bucket): **Behind** puts the new item under everything already in the frame, fills included, **Normal** puts it on top, and **In front** keeps it on top of everything else, including what you draw later. The live preview shows where it lands. Erasing, moving and transforming keep an item's draw order.
+**Draw order** (Brush, Rectangle, Ellipse, Text, Paint Bucket): **Behind** puts the new item under everything already in the frame, fills included, **Normal** puts it on top, and **In front** keeps it on top of everything else, including what you draw later. The live preview shows where it lands. Erasing, moving and transforming keep an item's draw order.
 
 ### Canvas
 - Pan with middle-drag or by holding Space, zoom with the wheel or pinch, press `F` to fit.
