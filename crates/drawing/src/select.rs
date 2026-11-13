@@ -5,7 +5,7 @@
 //! Rectangles are `(min, max)` pairs in document coordinates, like
 //! [`Stroke::bounds`].
 
-use animation_core::{FillId, StrokeId, Vec2};
+use animation_core::{FillId, ImageId, StrokeId, Vec2};
 pub use glam::Affine2;
 
 use crate::fill::{Fill, FillShape};
@@ -18,6 +18,14 @@ pub enum ItemId {
     Stroke(StrokeId),
     /// A fill.
     Fill(FillId),
+    /// An imported picture.
+    Image(ImageId),
+}
+
+impl From<ImageId> for ItemId {
+    fn from(id: ImageId) -> Self {
+        Self::Image(id)
+    }
 }
 
 impl From<StrokeId> for ItemId {
@@ -31,6 +39,7 @@ impl From<PaintItem<'_>> for ItemId {
         match item {
             PaintItem::Fill(f) => Self::Fill(f.id),
             PaintItem::Stroke(s) => Self::Stroke(s.id),
+            PaintItem::Image(i) => Self::Image(i.id),
         }
     }
 }
@@ -170,6 +179,9 @@ impl VectorDrawing {
         for fill in self.fills_mut() {
             fill.translate(delta);
         }
+        for image in self.images_mut() {
+            image.translate(delta);
+        }
     }
 
     /// Whether the drawing holds `item`.
@@ -177,6 +189,7 @@ impl VectorDrawing {
         match item {
             ItemId::Stroke(id) => self.stroke(id).is_some(),
             ItemId::Fill(id) => self.fill(id).is_some(),
+            ItemId::Image(id) => self.image(id).is_some(),
         }
     }
 
@@ -192,6 +205,7 @@ impl VectorDrawing {
         match item {
             ItemId::Stroke(id) => self.stroke(id)?.bounds(),
             ItemId::Fill(id) => self.fill(id)?.bounds(),
+            ItemId::Image(id) => Some(self.image(id)?.bounds()),
         }
     }
 
@@ -212,11 +226,13 @@ impl VectorDrawing {
             .find(|item| match item {
                 PaintItem::Stroke(s) => s.hit_test(point, tolerance),
                 PaintItem::Fill(f) => f.contains(point),
+                PaintItem::Image(i) => i.contains(point),
             })
             .map(ItemId::from)
     }
 
-    /// Items with any point (stroke point or fill contour point) inside
+    /// Items with any point (stroke point, fill contour point or image
+    /// corner) inside
     /// `polygon`, in the order of [`Self::all_items`]. A fill the polygon
     /// lies entirely within is not hit, so a box drawn over a background
     /// fill leaves it alone.
@@ -242,6 +258,9 @@ impl VectorDrawing {
                 ItemId::Fill(id) => self
                     .fill(id)
                     .is_some_and(|f| f.contours.iter().flatten().any(|&p| shape.contains(p))),
+                ItemId::Image(id) => self
+                    .image(id)
+                    .is_some_and(|i| i.corners().iter().any(|&p| shape.contains(p))),
             })
             .collect()
     }
@@ -477,6 +496,36 @@ mod tests {
         assert_eq!(d.item_bounds(missing), None);
         assert_eq!(d.items_bounds(&[missing]), None);
         assert_eq!(d.items_bounds(&[missing, fill]), d.item_bounds(fill));
+    }
+
+    #[test]
+    fn images_select_move_and_paint_under_fills() {
+        use crate::image::{Image, ImageData};
+        let (mut d, fill, _, _) = scene();
+        let img = Image::new(
+            ImageData::new(2, 2, vec![0]),
+            v(50.0, 50.0),
+            v(100.0, 100.0),
+        );
+        let id = ItemId::Image(img.id);
+        d.push_image(img);
+        assert_eq!(d.all_items()[0], id, "images paint first in a tier");
+        assert_eq!(d.item_at(v(120.0, 120.0), 0.0), Some(id));
+        assert_eq!(d.item_at(v(60.0, 60.0), 0.0), Some(fill), "fill is above");
+        assert_eq!(d.item_bounds(id), Some((v(50.0, 50.0), v(150.0, 150.0))));
+        let rect = [
+            v(140.0, 140.0),
+            v(160.0, 140.0),
+            v(160.0, 160.0),
+            v(140.0, 160.0),
+        ];
+        assert_eq!(d.items_in_polygon(&rect), vec![id]);
+        d.translate(v(10.0, 0.0));
+        assert_eq!(d.item_bounds(id), Some((v(60.0, 50.0), v(160.0, 150.0))));
+        assert!(d.contains_item(id));
+        let copy = d.duplicate();
+        assert_eq!(copy.images().len(), 1);
+        assert_ne!(copy.images()[0].id, d.images()[0].id);
     }
 
     #[test]

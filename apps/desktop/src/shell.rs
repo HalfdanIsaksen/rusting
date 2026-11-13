@@ -401,6 +401,11 @@ fn paint_selection(
                             .collect()
                     })
                     .unwrap_or_default(),
+                ItemId::Image(id) => drawing
+                    .image(id)
+                    .map(|i| (i.corners().map(map).to_vec(), true))
+                    .into_iter()
+                    .collect(),
             };
             for (points, closed) in paths {
                 match points.as_slice() {

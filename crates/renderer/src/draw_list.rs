@@ -10,7 +10,7 @@ use animation_core::glam::Mat4;
 use animation_core::{LayerId, Rgba};
 use document::RenderList;
 use document::scene::BlendMode;
-use drawing::{Fill, Gradient, PaintItem, Stroke, tessellate, tessellate_fill};
+use drawing::{Fill, Gradient, Image, PaintItem, Stroke, tessellate, tessellate_fill};
 
 /// Draw colour of a stroke on a layer: its colour with brush and layer
 /// opacity applied.
@@ -98,6 +98,21 @@ impl<'a> DrawListBuilder<'a> {
         });
     }
 
+    /// Adds an imported picture drawn with `opacity` (image and layer
+    /// opacity together) through `transform`. Its texture is decoded now and
+    /// uploaded by the next render.
+    pub fn image(&mut self, image: &Image, opacity: f32, transform: Mat4) {
+        self.cache.ensure_image(self.device, image);
+        self.draws.push(StrokeDraw {
+            id: image.id.into(),
+            color: Rgba::WHITE.with_opacity(image.opacity * opacity),
+            gradient: None,
+            transform,
+            layer: self.layer,
+            blend: self.blend,
+        });
+    }
+
     /// Adds a draw whose mesh the caller caches itself (see [`Self::cache`]).
     pub fn push(&mut self, draw: StrokeDraw) {
         self.draws.push(draw);
@@ -123,6 +138,7 @@ impl<'a> DrawListBuilder<'a> {
             let transform = transform_matrix(&layer.transform);
             for item in layer.drawing.paint_order() {
                 match item {
+                    PaintItem::Image(image) => self.image(image, layer.opacity, transform),
                     PaintItem::Fill(fill) => self.fill(
                         fill,
                         fill_color(fill, layer.opacity),

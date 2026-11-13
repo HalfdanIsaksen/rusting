@@ -1,13 +1,13 @@
-//! Selection commands: moving, transforming and deleting selected strokes
-//! and fills.
+//! Selection commands: moving, transforming and deleting selected strokes,
+//! fills and images.
 
 use super::{Batch, RemoveStroke, editable_layer, vector_mut};
-use crate::commands::RemoveFill;
+use crate::commands::{RemoveFill, RemoveImage};
 use crate::{Command, CommandError};
 use animation_core::{DrawingId, FrameIndex, LayerId, Vec2};
 use document::Document;
 use document::drawing::select::Affine2;
-use document::drawing::{Fill, ItemId, Stroke};
+use document::drawing::{Fill, Image, ItemId, Stroke};
 
 /// Moves strokes and fills of the drawing a layer shows at a frame by one
 /// offset, keeping their IDs and stacking order.
@@ -61,6 +61,7 @@ impl Command for TranslateItems {
             &self.items,
             |s| s.translate(delta),
             |f| f.translate(delta),
+            |i| i.translate(delta),
         )?);
         Ok(())
     }
@@ -131,6 +132,7 @@ impl Command for TransformItems {
             &self.items,
             |s| s.transform(&t),
             |f| f.transform(&t),
+            |i| i.apply(&t),
         )?);
         Ok(())
     }
@@ -141,9 +143,9 @@ impl Command for TransformItems {
 }
 
 /// The drawing an edit touched and copies of its items from before.
-type Originals = (DrawingId, Vec<Stroke>, Vec<Fill>);
+type Originals = (DrawingId, Vec<Stroke>, Vec<Fill>, Vec<Image>);
 
-/// Applies `stroke` / `fill` to each item of the drawing `layer` shows at
+/// Applies `stroke` / `fill` / `image` to each item of the drawing `layer` shows at
 /// `frame` and returns the originals for undo. Nothing changes on error.
 fn edit_items(
     doc: &mut Document,
@@ -152,6 +154,7 @@ fn edit_items(
     items: &[ItemId],
     mut stroke: impl FnMut(&mut Stroke),
     mut fill: impl FnMut(&mut Fill),
+    mut image: impl FnMut(&mut Image),
 ) -> Result<Originals, CommandError> {
     editable_layer(doc, layer)?;
     let drawing = doc
@@ -161,6 +164,7 @@ fn edit_items(
     // Collect first so a missing item leaves the drawing untouched.
     let mut strokes = Vec::new();
     let mut fills = Vec::new();
+    let mut images = Vec::new();
     for &item in items {
         match item {
             ItemId::Stroke(id) => strokes.push(
@@ -172,6 +176,12 @@ fn edit_items(
             ItemId::Fill(id) => fills.push(
                 vector
                     .fill(id)
+                    .ok_or(CommandError::DrawingNotFound)?
+                    .clone(),
+            ),
+            ItemId::Image(id) => images.push(
+                vector
+                    .image(id)
                     .ok_or(CommandError::DrawingNotFound)?
                     .clone(),
             ),
@@ -187,12 +197,17 @@ fn edit_items(
             fill(f);
         }
     }
-    Ok((drawing, strokes, fills))
+    for original in &images {
+        if let Some(i) = vector.image_mut(original.id) {
+            image(i);
+        }
+    }
+    Ok((drawing, strokes, fills, images))
 }
 
 /// Puts back the items [`edit_items`] saved.
 fn restore_items(doc: &mut Document, originals: Option<Originals>) -> Result<(), CommandError> {
-    let (drawing, strokes, fills) = originals.ok_or(CommandError::DrawingNotFound)?;
+    let (drawing, strokes, fills, images) = originals.ok_or(CommandError::DrawingNotFound)?;
     let vector = vector_mut(doc, drawing)?;
     for original in strokes {
         let slot = vector
@@ -203,6 +218,12 @@ fn restore_items(doc: &mut Document, originals: Option<Originals>) -> Result<(),
     for original in fills {
         let slot = vector
             .fill_mut(original.id)
+            .ok_or(CommandError::DrawingNotFound)?;
+        *slot = original;
+    }
+    for original in images {
+        let slot = vector
+            .image_mut(original.id)
             .ok_or(CommandError::DrawingNotFound)?;
         *slot = original;
     }
@@ -218,6 +239,7 @@ pub fn remove_items(layer: LayerId, frame: FrameIndex, items: &[ItemId]) -> Batc
             match item {
                 ItemId::Stroke(id) => Box::new(RemoveStroke::new(layer, frame, id)),
                 ItemId::Fill(id) => Box::new(RemoveFill::new(layer, frame, id)),
+                ItemId::Image(id) => Box::new(RemoveImage::new(layer, frame, id)),
             }
         })
         .collect();

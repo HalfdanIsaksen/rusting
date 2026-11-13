@@ -414,6 +414,9 @@ fn collect_draws(
                     skin.color.with_opacity(stroke.style.opacity),
                     transform,
                 ),
+                // Onion skins are tinted outlines of the drawing; a picture
+                // has no tintable shape, so it is left out.
+                PaintItem::Image(_) => {}
             }
         }
     }
@@ -460,6 +463,14 @@ fn collect_draws(
         let drawing = with_preview.as_ref().unwrap_or(layer.drawing);
         for painted in drawing.paint_order() {
             match painted {
+                PaintItem::Image(image) => {
+                    let item = ItemId::Image(image.id);
+                    if let Some(t) = reshaping(item) {
+                        draws.image(&image.transformed(&t), layer.opacity, transform);
+                    } else {
+                        draws.image(image, layer.opacity, place(item));
+                    }
+                }
                 PaintItem::Fill(fill) => {
                     let item = ItemId::Fill(fill.id);
                     if let Some(t) = reshaping(item) {
