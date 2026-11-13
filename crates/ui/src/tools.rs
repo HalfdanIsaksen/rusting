@@ -571,7 +571,7 @@ impl ToolController {
         }
     }
 
-    fn set_selection(&mut self, at: (LayerId, FrameIndex), items: Vec<ItemId>) {
+    pub(crate) fn set_selection(&mut self, at: (LayerId, FrameIndex), items: Vec<ItemId>) {
         self.selection_at = Some(at);
         self.selection = items;
     }

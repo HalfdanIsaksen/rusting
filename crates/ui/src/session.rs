@@ -35,6 +35,9 @@ pub enum Request {
     Quit,
     /// Show the export options for `ExportKind`, then a save dialog.
     Export(ExportKind),
+    /// Show an open-file dialog for PNG/JPEG pictures, then call
+    /// [`Session::import_image`] for each picked file.
+    ImportDialog,
 }
 
 /// What File → Export writes.
@@ -227,7 +230,7 @@ pub struct Session {
     frame_selection: Option<FrameRange>,
     status: Option<Status>,
     dialog: Option<Dialog>,
-    requests: Vec<Request>,
+    pub(crate) requests: Vec<Request>,
     start_menu: Option<StartMenu>,
 }
 

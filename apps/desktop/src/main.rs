@@ -6,6 +6,7 @@
 
 mod export;
 mod icon;
+mod import;
 mod shell;
 
 use document::animation_core::Rgba;
@@ -618,6 +619,29 @@ fn handle_request(shell: &mut Shell, request: ui::Request, event_loop: &ActiveEv
             }
         }
         ui::Request::Quit => event_loop.exit(),
+        ui::Request::ImportDialog => {
+            let picked = rfd::FileDialog::new()
+                .set_title("Import Image")
+                .add_filter("Images (PNG, JPEG)", import::EXTENSIONS)
+                .pick_files();
+            for path in picked.unwrap_or_default() {
+                let name = path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |n| n.to_string_lossy().into_owned(),
+                );
+                match import::read_image(&path) {
+                    Ok(data) => {
+                        if !session.import_image(&name, data) {
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        session.show_error("Could not import image", format!("{name}\n\n{err}"));
+                        break;
+                    }
+                }
+            }
+        }
         ui::Request::Export(_) => {}
     }
 }
