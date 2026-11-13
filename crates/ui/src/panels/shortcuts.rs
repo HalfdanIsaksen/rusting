@@ -40,7 +40,10 @@ pub const TOGGLE_TOOL_SETTINGS: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND, Key::Num3);
 
 /// Handles global shortcuts. Plain-key shortcuts are skipped while a text
-/// field has keyboard focus.
+/// field has keyboard focus. While the text tool takes typing
+/// ([`crate::ToolController::is_typing`]) the keyboard goes to the text
+/// instead (see [`type_on_canvas`]): only the Cmd/Ctrl shortcuts for files
+/// and panels still work, and they commit the text first.
 pub fn handle(ctx: &egui::Context, session: &mut Session) {
     let typing = ctx.egui_wants_keyboard_input();
     let modal_open = session.dialog().is_some() || session.resize_canvas.is_some();
@@ -59,6 +62,9 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
         )
     });
     if !modal_open {
+        if save_as || save || new || open || quit {
+            session.commit_text();
+        }
         session.view.toolbar ^= toolbar;
         session.view.timeline ^= timeline;
         session.view.tool_settings ^= tool_settings;
@@ -78,6 +84,10 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
         }
     }
     if typing || modal_open {
+        return;
+    }
+    if session.tools.is_typing() {
+        type_on_canvas(ctx, session);
         return;
     }
 
@@ -140,6 +150,7 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
         rectangle,
         ellipse,
         eyedropper,
+        text,
         left,
         right,
         up,
@@ -164,6 +175,7 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
             plain && i.key_pressed(Key::R),
             plain && i.key_pressed(Key::O),
             plain && i.key_pressed(Key::I),
+            plain && i.key_pressed(Key::T),
             i.num_presses(Key::ArrowLeft),
             i.num_presses(Key::ArrowRight),
             i.num_presses(Key::ArrowUp),
@@ -211,6 +223,9 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
         if eyedropper {
             session.state.tool = Tool::Eyedropper;
         }
+        if text {
+            session.state.tool = Tool::Text;
+        }
     }
     if selecting {
         let step = if shift { 10.0 } else { 1.0 };
@@ -235,6 +250,36 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
         session.jump_to_key(true);
     }
     finish_space(session, space_down, space_up, gesture);
+}
+
+/// Feeds this frame's typing to the text tool and removes every key, text
+/// and paste event, so no canvas shortcut (tool keys, Space, Delete, F,
+/// arrows) and no widget sees them. Enter starts a new line,
+/// Cmd/Ctrl+Enter commits, Esc cancels, Backspace deletes the last
+/// character.
+fn type_on_canvas(ctx: &egui::Context, session: &mut Session) {
+    ctx.input_mut(|i| {
+        let events = std::mem::take(&mut i.events);
+        for event in events {
+            match event {
+                egui::Event::Text(text) | egui::Event::Paste(text) => session.type_text(&text),
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => match key {
+                    Key::Backspace => session.text_backspace(),
+                    Key::Enter if modifiers.command => session.commit_text(),
+                    Key::Enter => session.type_text("\n"),
+                    Key::Escape => session.cancel_text(),
+                    _ => {}
+                },
+                egui::Event::Key { .. } | egui::Event::Copy | egui::Event::Cut => {}
+                other => i.events.push(other),
+            }
+        }
+    });
 }
 
 /// Space is also "hold to pan" on the canvas: toggle playback on release,
@@ -300,6 +345,95 @@ mod tests {
         );
         press(&mut s, KeyboardShortcut::new(Modifiers::NONE, Key::V));
         assert_eq!(s.state.tool, Tool::Select);
+    }
+
+    /// Sends `events` through one UI frame of [`handle`].
+    fn send(session: &mut Session, events: Vec<egui::Event>) {
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            events,
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| handle(ui.ctx(), session));
+        output.textures_delta.clear();
+    }
+
+    fn key(key: Key, modifiers: Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    fn typing_session() -> Session {
+        let mut s = Session::new();
+        s.state.tool = Tool::Text;
+        assert!(s.pointer_down(document::animation_core::Vec2::new(20.0, 20.0), 1.0));
+        assert!(s.tools.is_typing());
+        s
+    }
+
+    #[test]
+    fn typing_goes_to_the_text_not_to_shortcuts() {
+        let mut s = typing_session();
+        let frame = s.current_frame();
+        // "b", "e" and space would pick the brush, the eraser and play.
+        send(
+            &mut s,
+            vec![
+                egui::Event::Text("be".into()),
+                key(Key::B, Modifiers::NONE),
+                key(Key::E, Modifiers::NONE),
+                key(Key::Space, Modifiers::NONE),
+                egui::Event::Text(" x".into()),
+                key(Key::ArrowRight, Modifiers::NONE),
+                key(Key::Delete, Modifiers::NONE),
+            ],
+        );
+        assert_eq!(s.state.tool, Tool::Text);
+        assert!(!s.playback.is_playing());
+        assert_eq!(s.current_frame(), frame);
+        assert_eq!(s.tools.typed_text(), Some("be x"));
+        // Backspace deletes; Enter is a new line; Cmd+Z does not undo.
+        send(
+            &mut s,
+            vec![
+                key(Key::Backspace, Modifiers::NONE),
+                key(Key::Enter, Modifiers::NONE),
+                egui::Event::Text("y".into()),
+                key(Key::Z, Modifiers::COMMAND),
+            ],
+        );
+        assert_eq!(s.tools.typed_text(), Some("be \ny"));
+        assert!(!s.history.can_undo());
+    }
+
+    #[test]
+    fn cmd_enter_commits_and_escape_cancels() {
+        let mut s = typing_session();
+        send(&mut s, vec![egui::Event::Text("Hi".into())]);
+        send(&mut s, vec![key(Key::Enter, Modifiers::COMMAND)]);
+        assert!(!s.tools.is_typing());
+        assert_eq!(s.history.undo_label(), Some("Text"));
+
+        let mut s = typing_session();
+        send(&mut s, vec![egui::Event::Text("Hi".into())]);
+        send(&mut s, vec![key(Key::Escape, Modifiers::NONE)]);
+        assert!(!s.tools.is_typing());
+        assert!(!s.history.can_undo());
+        // Shortcuts work again once typing ends.
+        send(&mut s, vec![key(Key::B, Modifiers::NONE)]);
+        assert_eq!(s.state.tool, Tool::Brush);
+    }
+
+    #[test]
+    fn t_picks_the_text_tool() {
+        let mut s = Session::new();
+        press(&mut s, KeyboardShortcut::new(Modifiers::NONE, Key::T));
+        assert_eq!(s.state.tool, Tool::Text);
     }
 
     #[test]

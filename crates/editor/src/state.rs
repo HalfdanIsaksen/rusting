@@ -25,6 +25,8 @@ pub enum Tool {
     Ellipse,
     /// Pick the colour of the artwork under the cursor.
     Eyedropper,
+    /// Type text that becomes vector fills (ADR-016).
+    Text,
 }
 
 impl Tool {

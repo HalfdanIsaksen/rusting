@@ -12,6 +12,7 @@ document.workspace = true
 editor.workspace = true
 file_format.workspace = true
 egui.workspace = true
+epaint_default_fonts.workspace = true
 tracing.workspace = true
 
 [lints]

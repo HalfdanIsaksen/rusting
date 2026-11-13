@@ -137,7 +137,14 @@ fn canvas(
     }
 
     let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
-    let panning = handle_view_input(ui, &response, rect, viewport, session.tools.is_active());
+    let panning = handle_view_input(
+        ui,
+        &response,
+        rect,
+        viewport,
+        session.tools.is_active(),
+        session.tools.is_typing(),
+    );
     if panning && ui.input(|i| i.key_down(egui::Key::Space)) {
         session.space_panned = true;
     }
@@ -165,7 +172,8 @@ fn handle_tool_input(
 ) {
     let to_canvas =
         |p: egui::Pos2| viewport.screen_to_canvas(Vec2::new(p.x - rect.min.x, p.y - rect.min.y));
-    let typing = ui.ctx().egui_wants_keyboard_input();
+    // The text tool takes the keyboard while typing: Space is a space.
+    let typing = ui.ctx().egui_wants_keyboard_input() || session.tools.is_typing();
     let (down, space, shift, alt, steps) = ui.input(|i| {
         (
             i.pointer.primary_down(),
@@ -242,6 +250,7 @@ fn paint_overlays(
 ) {
     let painter = ui.painter_at(rect);
     paint_selection(&painter, rect, viewport, session);
+    paint_text_caret(&painter, rect, viewport, session);
     // The eyedropper only reads the canvas, so it works on locked layers.
     let blocked = session
         .draw_block_reason()
@@ -260,7 +269,7 @@ fn paint_overlays(
         painter.galley(pos, galley, egui::Color32::WHITE);
     }
 
-    let space = ui.input(|i| i.key_down(egui::Key::Space));
+    let space = ui.input(|i| i.key_down(egui::Key::Space)) && !session.tools.is_typing();
     if panning || space || !(response.hovered() || session.tools.is_active()) {
         return;
     }
@@ -318,6 +327,10 @@ fn paint_overlays(
         ui.ctx().set_cursor_icon(egui::CursorIcon::Cell);
         return;
     }
+    if session.state.tool == Tool::Text {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+        return;
+    }
     ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
     // Gradient fill waiting for its end: a dashed line from the start.
     if session.state.tool == Tool::Fill
@@ -342,7 +355,8 @@ fn paint_overlays(
         | Tool::Transform
         | Tool::Rectangle
         | Tool::Ellipse
-        | Tool::Eyedropper => 0.0,
+        | Tool::Eyedropper
+        | Tool::Text => 0.0,
     };
     if radius >= 2.0 {
         painter.circle_stroke(
@@ -356,6 +370,29 @@ fn paint_overlays(
             egui::Stroke::new(0.75, egui::Color32::from_white_alpha(200)),
         );
     }
+}
+
+/// The text tool's caret, at the end of the text being typed, as tall as
+/// a line. Its width is in screen points.
+fn paint_text_caret(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    viewport: &Viewport,
+    session: &Session,
+) {
+    let Some((top, height)) = session.text_caret() else {
+        return;
+    };
+    let to_screen = |p: Vec2| {
+        let s = viewport.canvas_to_screen(p);
+        egui::pos2(s.x + rect.min.x, s.y + rect.min.y)
+    };
+    let (a, b) = (to_screen(top), to_screen(top + Vec2::new(0.0, height)));
+    painter.line_segment(
+        [a, b],
+        egui::Stroke::new(3.0, egui::Color32::from_black_alpha(140)),
+    );
+    painter.line_segment([a, b], egui::Stroke::new(1.5, SELECTION_COLOR));
 }
 
 /// Selection colour.
@@ -543,6 +580,7 @@ fn handle_view_input(
     rect: egui::Rect,
     viewport: &mut Viewport,
     drawing: bool,
+    text_entry: bool,
 ) -> bool {
     let (space, zoom_delta, wheel, hover, fit, actual) = ui.input(|i| {
         let wheel: f32 = i
@@ -575,7 +613,8 @@ fn handle_view_input(
             actual,
         )
     });
-    let typing = ui.ctx().egui_wants_keyboard_input();
+    // While the text tool takes typing, F and Space are just characters.
+    let typing = ui.ctx().egui_wants_keyboard_input() || text_entry;
 
     let panning = response.dragged_by(egui::PointerButton::Middle)
         || (space && !typing && !drawing && response.dragged_by(egui::PointerButton::Primary));
