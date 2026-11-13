@@ -23,6 +23,8 @@
 //!   of the same colour into one fill (see [`merge`]).
 //! - [`select`] has the selection tool's geometry: [`ItemId`], item bounds,
 //!   translation, and hit-testing a point or rectangle against a drawing.
+//! - [`Font::layout`] turns text into glyph outlines (a [`FillShape`]) for
+//!   the text tool (see [`text`]).
 
 pub mod builder;
 pub mod erase;
@@ -34,6 +36,7 @@ pub mod merge;
 pub mod select;
 pub mod stroke;
 pub mod tessellate;
+pub mod text;
 
 pub use builder::StrokeBuilder;
 pub use erase::EraseResult;
@@ -46,3 +49,4 @@ pub use stroke::{
     BrushStyle, DrawingContent, PaintItem, Placement, Stroke, StrokePoint, VectorDrawing,
 };
 pub use tessellate::{Mesh, TessellationOptions, tessellate, tessellate_with};
+pub use text::{Font, TextError, TextLayout};

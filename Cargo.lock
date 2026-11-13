@@ -548,8 +548,10 @@ name = "drawing"
 version = "0.1.8"
 dependencies = [
  "animation_core",
+ "epaint_default_fonts",
  "glam",
  "serde",
+ "ttf-parser",
 ]
 
 [[package]]
