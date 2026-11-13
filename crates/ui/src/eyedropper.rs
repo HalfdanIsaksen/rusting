@@ -94,7 +94,9 @@ impl Session {
                 opacity: f.opacity,
                 source: PickSource::Fill,
             }),
-            None => None,
+            // Pictures have no single colour; picking from them is not
+            // supported yet, so they read as empty canvas.
+            Some(ItemId::Image(_)) | None => None,
         };
         picked.or_else(|| {
             self.document.background.map(|color| PickedColor {

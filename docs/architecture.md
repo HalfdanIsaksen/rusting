@@ -28,7 +28,7 @@ Arrows point from a dependency to its dependents. Rules:
 | `FrameIndex(u32)` | Zero-based frame. UI shows `display_number()` (one-based). |
 | `FrameRange` | Half-open `start..end` |
 | `Fps` | Rational frames/second (e.g. 24000/1001) |
-| `LayerId`, `GroupId`, `DrawingId`, `StrokeId`, `FillId`, `DocumentId` | UUID v4 newtypes, stable across save and load |
+| `LayerId`, `GroupId`, `DrawingId`, `StrokeId`, `FillId`, `ImageId`, `DocumentId` | UUID v4 newtypes, stable across save and load |
 | `Rgba` | Straight-alpha color, f32 components |
 | `Interpolation` | `Step`, `Linear` (Bezier later) |
 | `Vec2` | `glam::Vec2`, re-exported |
@@ -43,11 +43,14 @@ Document
 ├─ tracks: BTreeMap<LayerId, Track>    (timeline crate)
 │     Track = BTreeMap<FrameIndex, Keyframe>;  Keyframe = Drawing(DrawingId) | Empty
 └─ drawings: BTreeMap<DrawingId, DrawingContent>  (drawing crate)
-      DrawingContent::Vector(VectorDrawing { strokes: Vec<Stroke>, fills: Vec<Fill> })
-      Stroke/Fill.placement: Back(level) | Normal | Front (draw order; ADR-010, ADR-011)
-      paint order: back levels deepest first (fills → strokes each) → normal fills
-      → normal strokes → front fills → front strokes, list order within each group
-      (VectorDrawing::paint_order; ADR-007, ADR-010, ADR-011)
+      DrawingContent::Vector(VectorDrawing { strokes: Vec<Stroke>, fills: Vec<Fill>,
+                                             images: Vec<Image> })
+      Image = encoded PNG/JPEG bytes + Affine2 placement (ADR-015)
+      Stroke/Fill/Image.placement: Back(level) | Normal | Front (draw order; ADR-010, ADR-011)
+      paint order: back levels deepest first (images → fills → strokes each) → normal
+      images → normal fills → normal strokes → front images → front fills → front
+      strokes, list order within each group
+      (VectorDrawing::paint_order; ADR-007, ADR-010, ADR-011, ADR-015)
 ```
 Drawings live in a pool, separate from keyframes. Later this lets one drawing be exposed on several frames (cycles and holds) without copying it.
 
@@ -64,7 +67,7 @@ input → ui/desktop → editor::Command → History → Document
                                                │
                      EditorState.current_frame ┘→ Document::evaluate(frame) → RenderList → renderer
 ```
-`evaluate` is cheap and allocates only one `Vec`. The renderer caches stroke and fill meshes by `MeshId` (a `StrokeId` or `FillId`) and rebuilds a mesh only when its stroke changes.
+`evaluate` is cheap and allocates only one `Vec`. The renderer caches stroke, fill and image meshes by `MeshId` (a `StrokeId`, `FillId` or `ImageId`) and rebuilds a mesh only when its item changes. Image textures are decoded once per image and uploaded on the next render.
 
 ## Error handling
 - Library crates return typed `thiserror` errors (`FileFormatError`, `CommandError`, `RendererError`).

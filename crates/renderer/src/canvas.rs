@@ -9,19 +9,22 @@ use crate::canvas_target::{
 };
 use crate::draw_list::{fill_color, fill_gradient, stroke_color};
 use crate::mesh::MeshSource;
-use crate::stroke_cache::{DEFAULT_MAX_UNUSED_RENDERS, MeshId, StrokeCache, StrokeKey};
+use crate::stroke_cache::{
+    DEFAULT_MAX_UNUSED_RENDERS, ImageTexture, MeshId, StrokeCache, StrokeKey,
+};
 use crate::viewport::Viewport;
 use animation_core::glam::{Mat4, Quat, Vec2};
 use animation_core::{LayerId, Rgba};
 use document::RenderList;
 use document::scene::{BlendMode, Transform2D};
-use drawing::{Fill, Gradient, PaintItem, Stroke};
+use drawing::{Fill, Gradient, Image, PaintItem, Stroke};
 use std::ops::Range;
 
 const BACKGROUND_WGSL: &str = include_str!("../../../assets/shaders/background.wgsl");
 const FRAME_WGSL: &str = include_str!("../../../assets/shaders/canvas_frame.wgsl");
 const STROKE_WGSL: &str = include_str!("../../../assets/shaders/stroke.wgsl");
 const COMPOSITE_WGSL: &str = include_str!("../../../assets/shaders/composite.wgsl");
+const IMAGE_WGSL: &str = include_str!("../../../assets/shaders/image.wgsl");
 
 /// Byte size of `Background` in `background.wgsl`.
 const BACKGROUND_UNIFORM_SIZE: u64 = 144;
@@ -141,6 +144,10 @@ pub struct CanvasRenderer {
     composite_layout: wgpu::BindGroupLayout,
     /// One pipeline per mode, indexed like [`BlendMode::ALL`].
     composite: Vec<wgpu::RenderPipeline>,
+    /// Draws image quads with their texture (group 2).
+    image_pipeline: wgpu::RenderPipeline,
+    image_layout: wgpu::BindGroupLayout,
+    image_sampler: wgpu::Sampler,
     strokes: StrokeCache,
     /// Colours and sizes of the workspace, outline, shadow and checkerboard.
     pub style: CanvasStyle,
@@ -197,6 +204,50 @@ impl CanvasRenderer {
             true,
         );
 
+        let image_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("image"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let image_pipeline = create_pipeline(
+            device,
+            "image",
+            IMAGE_WGSL,
+            &[&globals_layout, &draw_layout, &image_layout],
+            &[Some(wgpu::VertexBufferLayout {
+                array_stride: 8,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![0 => Float32x2],
+            })],
+            wgpu::PrimitiveTopology::TriangleList,
+            true,
+        );
+        let image_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("image"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
+
         let composite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("composite"),
             entries: &[0, 1].map(|binding| wgpu::BindGroupLayoutEntry {
@@ -250,6 +301,9 @@ impl CanvasRenderer {
             draw_capacity,
             composite_layout,
             composite,
+            image_pipeline,
+            image_layout,
+            image_sampler,
             strokes: StrokeCache::new(),
             style: CanvasStyle::default(),
         }
@@ -299,6 +353,10 @@ impl CanvasRenderer {
             let transform = transform_matrix(&layer.transform);
             for item in layer.drawing.paint_order() {
                 let draw = match item {
+                    PaintItem::Image(image) => {
+                        self.strokes.ensure_image(device, image);
+                        image_draw(image, layer.opacity, transform, layer.layer_id, layer.blend)
+                    }
                     PaintItem::Fill(fill) => {
                         self.strokes
                             .ensure(device, fill.id, StrokeKey::of_fill(fill), || {
@@ -428,6 +486,7 @@ impl CanvasRenderer {
             &u.finish(STROKE_GLOBALS_SIZE),
         );
         self.write_draws(device, queue, frame.strokes);
+        self.upload_textures(device, queue);
 
         let clear = match chrome {
             Chrome::Editor => wgpu::Color {
@@ -470,7 +529,24 @@ impl CanvasRenderer {
             }
             pass.set_pipeline(&self.stroke_globals.pipeline);
             pass.set_bind_group(0, &self.stroke_globals.bind_group, &[]);
+            let mut drawing_image = false;
             for (slot, draw) in (range.start as u64..).zip(&frame.strokes[range]) {
+                let is_image = matches!(draw.id, MeshId::Image(_));
+                if is_image {
+                    let Some(texture) = self.strokes.texture(draw.id) else {
+                        continue;
+                    };
+                    pass.set_bind_group(2, texture, &[]);
+                }
+                if is_image != drawing_image {
+                    drawing_image = is_image;
+                    pass.set_pipeline(if is_image {
+                        &self.image_pipeline
+                    } else {
+                        &self.stroke_globals.pipeline
+                    });
+                    pass.set_bind_group(0, &self.stroke_globals.bind_group, &[]);
+                }
                 let Some(mesh) = self.strokes.get(draw.id) else {
                     continue;
                 };
@@ -553,6 +629,70 @@ impl CanvasRenderer {
         })
     }
 
+    /// Uploads the textures of images decoded since the last render.
+    fn upload_textures(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let (layout, sampler) = (&self.image_layout, &self.image_sampler);
+        for slot in self.strokes.pending_textures() {
+            let ImageTexture::Pending(decoded) = std::mem::replace(slot, ImageTexture::Failed)
+            else {
+                continue;
+            };
+            let Some(&(width, height, _)) = decoded.levels.first() else {
+                continue;
+            };
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("image"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: decoded.levels.len() as u32,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            for (level, (w, h, pixels)) in decoded.levels.iter().enumerate() {
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &texture,
+                        mip_level: level as u32,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    pixels,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(w * 4),
+                        rows_per_image: Some(*h),
+                    },
+                    wgpu::Extent3d {
+                        width: *w,
+                        height: *h,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            *slot = ImageTexture::Ready(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("image"),
+                layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                ],
+            }));
+        }
+    }
+
     /// Uploads the per-stroke uniforms, growing the buffer if needed.
     fn write_draws(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, draws: &[StrokeDraw]) {
         if draws.is_empty() {
@@ -596,6 +736,25 @@ impl CanvasRenderer {
             chunk[..data.len()].copy_from_slice(&data);
         }
         queue.write_buffer(&self.draw_buffer, 0, &bytes);
+    }
+}
+
+/// The draw of an image on a layer: its quad, with image and layer opacity
+/// in the colour's alpha.
+pub(crate) fn image_draw(
+    image: &Image,
+    layer_opacity: f32,
+    transform: Mat4,
+    layer: LayerId,
+    blend: BlendMode,
+) -> StrokeDraw {
+    StrokeDraw {
+        id: image.id.into(),
+        color: Rgba::WHITE.with_opacity(image.opacity * layer_opacity),
+        gradient: None,
+        transform,
+        layer: Some(layer),
+        blend,
     }
 }
 

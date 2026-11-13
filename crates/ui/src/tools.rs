@@ -617,7 +617,7 @@ impl ToolController {
         }
     }
 
-    fn set_selection(&mut self, at: (LayerId, FrameIndex), items: Vec<ItemId>) {
+    pub(crate) fn set_selection(&mut self, at: (LayerId, FrameIndex), items: Vec<ItemId>) {
         self.selection_at = Some(at);
         self.selection = items;
     }
@@ -1115,7 +1115,7 @@ impl Session {
         let tolerance = SELECT_TOLERANCE_SCREEN / zoom.max(f32::EPSILON);
         let clicked_stroke = drawing.and_then(|d| match d.item_at(pos, tolerance)? {
             ItemId::Stroke(id) => d.stroke(id),
-            ItemId::Fill(_) => None,
+            ItemId::Fill(_) | ItemId::Image(_) => None,
         });
         if let (Some(stroke), None) = (clicked_stroke, gradient_to) {
             if let Some(command) = recolour(stroke) {

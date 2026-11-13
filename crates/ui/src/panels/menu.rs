@@ -54,6 +54,13 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
                     session.export(ExportKind::SpriteSheet);
                 }
             });
+            if ui
+                .button("Import…")
+                .on_hover_text("Place a PNG or JPEG picture on the current layer and frame")
+                .clicked()
+            {
+                session.import();
+            }
             ui.separator();
             if ui.add(item(ui, "Quit", &shortcuts::QUIT)).clicked() {
                 session.request(DiscardAction::Quit);

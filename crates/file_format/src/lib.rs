@@ -19,7 +19,7 @@
 //! them silently, [`from_str_with_report`] and [`load_with_report`] list them
 //! in a [`LoadReport`] so the app can warn before overwriting the file.
 
-use animation_core::{DrawingId, FillId, FrameIndex, GroupId, LayerId, StrokeId};
+use animation_core::{DrawingId, FillId, FrameIndex, GroupId, ImageId, LayerId, StrokeId};
 use document::Document;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -48,7 +48,11 @@ use std::path::{Path, PathBuf};
 ///   means none, so v7 needs no migration; ADR-013). Older builds must reject
 ///   these files: they would drop group visibility and opacity and change
 ///   the picture.
-pub const FORMAT_VERSION: u32 = 8;
+/// - 9: vector drawings may have `images`: imported PNG/JPEG pictures with
+///   their file bytes as base64 (absent means none, so v8 needs no
+///   migration; ADR-015). Older builds must reject these files: they would
+///   drop the pictures.
+pub const FORMAT_VERSION: u32 = 9;
 
 /// File extension for project files (without the dot).
 pub const FILE_EXTENSION: &str = "rusting";
@@ -149,6 +153,17 @@ pub enum ValidationError {
         /// Drawing holding the second copy.
         drawing: DrawingId,
     },
+    /// Two images share an ID.
+    #[error("image ID {image} is used more than once (found again in drawing {drawing})")]
+    DuplicateImage {
+        /// The repeated image ID.
+        image: ImageId,
+        /// Drawing holding the second copy.
+        drawing: DrawingId,
+    },
+    /// An image has no pixels or no file bytes.
+    #[error("image {0} is empty")]
+    EmptyImage(ImageId),
     /// The frame rate has a zero numerator or denominator.
     #[error("frame rate {numerator}/{denominator} is not valid; both parts must be above zero")]
     InvalidFps {
@@ -502,10 +517,38 @@ pub fn validate(doc: &Document) -> Result<(), ValidationError> {
 
     let mut seen_strokes = BTreeSet::new();
     let mut seen_fills = BTreeSet::new();
+    let mut seen_images = BTreeSet::new();
     for (&drawing, content) in doc.drawings() {
         let Some(vector) = content.as_vector() else {
             continue;
         };
+        for image in vector.images() {
+            if !seen_images.insert(image.id) {
+                return Err(ValidationError::DuplicateImage {
+                    image: image.id,
+                    drawing,
+                });
+            }
+            if image.data.width == 0 || image.data.height == 0 || image.data.bytes.is_empty() {
+                return Err(ValidationError::EmptyImage(image.id));
+            }
+            let what = |field: &str| format!("image {} {field}", image.id);
+            check_range(
+                || what("opacity"),
+                image.opacity,
+                unit(image.opacity),
+                "0..=1",
+            )?;
+            let t = image.transform;
+            for (i, v) in t.to_cols_array().into_iter().enumerate() {
+                check_range(
+                    || what(&format!("transform value {i}")),
+                    v,
+                    v.is_finite(),
+                    "finite numbers",
+                )?;
+            }
+        }
         for fill in vector.fills() {
             if !seen_fills.insert(fill.id) {
                 return Err(ValidationError::DuplicateFill {
@@ -733,6 +776,50 @@ mod tests {
         };
         assert_eq!(fills(&loaded).len(), 1);
         assert_eq!(fills(&loaded), fills(&doc));
+    }
+
+    #[test]
+    fn images_roundtrip_and_bad_images_are_rejected() {
+        use document::drawing::{Image, ImageData};
+        let mut doc = sample();
+        let drawing = *doc.drawings().keys().next().unwrap();
+        let image = Image::new(
+            ImageData::new(3, 2, vec![0x89, b'P', b'N', b'G', 0, 255]),
+            animation_core::Vec2::new(5.0, 6.0),
+            animation_core::Vec2::new(30.0, 20.0),
+        );
+        let id = image.id;
+        doc.drawing_mut(drawing)
+            .and_then(|c| c.as_vector_mut())
+            .unwrap()
+            .push_image(image);
+        let text = to_string(&doc).unwrap();
+        assert!(text.contains("\"images\""));
+        let loaded = from_str(&text).unwrap();
+        let images = |d: &Document| {
+            d.drawings()
+                .values()
+                .filter_map(|c| c.as_vector())
+                .flat_map(|v| v.images().to_vec())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(images(&loaded), images(&doc));
+
+        let path = |j: &mut serde_json::Value| -> serde_json::Value {
+            j["document"]["drawings"][drawing.to_string()]["Vector"]["images"][0].take()
+        };
+        let empty = edit_json(&doc, |j| {
+            let mut img = path(j);
+            img["data"]["width"] = 0.into();
+            j["document"]["drawings"][drawing.to_string()]["Vector"]["images"][0] = img;
+        });
+        assert_eq!(invalid(&empty), ValidationError::EmptyImage(id));
+        let bad = edit_json(&doc, |j| {
+            let mut img = path(j);
+            img["data"]["bytes"] = "not base64!".into();
+            j["document"]["drawings"][drawing.to_string()]["Vector"]["images"][0] = img;
+        });
+        assert!(from_str(&bad).is_err());
     }
 
     /// A version 1 file as written by the first release (no `fills`).

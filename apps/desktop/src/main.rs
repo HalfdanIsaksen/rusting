@@ -6,6 +6,7 @@
 
 mod export;
 mod icon;
+mod import;
 mod shell;
 
 use document::animation_core::Rgba;
@@ -414,6 +415,9 @@ fn collect_draws(
                     skin.color.with_opacity(stroke.style.opacity),
                     transform,
                 ),
+                // Onion skins are tinted outlines of the drawing; a picture
+                // has no tintable shape, so it is left out.
+                PaintItem::Image(_) => {}
             }
         }
     }
@@ -465,6 +469,14 @@ fn collect_draws(
         let drawing = with_preview.as_ref().unwrap_or(layer.drawing);
         for painted in drawing.paint_order() {
             match painted {
+                PaintItem::Image(image) => {
+                    let item = ItemId::Image(image.id);
+                    if let Some(t) = reshaping(item) {
+                        draws.image(&image.transformed(&t), layer.opacity, transform);
+                    } else {
+                        draws.image(image, layer.opacity, place(item));
+                    }
+                }
                 PaintItem::Fill(fill) => {
                     let item = ItemId::Fill(fill.id);
                     if let Some(t) = reshaping(item) {
@@ -612,6 +624,29 @@ fn handle_request(shell: &mut Shell, request: ui::Request, event_loop: &ActiveEv
             }
         }
         ui::Request::Quit => event_loop.exit(),
+        ui::Request::ImportDialog => {
+            let picked = rfd::FileDialog::new()
+                .set_title("Import Image")
+                .add_filter("Images (PNG, JPEG)", import::EXTENSIONS)
+                .pick_files();
+            for path in picked.unwrap_or_default() {
+                let name = path.file_name().map_or_else(
+                    || path.display().to_string(),
+                    |n| n.to_string_lossy().into_owned(),
+                );
+                match import::read_image(&path) {
+                    Ok(data) => {
+                        if !session.import_image(&name, data) {
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        session.show_error("Could not import image", format!("{name}\n\n{err}"));
+                        break;
+                    }
+                }
+            }
+        }
         ui::Request::Export(_) => {}
     }
 }

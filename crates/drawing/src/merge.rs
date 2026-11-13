@@ -128,14 +128,15 @@ impl VectorDrawing {
     /// that look touching any of those fills are merged too. See the
     /// [module docs](crate::merge).
     ///
-    /// Returns `None` if nothing merges: `item` is missing or a gradient
-    /// fill, or it touches no fill of its look. The drawing is not changed;
+    /// Returns `None` if nothing merges: `item` is missing, an image or a
+    /// gradient fill, or it touches no fill of its look. The drawing is not changed;
     /// apply the [`Merge`] by removing its items and inserting its fill where
     /// its first fill was.
     pub fn merge_same_colour(&self, item: ItemId) -> Option<Merge> {
         let look = match item {
             ItemId::Fill(id) => Look::of_fill(self.fill(id)?)?,
             ItemId::Stroke(id) => Look::of_stroke(self.stroke(id)?),
+            ItemId::Image(_) => return None,
         };
         let mut candidates: Vec<Candidate<'_>> = Vec::new();
         let mut start = None;
@@ -157,6 +158,7 @@ impl VectorDrawing {
                 ItemId::Stroke(id) => stroke.id == id,
                 // A new fill absorbs the same-look strokes it touches.
                 ItemId::Fill(_) => Look::of_stroke(stroke).matches(&look),
+                ItemId::Image(_) => false,
             };
             if wanted && let Some(bounds) = finite_bounds(stroke.bounds()) {
                 if item == ItemId::Stroke(stroke.id) {

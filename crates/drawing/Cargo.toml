@@ -15,6 +15,7 @@ ttf-parser.workspace = true
 
 [dev-dependencies]
 epaint_default_fonts.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true
