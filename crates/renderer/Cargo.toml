@@ -14,9 +14,11 @@ document.workspace = true
 wgpu.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 [dev-dependencies]
 pollster.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [lints]
 workspace = true

@@ -12,6 +12,7 @@
 
 pub mod eyedropper;
 pub mod icons;
+pub mod import;
 pub mod logo;
 pub mod onion;
 pub mod paint_order;

@@ -1,9 +1,10 @@
 //! Strokes, brush styles and vector drawings.
 
-use animation_core::{FillId, Rgba, StrokeId, Vec2};
+use animation_core::{FillId, ImageId, Rgba, StrokeId, Vec2};
 use serde::{Deserialize, Serialize};
 
 use crate::fill::Fill;
+use crate::image::Image;
 
 /// One sampled input point of a stroke, in document coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -135,6 +136,10 @@ pub struct VectorDrawing {
     /// Filled regions, drawn under the strokes of the same tier (file format
     /// v2+).
     fills: Vec<Fill>,
+    /// Imported pictures, drawn under the fills of the same tier (file
+    /// format v9+; ADR-015).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    images: Vec<Image>,
 }
 
 impl VectorDrawing {
@@ -179,9 +184,46 @@ impl VectorDrawing {
         &mut self.fills
     }
 
-    /// Whether the drawing has no strokes and no fills.
+    /// Whether the drawing has no strokes, fills or images.
     pub fn is_empty(&self) -> bool {
-        self.strokes.is_empty() && self.fills.is_empty()
+        self.strokes.is_empty() && self.fills.is_empty() && self.images.is_empty()
+    }
+
+    pub(crate) fn images_mut(&mut self) -> &mut [Image] {
+        &mut self.images
+    }
+
+    /// All images in stored order; see [`Self::paint_order`].
+    pub fn images(&self) -> &[Image] {
+        &self.images
+    }
+
+    /// Looks up an image by ID.
+    pub fn image(&self, id: ImageId) -> Option<&Image> {
+        self.images.iter().find(|i| i.id == id)
+    }
+
+    /// Mutable access to an image by ID.
+    pub fn image_mut(&mut self, id: ImageId) -> Option<&mut Image> {
+        self.images.iter_mut().find(|i| i.id == id)
+    }
+
+    /// Appends an image on top of the other images of its tier (still under
+    /// the fills and strokes of that tier).
+    pub fn push_image(&mut self, image: Image) {
+        self.images.push(image);
+    }
+
+    /// Inserts an image at `index` (clamped), used to undo a removal.
+    pub fn insert_image(&mut self, index: usize, image: Image) {
+        let index = index.min(self.images.len());
+        self.images.insert(index, image);
+    }
+
+    /// Removes an image by ID, returning its former index and the image.
+    pub fn remove_image(&mut self, id: ImageId) -> Option<(usize, Image)> {
+        let index = self.images.iter().position(|i| i.id == id)?;
+        Some((index, self.images.remove(index)))
     }
 
     /// Appends a fill on top of the other fills of its tier (still under the
@@ -242,6 +284,7 @@ impl VectorDrawing {
             .iter()
             .map(|f| f.placement)
             .chain(self.strokes.iter().map(|s| s.placement))
+            .chain(self.images.iter().map(|i| i.placement))
             .filter_map(|p| match p {
                 Placement::Back(level) => Some(level),
                 Placement::Normal | Placement::Front => None,
@@ -253,23 +296,19 @@ impl VectorDrawing {
 
     /// Every item in the order it is painted, bottom to top: back levels
     /// from the deepest up, then normal fills, normal strokes, front fills,
-    /// front strokes (ADR-010, ADR-011). Within a level fills paint under
-    /// strokes, and each kind keeps its stored order. Reverse it for
-    /// topmost-first hit-testing.
+    /// front strokes (ADR-010, ADR-011). Within a level images paint under
+    /// fills and fills under strokes (ADR-015), and each kind keeps its
+    /// stored order. Reverse it for topmost-first hit-testing.
     pub fn paint_order(&self) -> impl DoubleEndedIterator<Item = PaintItem<'_>> + '_ {
         let mut items: Vec<PaintItem<'_>> = self
-            .fills
+            .images
             .iter()
-            .map(PaintItem::Fill)
+            .map(PaintItem::Image)
+            .chain(self.fills.iter().map(PaintItem::Fill))
             .chain(self.strokes.iter().map(PaintItem::Stroke))
             .collect();
         // Stable, so stored order holds within each (tier, kind) group.
-        items.sort_by_key(|item| {
-            (
-                item.placement().rank(),
-                matches!(item, PaintItem::Stroke(_)),
-            )
-        });
+        items.sort_by_key(|item| (item.placement().rank(), item.kind_rank()));
         items.into_iter()
     }
 
@@ -277,7 +316,7 @@ impl VectorDrawing {
     pub fn strokes_painted(&self) -> impl DoubleEndedIterator<Item = &Stroke> + '_ {
         self.paint_order().filter_map(|item| match item {
             PaintItem::Stroke(s) => Some(s),
-            PaintItem::Fill(_) => None,
+            PaintItem::Fill(_) | PaintItem::Image(_) => None,
         })
     }
 
@@ -285,7 +324,7 @@ impl VectorDrawing {
     pub fn fills_painted(&self) -> impl DoubleEndedIterator<Item = &Fill> + '_ {
         self.paint_order().filter_map(|item| match item {
             PaintItem::Fill(f) => Some(f),
-            PaintItem::Stroke(_) => None,
+            PaintItem::Stroke(_) | PaintItem::Image(_) => None,
         })
     }
 
@@ -305,6 +344,8 @@ pub enum PaintItem<'a> {
     Fill(&'a Fill),
     /// A stroke.
     Stroke(&'a Stroke),
+    /// An imported picture.
+    Image(&'a Image),
 }
 
 impl PaintItem<'_> {
@@ -313,6 +354,16 @@ impl PaintItem<'_> {
         match self {
             Self::Fill(f) => f.placement,
             Self::Stroke(s) => s.placement,
+            Self::Image(i) => i.placement,
+        }
+    }
+
+    /// Order of kinds within one tier: images, fills, strokes.
+    fn kind_rank(&self) -> u8 {
+        match self {
+            Self::Image(_) => 0,
+            Self::Fill(_) => 1,
+            Self::Stroke(_) => 2,
         }
     }
 }
@@ -364,6 +415,9 @@ impl VectorDrawing {
         }
         for fill in &mut copy.fills {
             fill.id = FillId::new();
+        }
+        for image in &mut copy.images {
+            image.id = ImageId::new();
         }
         copy
     }

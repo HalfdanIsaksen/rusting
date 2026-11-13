@@ -355,3 +355,78 @@ fn blend_modes_match_their_formulas() {
         );
     }
 }
+
+#[test]
+fn renders_an_imported_image_under_the_layers_strokes() {
+    use document::drawing::{Image, ImageData};
+    let Ok((device, queue)) = pollster::block_on(headless_device()) else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    // A 2x1 PNG: green on the left, half-transparent magenta on the right.
+    let mut png = Vec::new();
+    let mut picture = image::RgbaImage::new(2, 1);
+    picture.put_pixel(0, 0, image::Rgba([0, 255, 0, 255]));
+    picture.put_pixel(1, 0, image::Rgba([255, 0, 255, 255]));
+    picture
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+
+    let mut doc = Document::new(
+        "T",
+        CanvasSize {
+            width: 40,
+            height: 20,
+        },
+    );
+    let layer = doc.add_layer("L");
+    let mut drawing = VectorDrawing::new();
+    // A fill pushed before the image still paints above it (ADR-015).
+    drawing.push_fill(rect_fill(
+        Vec2::new(0.0, 0.0),
+        Vec2::new(4.0, 4.0),
+        Rgba::rgb(0.0, 0.0, 1.0),
+    ));
+    drawing.push_image(Image::new(
+        ImageData::new(2, 1, png),
+        Vec2::ZERO,
+        Vec2::new(40.0, 20.0),
+    ));
+    let id = doc.add_drawing(DrawingContent::Vector(drawing));
+    doc.track_mut(layer)
+        .unwrap()
+        .set_key(FrameIndex(0), Keyframe::Drawing(id));
+
+    let mut offscreen = OffscreenRenderer::new(&device);
+    let mut builder = DrawListBuilder::new(&device, offscreen.stroke_cache_mut());
+    builder.render_list(&doc.evaluate(FrameIndex(0)));
+    let draws = builder.finish();
+    let pixels = offscreen
+        .render(
+            &device,
+            &queue,
+            &OffscreenFrame {
+                canvas_size: (40, 20),
+                scale: 1.0,
+                background: None,
+                strokes: &draws,
+            },
+        )
+        .unwrap();
+    // Pixel centres away from the middle sample one texel each.
+    assert!(
+        close(pixel(&pixels, 5, 10), [0, 255, 0, 255]),
+        "{:?}",
+        pixel(&pixels, 5, 10)
+    );
+    assert!(
+        close(pixel(&pixels, 35, 10), [255, 0, 255, 255]),
+        "{:?}",
+        pixel(&pixels, 35, 10)
+    );
+    assert!(
+        close(pixel(&pixels, 1, 1), [0, 0, 255, 255]),
+        "fill on top: {:?}",
+        pixel(&pixels, 1, 1)
+    );
+}

@@ -75,6 +75,10 @@ define_id!(
     /// Identifies a single fill (a filled region) inside a drawing.
     FillId
 );
+define_id!(
+    /// Identifies a single placed image (an imported picture) inside a drawing.
+    ImageId
+);
 
 #[cfg(test)]
 mod tests {

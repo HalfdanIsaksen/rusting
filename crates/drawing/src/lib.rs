@@ -21,6 +21,8 @@
 //!   [`VectorDrawing::fills_hit`] support the whole-stroke eraser on fills.
 //! - [`VectorDrawing::merge_same_colour`] merges touching strokes and fills
 //!   of the same colour into one fill (see [`merge`]).
+//! - [`Image`] is an imported PNG/JPEG placed in a drawing by an affine
+//!   transform (ADR-015); it keeps the encoded file bytes.
 //! - [`select`] has the selection tool's geometry: [`ItemId`], item bounds,
 //!   translation, and hit-testing a point or rectangle against a drawing.
 
@@ -30,6 +32,7 @@ pub mod fill;
 pub mod fill_erase;
 mod fill_tessellate;
 mod hit;
+pub mod image;
 pub mod merge;
 pub mod select;
 pub mod stroke;
@@ -40,6 +43,7 @@ pub use erase::EraseResult;
 pub use fill::{Fill, FillError, FillShape, GapClosing, Gradient, fill_region};
 pub use fill_erase::{FillEraseResult, FillEraser, erase_fill};
 pub use fill_tessellate::tessellate_fill;
+pub use image::{Image, ImageData};
 pub use merge::Merge;
 pub use select::ItemId;
 pub use stroke::{
