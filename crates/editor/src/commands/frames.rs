@@ -21,6 +21,8 @@ struct LayerCopy {
 /// Tracks hold keyframes with stepped exposure, so on each layer:
 /// - if a drawing is exposed at the frame, the new frame gets a keyframe with
 ///   a deep copy of it (new drawing ID, new stroke and fill IDs);
+/// - if an object is exposed, the new frame gets an instance key that shows
+///   the same object frame again and continues from there;
 /// - otherwise (an empty key or nothing yet) the inserted frame simply
 ///   lengthens what is already there, which is the same picture.
 ///
@@ -31,6 +33,8 @@ pub struct DuplicateFrame {
     frame: FrameIndex,
     /// Built on the first apply and reused on redo, so redo keeps the IDs.
     copies: Option<Vec<LayerCopy>>,
+    /// Instance keys added for layers showing an object at the frame.
+    instances: Vec<(LayerId, Keyframe)>,
 }
 
 impl DuplicateFrame {
@@ -39,6 +43,7 @@ impl DuplicateFrame {
         Self {
             frame,
             copies: None,
+            instances: Vec::new(),
         }
     }
 
@@ -105,6 +110,16 @@ impl Command for DuplicateFrame {
             Some(copies) => copies,
             None => self.build_copies(doc)?,
         };
+        self.instances = doc
+            .tracks()
+            .iter()
+            .filter_map(|(&layer, track)| {
+                let (at, key) = track.instance_at(self.frame)?;
+                let length = doc.symbol(key.symbol).map_or(1, |s| s.frame_count);
+                let again = key.advanced(self.frame.0 - at.0, length);
+                Some((layer, Keyframe::Instance(again)))
+            })
+            .collect();
 
         let new = FrameIndex(new);
         let layers: Vec<LayerId> = doc.tracks().keys().copied().collect();
@@ -121,6 +136,11 @@ impl Command for DuplicateFrame {
             }
             doc.insert_drawing(copy.drawing, copy.content.clone());
         }
+        for (layer, key) in &self.instances {
+            if let Some(track) = doc.track_mut(*layer) {
+                track.set_key(new, *key);
+            }
+        }
         doc.frame_count = frame_count;
         shift_tags(doc, new, true);
         self.copies = Some(copies);
@@ -136,6 +156,12 @@ impl Command for DuplicateFrame {
                 .ok_or(CommandError::KeyframeNotFound(new))?;
             doc.remove_drawing(copy.drawing)
                 .ok_or(CommandError::DrawingNotFound)?;
+        }
+        for (layer, _) in &self.instances {
+            doc.track_mut(*layer)
+                .ok_or(CommandError::LayerNotFound)?
+                .remove_key(new)
+                .ok_or(CommandError::KeyframeNotFound(new))?;
         }
         let layers: Vec<LayerId> = doc.tracks().keys().copied().collect();
         for layer in layers {
@@ -548,6 +574,31 @@ mod tests {
         assert_eq!(key_frames(&d, a), [0, 3, 6]);
         assert!(cmd.copy_on(a).is_none());
         assert_eq!(d.drawing_at(a, FrameIndex(9)), None);
+    }
+
+    #[test]
+    fn duplicating_an_object_frame_shows_that_object_frame_again() {
+        use document::Symbol;
+        use document::timeline::InstanceKey;
+        let mut d = doc();
+        let l = d.add_layer("L");
+        let symbol = Symbol::new("S", 12);
+        let sid = symbol.id;
+        d.insert_symbol(symbol);
+        d.track_mut(l)
+            .unwrap()
+            .set_key(FrameIndex(2), Keyframe::Instance(InstanceKey::new(sid)));
+        let before = d.clone();
+        let mut h = History::new();
+        h.execute(&mut d, Box::new(DuplicateFrame::new(FrameIndex(5))))
+            .unwrap();
+        let key = d.track(l).unwrap().key_at(FrameIndex(6)).unwrap();
+        // Frame 5 showed object frame 3; the copy shows it again.
+        assert_eq!(key.instance().unwrap().first_frame, FrameIndex(3));
+        h.undo(&mut d).unwrap();
+        assert_eq!(d, before);
+        h.redo(&mut d).unwrap();
+        assert!(d.track(l).unwrap().key_at(FrameIndex(6)).is_some());
     }
 
     #[test]
