@@ -112,6 +112,21 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
             {
                 session.delete_frames();
             }
+            ui.separator();
+            if ui
+                .add(item(ui, "Convert to Object", &shortcuts::CONVERT_TO_OBJECT))
+                .on_hover_text(
+                    "Turn the items selected on the canvas, or the selected layers and frames, \
+                     into an object in the Library",
+                )
+                .clicked()
+            {
+                if session.tools.selection_at().is_some() {
+                    session.convert_selection_to_object();
+                } else {
+                    session.convert_layers_to_object();
+                }
+            }
         });
 
         ui.menu_button("Canvas", |ui| {
@@ -177,6 +192,14 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
                 (
                     "Drag from Library",
                     "Place a picture where you drop it on the canvas",
+                ),
+                (
+                    "F8",
+                    "Convert the canvas selection (or selected frames) to an object",
+                ),
+                (
+                    "Drag an object",
+                    "From the Library onto the canvas or a timeline cell to place it",
                 ),
                 ("Cmd/Ctrl/Shift+click", "Select several layers"),
             ] {

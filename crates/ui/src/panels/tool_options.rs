@@ -8,9 +8,11 @@ use crate::paint_order::PaintOrder;
 use crate::session::Session;
 use crate::shapes::GradientDirection;
 use crate::tools::{EraserMode, FillStyle};
-use document::animation_core::Rgba;
+use document::animation_core::{FrameIndex, Rgba};
 use document::drawing::GapClosing;
+use document::timeline::InstanceMode;
 use editor::Tool;
+use editor::commands::InstanceProps;
 
 /// Quick colour swatches (linear RGB).
 const SWATCHES: [[f32; 3]; 8] = [
@@ -190,6 +192,61 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
             ui.separator();
             eraser_mode_choices(ui, session);
         }
+    }
+    object_settings(ui, session);
+}
+
+/// Loop / Play once, first frame and opacity of the object the active layer
+/// shows at the playhead (ADR-018). Hidden when it shows none.
+fn object_settings(ui: &mut egui::Ui, session: &mut Session) {
+    let Some(at) = session.instance_at_playhead() else {
+        return;
+    };
+    let Some((name, length)) = session
+        .document
+        .symbol(at.key.symbol)
+        .map(|s| (s.name.clone(), s.frame_count))
+    else {
+        return;
+    };
+    ui.separator();
+    ui.strong(format!("Object: {name}"));
+    ui.weak(format!(
+        "{length} frame{} long, placed at frame {}",
+        if length == 1 { "" } else { "s" },
+        at.key_frame.display_number()
+    ));
+    let mut props = InstanceProps::of(&at.key);
+    let before = props;
+    ui.horizontal(|ui| {
+        for mode in [InstanceMode::Loop, InstanceMode::Once] {
+            ui.selectable_value(&mut props.mode, mode, mode.label());
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("First frame")
+            .on_hover_text("The object's own frame shown where it is placed");
+        let mut first = props.first_frame.0 + 1;
+        ui.add(egui::DragValue::new(&mut first).range(1..=length.max(1)));
+        props.first_frame = FrameIndex(first.saturating_sub(1));
+    });
+    ui.label("Opacity");
+    let mut percent = (props.opacity * 100.0).round();
+    let slider = ui.add(egui::Slider::new(&mut percent, 0.0..=100.0).suffix("%"));
+    props.opacity = percent / 100.0;
+    // One slider drag is one undo step.
+    let gesture_id = ui.scope_id().with("object_opacity_gesture");
+    let mut gesture: Option<u64> = ui.data(|d| d.get_temp::<u64>(gesture_id));
+    if slider.dragged() && gesture.is_none() {
+        let pass = ui.ctx().cumulative_pass_nr();
+        gesture = Some(pass);
+        ui.data_mut(|d| d.insert_temp(gesture_id, pass));
+    }
+    if !slider.dragged() {
+        ui.data_mut(|d| d.remove::<u64>(gesture_id));
+    }
+    if props != before {
+        session.set_instance_props(props, gesture);
     }
 }
 

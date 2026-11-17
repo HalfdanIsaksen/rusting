@@ -41,10 +41,11 @@ use document::drawing::{
     BrushStyle, Fill, FillEraser, FillShape, Font, GapClosing, Gradient, ItemId, Placement, Stroke,
     StrokeBuilder, StrokePoint, VectorDrawing,
 };
+use document::timeline::InstanceTransform;
 use editor::Tool;
 use editor::commands::{
     AddFill, AddStroke, Batch, MergeSameColour, RemoveFill, RemoveStroke, ReplaceFill,
-    ReplaceStroke, TransformItems, TranslateItems, remove_items,
+    ReplaceStroke, SetInstanceTransform, TransformItems, TranslateItems, remove_items,
 };
 
 /// Smallest distance between recorded brush points, in screen points.
@@ -444,6 +445,9 @@ pub struct ToolController {
     selection: Vec<ItemId>,
     /// The layer and frame the selection belongs to.
     selection_at: Option<(LayerId, FrameIndex)>,
+    /// The selected object (instance) instead of items: the layer and the
+    /// current frame it was selected at (ADR-018).
+    instance: Option<(LayerId, FrameIndex)>,
     /// Shift held: keep the aspect ratio / snap the angle while transforming,
     /// draw a straight line with the brush.
     shift: bool,
@@ -471,6 +475,7 @@ impl Default for ToolController {
             gesture: None,
             selection: Vec::new(),
             selection_at: None,
+            instance: None,
             shift: false,
             alt: false,
         }
@@ -508,6 +513,12 @@ impl ToolController {
     /// The selected strokes and fills.
     pub fn selection(&self) -> &[ItemId] {
         &self.selection
+    }
+
+    /// The layer and frame of the selected object (an instance shown there),
+    /// if an object rather than items is selected.
+    pub fn selected_instance(&self) -> Option<(LayerId, FrameIndex)> {
+        self.instance
     }
 
     /// The layer and frame the selection belongs to, if anything is selected.
@@ -620,11 +631,19 @@ impl ToolController {
     pub(crate) fn set_selection(&mut self, at: (LayerId, FrameIndex), items: Vec<ItemId>) {
         self.selection_at = Some(at);
         self.selection = items;
+        self.instance = None;
+    }
+
+    pub(crate) fn set_instance(&mut self, at: (LayerId, FrameIndex)) {
+        self.selection.clear();
+        self.selection_at = None;
+        self.instance = Some(at);
     }
 
     fn clear_selection(&mut self) {
         self.selection.clear();
         self.selection_at = None;
+        self.instance = None;
         if matches!(
             self.gesture,
             Some(Gesture::Move { .. } | Gesture::Marquee { .. } | Gesture::Transform { .. })
@@ -820,6 +839,14 @@ impl Session {
         let Some(layer) = self.state.active_layer else {
             return false;
         };
+        let draws = !matches!(tool, Tool::Select | Tool::Lasso | Tool::Transform);
+        if draws && self.instance_shown(layer, self.current_frame()) {
+            self.set_error(
+                "This frame shows an object, which can't be drawn into: draw on another layer \
+                 or frame",
+            );
+            return false;
+        }
         if self.playback.is_playing() {
             self.playback.pause();
         }
@@ -1191,6 +1218,30 @@ impl Session {
         self.sync_selection();
         let at = (layer, frame);
         let zoom = zoom.max(f32::EPSILON);
+        // A frame showing an object: the object is selected and dragged as
+        // one unit by its bounds (ADR-018).
+        if self.instance_shown(layer, frame) {
+            let slack = SELECT_TOLERANCE_SCREEN / zoom;
+            let hit = self
+                .document
+                .instance_bounds(layer, frame)
+                .is_some_and(|(min, max)| {
+                    pos.cmpge(min - slack).all() && pos.cmple(max + slack).all()
+                });
+            if !hit {
+                self.tools.clear_selection();
+                return None;
+            }
+            self.tools.set_instance(at);
+            return Some(Gesture::Move {
+                layer,
+                frame,
+                start: pos,
+                delta: Vec2::ZERO,
+                zoom,
+                dragged: false,
+            });
+        }
         match self.item_under(pos, zoom) {
             Some(item) if shift => {
                 let mut items = self.tools.selection.clone();
@@ -1241,9 +1292,64 @@ impl Session {
         if self.state.tool != Tool::Transform {
             return None;
         }
+        if let Some((layer, frame)) = self.tools.instance {
+            let bounds = self.document.instance_bounds(layer, frame)?;
+            return Some(TransformBox::new(bounds, zoom));
+        }
         self.tools.selection_at()?;
         let bounds = self.active_drawing()?.items_bounds(&self.tools.selection)?;
         Some(TransformBox::new(bounds, zoom))
+    }
+
+    /// Whether `layer` shows an object (an instance key) at `frame`.
+    fn instance_shown(&self, layer: LayerId, frame: FrameIndex) -> bool {
+        self.document
+            .track(layer)
+            .and_then(|t| t.instance_at(frame))
+            .is_some()
+    }
+
+    /// Selects the object the active layer shows at the current frame, if
+    /// any (with the Selection or Transform tool).
+    pub fn select_instance(&mut self) {
+        let (Some(layer), frame) = (self.state.active_layer, self.current_frame()) else {
+            return;
+        };
+        if self.instance_shown(layer, frame) {
+            self.tools.set_instance((layer, frame));
+        }
+    }
+
+    /// Commits moving the selected object by `delta`, or transforming it by
+    /// `transform` (document space), as a [`SetInstanceTransform`]: the key
+    /// changes on its own frame, and a new key is made on later frames.
+    fn commit_instance_transform(
+        &mut self,
+        layer: LayerId,
+        frame: FrameIndex,
+        transform: Affine2,
+        label: &str,
+    ) {
+        let Some((_, key)) = self
+            .document
+            .track(layer)
+            .and_then(|t| t.instance_at(frame))
+        else {
+            return;
+        };
+        let placed = InstanceTransform::from_affine(&(transform * key.transform.to_affine()));
+        // A plain move keeps scale and rotation exactly.
+        let placed = if transform.matrix2 == document::animation_core::glam::Mat2::IDENTITY {
+            InstanceTransform {
+                translation: key.transform.translation + transform.translation,
+                ..key.transform
+            }
+        } else {
+            placed
+        };
+        if let Err(err) = self.execute(Box::new(SetInstanceTransform::new(layer, frame, placed))) {
+            self.set_error(format!("{label}: {err}"));
+        }
     }
 
     /// Transform tool press: starts scaling, rotating or moving when `pos`
@@ -1261,7 +1367,10 @@ impl Session {
         let zoom = zoom.max(f32::EPSILON);
         let hit = self
             .transform_box(zoom)
-            .filter(|_| self.tools.selection_at() == Some((layer, frame)))
+            .filter(|_| {
+                self.tools.selection_at() == Some((layer, frame))
+                    || self.tools.instance == Some((layer, frame))
+            })
             .and_then(|b| b.hit(pos).map(|h| (b, h)));
         let mode = match hit {
             Some((b, TransformHandle::Scale { x, y })) => TransformMode::Scale {
@@ -1324,6 +1433,10 @@ impl Session {
         let Some(layer) = self.state.active_layer else {
             return;
         };
+        if self.instance_shown(layer, self.current_frame()) {
+            self.select_instance();
+            return;
+        }
         let items = self
             .active_drawing()
             .map(|d| d.all_items())
@@ -1341,6 +1454,17 @@ impl Session {
     /// Moves the selection by `delta` (document units) as one undo step.
     pub fn nudge_selection(&mut self, delta: Vec2) {
         self.sync_selection();
+        if let Some((layer, frame)) = self.tools.instance {
+            if !self.tools.is_active() && delta != Vec2::ZERO {
+                self.commit_instance_transform(
+                    layer,
+                    frame,
+                    Affine2::from_translation(delta),
+                    "Move Object",
+                );
+            }
+            return;
+        }
         let Some((layer, frame)) = self.tools.selection_at() else {
             return;
         };
@@ -1372,6 +1496,19 @@ impl Session {
     /// no longer exist (e.g. after undo). Called after every document,
     /// frame and layer change, and once per UI frame.
     pub fn sync_selection(&mut self) {
+        if let Some((layer, frame)) = self.tools.instance {
+            let editable = self.document.layers().is_editable(layer);
+            let same_place =
+                self.state.active_layer == Some(layer) && self.current_frame() == frame;
+            if !self.state.tool.uses_selection()
+                || !editable
+                || !same_place
+                || !self.instance_shown(layer, frame)
+            {
+                self.tools.clear_selection();
+            }
+            return;
+        }
         let Some((layer, frame)) = self.tools.selection_at else {
             return;
         };
@@ -1489,6 +1626,11 @@ impl Session {
                 dragged: true,
                 ..
             }) if delta != Vec2::ZERO => {
+                if self.tools.instance == Some((layer, frame)) {
+                    let moved = Affine2::from_translation(delta);
+                    self.commit_instance_transform(layer, frame, moved, "Move Object");
+                    return;
+                }
                 let items = self.tools.selection.clone();
                 let _ = self.execute(Box::new(TranslateItems::new(layer, frame, items, delta)));
             }
@@ -1504,6 +1646,10 @@ impl Session {
                     TransformMode::Scale { .. } => "Scale",
                     TransformMode::Rotate { .. } => "Rotate",
                 };
+                if self.tools.instance == Some((layer, frame)) {
+                    self.commit_instance_transform(layer, frame, transform, label);
+                    return;
+                }
                 let items = self.tools.selection.clone();
                 let command = TransformItems::new(layer, frame, items, transform).with_label(label);
                 let _ = self.execute(Box::new(command));
@@ -1712,6 +1858,7 @@ fn vector_at(
 mod tests {
     use super::*;
     use document::drawing::Placement;
+    use document::timeline::InstanceKey;
     use editor::commands::SetLayerLocked;
 
     fn strokes_at(s: &Session, frame: u32) -> usize {
@@ -2863,5 +3010,95 @@ mod tests {
         s.commit_text();
         assert_eq!(s.history.undo_len(), undo_len);
         assert!(s.status().unwrap().is_error);
+    }
+
+    /// The select scene with its first two lines turned into an object
+    /// (F8 on a selection), and that object's layer.
+    fn object_scene() -> (Session, LayerId) {
+        let (mut s, _) = select_scene();
+        s.execute(Box::new(editor::commands::SetFrameCount::new(10)))
+            .unwrap();
+        drag(
+            &mut s,
+            Vec2::new(-10.0, -10.0),
+            Vec2::new(110.0, 60.0),
+            false,
+        );
+        assert_eq!(s.tools.selection().len(), 2);
+        assert!(s.convert_selection_to_object());
+        let layer = s.state.active_layer.unwrap();
+        assert_eq!(s.tools.selected_instance(), Some((layer, FrameIndex(0))));
+        assert!(s.tools.selection().is_empty());
+        (s, layer)
+    }
+
+    fn instance_key(s: &Session, layer: LayerId, frame: u32) -> InstanceKey {
+        *s.document
+            .track(layer)
+            .unwrap()
+            .key_at(FrameIndex(frame))
+            .unwrap()
+            .instance()
+            .unwrap()
+    }
+
+    #[test]
+    fn selected_items_become_an_object_that_stays_in_place() {
+        let (s, layer) = object_scene();
+        let key = instance_key(&s, layer, 0);
+        assert_eq!(key.transform.translation.x, 50.0);
+        let (min, max) = s.document.instance_bounds(layer, FrameIndex(0)).unwrap();
+        assert!(min.x < 1.0 && max.x > 99.0 && max.y > 49.0 && max.y < 60.0);
+        // The third line stays on the original layer.
+        assert_eq!(s.document.symbols().len(), 1);
+    }
+
+    #[test]
+    fn objects_select_and_move_as_one_unit() {
+        let (mut s, layer) = object_scene();
+        s.clear_selection();
+        // A click outside the object's bounds selects nothing.
+        click(&mut s, Vec2::new(50.0, 150.0), false);
+        assert_eq!(s.tools.selected_instance(), None);
+        // A drag on it moves the whole object in one undo step.
+        let undo = s.history.undo_len();
+        drag(&mut s, Vec2::new(50.0, 25.0), Vec2::new(80.0, 45.0), false);
+        assert_eq!(s.history.undo_len(), undo + 1);
+        assert_eq!(s.history.undo_label(), Some("Move Object"));
+        let key = instance_key(&s, layer, 0);
+        assert!((key.transform.translation - Vec2::new(80.0, 45.0)).length() < 1e-3);
+        assert_eq!(s.tools.selected_instance(), Some((layer, FrameIndex(0))));
+
+        // Nudging moves it too.
+        s.nudge_selection(Vec2::new(1.0, 0.0));
+        assert_eq!(instance_key(&s, layer, 0).transform.translation.x, 81.0);
+
+        // Moving it on a later frame makes a new key there.
+        s.set_frame(FrameIndex(4));
+        drag(&mut s, Vec2::new(81.0, 45.0), Vec2::new(91.0, 45.0), false);
+        assert_eq!(instance_key(&s, layer, 0).transform.translation.x, 81.0);
+        assert_eq!(instance_key(&s, layer, 4).transform.translation.x, 91.0);
+
+        // Drawing tools leave the object frame alone.
+        s.state.tool = Tool::Brush;
+        assert!(!s.pointer_down(Vec2::new(10.0, 10.0), 1.0));
+        s.undo();
+        s.undo();
+        s.undo();
+        assert_eq!(instance_key(&s, layer, 0).transform.translation.x, 50.0);
+    }
+
+    #[test]
+    fn transform_tool_scales_an_object() {
+        let (mut s, layer) = object_scene();
+        s.state.tool = Tool::Transform;
+        s.sync_selection();
+        let b = s.transform_box(1.0).unwrap();
+        let corner = b.handle_pos(TransformHandle::Scale { x: 1, y: 1 }).unwrap();
+        let centre = b.center();
+        drag(&mut s, corner, centre + (corner - centre) * 2.0, false);
+        let key = instance_key(&s, layer, 0);
+        assert!(key.transform.scale.x > 1.5, "{:?}", key.transform);
+        assert_eq!(s.history.undo_label(), Some("Move Object"));
     }
 }

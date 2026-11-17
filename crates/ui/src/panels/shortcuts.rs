@@ -28,6 +28,9 @@ pub const DUPLICATE_FRAME: KeyboardShortcut = KeyboardShortcut::new(Modifiers::C
 pub const INSERT_FRAME: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F5);
 /// Remove the selected frames, or the frame under the playhead.
 pub const DELETE_FRAMES: KeyboardShortcut = KeyboardShortcut::new(Modifiers::SHIFT, Key::F5);
+/// Turn the canvas selection (or the selected layers and frames) into an
+/// object (F8, as in Flash and Animate).
+pub const CONVERT_TO_OBJECT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F8);
 /// Quit.
 pub const QUIT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Q);
 
@@ -128,8 +131,22 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
         }
         session.select_all();
     }
-    // With a selection, arrows nudge it instead of moving the playhead.
-    let selecting = session.state.tool.uses_selection() && !session.tools.selection().is_empty();
+    if ctx.input_mut(|i| i.consume_shortcut(&CONVERT_TO_OBJECT)) && !gesture {
+        if session.tools.selection_at().is_some() {
+            session.convert_selection_to_object();
+        } else if session.frame_selection().is_some() {
+            session.convert_layers_to_object();
+        } else {
+            session.set_error(
+                "Convert to Object: select items on the canvas, or layers and frames in the \
+                 timeline",
+            );
+        }
+    }
+    // With a selection (items or an object), arrows nudge it instead of
+    // moving the playhead.
+    let selecting = session.state.tool.uses_selection()
+        && (!session.tools.selection().is_empty() || session.tools.selected_instance().is_some());
     let (select, lasso, transform, escape, delete, shift) = ctx.input(|i| {
         (
             i.modifiers.is_none() && i.key_pressed(Key::V),

@@ -348,9 +348,16 @@ fn paint_overlays(
     }
     if matches!(session.state.tool, Tool::Select | Tool::Lasso) {
         let pos = viewport.screen_to_canvas(Vec2::new(hover.x - rect.min.x, hover.y - rect.min.y));
-        let over_selection = session
-            .item_under(pos, zoom)
-            .is_some_and(|item| session.tools.selection().contains(&item));
+        let over_object = session.tools.selected_instance().is_some_and(|(l, f)| {
+            session
+                .document
+                .instance_bounds(l, f)
+                .is_some_and(|(min, max)| pos.cmpge(min).all() && pos.cmple(max).all())
+        });
+        let over_selection = over_object
+            || session
+                .item_under(pos, zoom)
+                .is_some_and(|item| session.tools.selection().contains(&item));
         let icon = if session.tools.move_offset() != Vec2::ZERO {
             egui::CursorIcon::Grabbing
         } else if over_selection {
@@ -460,6 +467,22 @@ fn paint_selection(
     let screen_rect =
         |(min, max): (Vec2, Vec2)| egui::Rect::from_two_pos(to_screen(min), to_screen(max));
 
+    // A selected object: its box, or the transform tool's box, moved by the
+    // drag in progress.
+    if let Some((layer, frame)) = session.tools.selected_instance() {
+        let drag = session.tools.selection_transform();
+        if let Some(tbox) = session.transform_box(viewport.zoom as f32) {
+            paint_transform_box(painter, &tbox, drag, &to_screen);
+        } else if let Some((min, max)) = session.document.instance_bounds(layer, frame) {
+            let corners = [min, Vec2::new(max.x, min.y), max, Vec2::new(min.x, max.y)]
+                .map(|p| to_screen(drag.transform_point2(p)))
+                .to_vec();
+            painter.add(egui::Shape::closed_line(
+                corners,
+                egui::Stroke::new(1.5, SELECTION_COLOR),
+            ));
+        }
+    }
     if let Some(drawing) = session.active_drawing()
         && session.tools.selection_at().is_some()
     {

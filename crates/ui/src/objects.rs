@@ -65,6 +65,7 @@ impl Session {
         }
         self.tools.cancel();
         self.select_layer(new_layer);
+        self.select_instance();
         self.report_new_object(symbol);
         true
     }
@@ -115,6 +116,7 @@ impl Session {
         }
         self.select_layer(layer);
         self.state.tool = Tool::Select;
+        self.select_instance();
         self.set_status(format!("Placed {name}"));
         true
     }

@@ -447,7 +447,14 @@ fn collect_draws(
         draws.set_layer(Some(layer.layer_id), layer.blend);
         let transform = affine_matrix(&layer.transform);
         if layer.in_object {
-            // Objects are not edited in place: draw their contents as they are.
+            // Objects are not edited in place: draw their contents as they
+            // are, carried along while the selected object is dragged.
+            let transform =
+                if session.tools.selected_instance().map(|(l, _)| l) == Some(layer.layer_id) {
+                    affine_matrix(&(session.tools.selection_transform() * layer.transform))
+                } else {
+                    transform
+                };
             draw_items(&mut draws, layer.drawing, layer.opacity, transform);
             continue;
         }
