@@ -1,12 +1,15 @@
 //! The library panel: every file imported into the project, in sections by
 //! kind (ADR-017).
 //!
-//! Double-click a row to rename it. Right-click it to place it on the canvas
-//! or delete it (only while nothing in the animation uses it). Drag a row
-//! onto the canvas to place it where it is dropped: the row sets an
-//! [`AssetDrag`] payload, and the host's canvas takes it with
+//! Double-click a row to rename it. Right-click it to place it (a picture on
+//! the canvas, a sound on a new audio layer at the current frame) or delete
+//! it (only while nothing in the animation uses it). Drag a picture onto the
+//! canvas to place it where it is dropped: the row sets an [`AssetDrag`]
+//! payload, and the host's canvas takes it with
 //! `Response::dnd_release_payload::<AssetDrag>()` and calls
-//! [`Session::place_asset`] with the drop point.
+//! [`Session::place_asset`] with the drop point. Drag a sound onto the
+//! timeline's frames to start a new audio layer at the frame it is dropped
+//! on ([`Session::place_audio`]).
 
 use crate::icons::{self, IconFn};
 use crate::session::Session;
@@ -28,12 +31,20 @@ struct Section {
 }
 
 /// The sections, top to bottom. A new asset kind adds an entry here.
-const SECTIONS: &[Section] = &[Section {
-    title: "Images",
-    empty: "File → Import… adds PNG and JPEG pictures here.",
-    icon: icons::picture,
-    holds: |kind| matches!(kind, AssetKind::Image(_)),
-}];
+const SECTIONS: &[Section] = &[
+    Section {
+        title: "Images",
+        empty: "File → Import… adds PNG and JPEG pictures here.",
+        icon: icons::picture,
+        holds: |kind| matches!(kind, AssetKind::Image(_)),
+    },
+    Section {
+        title: "Audio",
+        empty: "File → Import… adds MP3 and WAV sounds here.",
+        icon: icons::speaker,
+        holds: |kind| matches!(kind, AssetKind::Audio(_)),
+    },
+];
 
 const ROW_HEIGHT: f32 = 22.0;
 
@@ -109,7 +120,16 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
 
     match action {
         Some(Action::Place(id)) => {
-            session.place_asset(id, None);
+            if session
+                .document
+                .asset(id)
+                .is_some_and(|a| a.audio().is_some())
+            {
+                let frame = session.current_frame();
+                session.place_audio(id, frame);
+            } else {
+                session.place_asset(id, None);
+            }
         }
         Some(Action::Delete(id)) => {
             session.delete_asset(id);
@@ -161,6 +181,7 @@ fn row(
         return None;
     }
 
+    let is_sound = asset.audio().is_some();
     let response = ui
         .interact(
             rect,
@@ -168,10 +189,11 @@ fn row(
             Sense::click_and_drag(),
         )
         .on_hover_text(format!(
-            "{} ({}). Drag onto the canvas to place it there, double-click to rename, \
+            "{} ({}). Drag onto the {} to place it there, double-click to rename, \
              right-click for more.",
             asset.name,
-            describe(asset)
+            describe(asset),
+            if is_sound { "timeline" } else { "canvas" }
         ));
     response.dnd_set_drag_payload(AssetDrag(asset.id));
     if response.hovered() || response.dragged() {
@@ -200,11 +222,18 @@ fn row(
         };
     }
     response.context_menu(|ui| {
-        if ui
-            .button("Place on Canvas")
-            .on_hover_text("Place it centred on the canvas, on the current layer and frame")
-            .clicked()
-        {
+        let (place, place_tip) = if is_sound {
+            (
+                "Add to Timeline",
+                "Put it on a new audio layer, starting at the current frame",
+            )
+        } else {
+            (
+                "Place on Canvas",
+                "Place it centred on the canvas, on the current layer and frame",
+            )
+        };
+        if ui.button(place).on_hover_text(place_tip).clicked() {
             action = Some(Action::Place(asset.id));
             ui.close();
         }
@@ -219,7 +248,11 @@ fn row(
         ui.separator();
         let delete = ui
             .add_enabled(!in_use, egui::Button::new("Delete"))
-            .on_disabled_hover_text("It is used in the animation: delete its placed copies first");
+            .on_disabled_hover_text(if is_sound {
+                "It is used in the animation: delete its audio layers first"
+            } else {
+                "It is used in the animation: delete its placed copies first"
+            });
         if delete.clicked() {
             action = Some(Action::Delete(asset.id));
             ui.close();
@@ -262,6 +295,31 @@ mod tests {
         let ctx = egui::Context::default();
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| panel(ui, session));
         output.textures_delta.clear();
+    }
+
+    #[test]
+    fn sounds_get_their_own_section() {
+        let mut s = Session::new();
+        let sound = document::AudioData {
+            format: document::AudioFormat::Mp3,
+            sample_rate: 44_100,
+            channels: 2,
+            duration: 65.3,
+            peaks: Vec::new(),
+            bytes: std::sync::Arc::from(vec![1u8]),
+        };
+        s.import_audio("song.mp3", sound).unwrap();
+        let asset = s.document.assets().values().next().unwrap();
+        let sections: Vec<&str> = SECTIONS
+            .iter()
+            .filter(|sec| (sec.holds)(&asset.kind))
+            .map(|sec| sec.title)
+            .collect();
+        assert_eq!(sections, ["Audio"]);
+        assert_eq!(describe(asset), "Audio, MP3, 1:05.3");
+        let before = s.document.clone();
+        draw(&mut s);
+        assert_eq!(s.document, before);
     }
 
     #[test]

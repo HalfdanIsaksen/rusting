@@ -2,6 +2,7 @@
 //! the frame grid (one row per layer, keys and exposures, scrubbing). The
 //! layer controls on the left of the grid live in [`super::layers`].
 
+use super::library::AssetDrag;
 use super::shortcuts;
 use super::status::fps_text;
 use crate::icons::{self, IconFn};
@@ -641,6 +642,7 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
     }
 
     paint_frames(ui, session, rows, rect, cell, count);
+    sound_drop(ui, session, &response, rect, cell, frame_at);
     if response.dragged()
         && let Some((layer, from)) = dragged_key
         && let Some(to) = drop_target
@@ -684,6 +686,46 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
             Rect::from_x_y_ranges(x - cell..=x + cell, y..=y + 1.0),
             Some(egui::Align::Center),
         );
+    }
+}
+
+/// A library sound dragged over the frames: marks the frame it would start
+/// on, and on release puts it on a new audio layer starting there.
+fn sound_drop(
+    ui: &egui::Ui,
+    session: &mut Session,
+    response: &egui::Response,
+    rect: Rect,
+    cell: f32,
+    frame_at: impl Fn(f32) -> FrameIndex,
+) {
+    let is_sound = |drag: &AssetDrag| {
+        session
+            .document
+            .asset(drag.0)
+            .is_some_and(|a| a.audio().is_some())
+    };
+    if let Some(drag) = response.dnd_hover_payload::<AssetDrag>()
+        && is_sound(&drag)
+        && let Some(pos) = response.hover_pos()
+    {
+        let x = rect.left() + frame_at(pos.x).0 as f32 * cell;
+        let color = ui.visuals().selection.stroke.color;
+        let painter = ui.painter_at(rect);
+        painter.vline(x, rect.top()..=rect.bottom(), Stroke::new(2.0, color));
+        painter.rect_stroke(
+            Rect::from_x_y_ranges(x..=x + cell, rect.top()..=rect.top() + RULER_HEIGHT),
+            2.0,
+            Stroke::new(2.0, color),
+            StrokeKind::Inside,
+        );
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Copy);
+    }
+    if let Some(drag) = response.dnd_release_payload::<AssetDrag>()
+        && is_sound(&drag)
+        && let Some(pos) = response.hover_pos().or(response.interact_pointer_pos())
+    {
+        session.place_audio(drag.0, frame_at(pos.x));
     }
 }
 

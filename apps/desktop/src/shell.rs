@@ -175,19 +175,23 @@ fn handle_asset_drop(
         return;
     };
     let at = viewport.screen_to_canvas(Vec2::new(pointer.x - rect.min.x, pointer.y - rect.min.y));
+    // Only pictures go on the canvas; sounds are dropped on the timeline.
     if let Some(drag) = response.dnd_release_payload::<ui::AssetDrag>() {
-        session.place_asset(drag.0, Some(at));
+        if session.placed_size(drag.0).is_some() {
+            session.place_asset(drag.0, Some(at));
+        }
         return;
     }
     let Some(drag) = response.dnd_hover_payload::<ui::AssetDrag>() else {
         return;
     };
-    if session.draw_block_reason().is_some() {
+    let size = session.placed_size(drag.0);
+    if session.draw_block_reason().is_some() || size.is_none() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::NoDrop);
         return;
     }
     ui.ctx().set_cursor_icon(egui::CursorIcon::Copy);
-    let Some(size) = session.placed_size(drag.0) else {
+    let Some(size) = size else {
         return;
     };
     let corner = |p: Vec2| {
