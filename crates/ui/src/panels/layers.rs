@@ -117,6 +117,8 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
     let drag_id = ui.scope_id().with("layer_drag");
     let mut select = None;
     let mut fold = None;
+    // "Convert to Object" from a layer's context menu, and the layer.
+    let mut convert = None;
     let rows_top = header.bottom();
     for (i, row) in rows.iter().enumerate() {
         let top = rows_top + i as f32 * ROW_HEIGHT;
@@ -332,6 +334,21 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
             if response.double_clicked() {
                 renaming = Renaming::start(row);
             }
+            if let RowKind::Layer(id) = row.kind {
+                response.context_menu(|ui| {
+                    if ui
+                        .button("Convert to Object")
+                        .on_hover_text(
+                            "Turn the selected layers (and the selected frames, or all \
+                             frames) into an object in the Library",
+                        )
+                        .clicked()
+                    {
+                        convert = Some(id);
+                        ui.close();
+                    }
+                });
+            }
             if let RowKind::Group(g) = row.kind {
                 response.context_menu(|ui| {
                     if ui.button("Rename Group").clicked() {
@@ -423,6 +440,12 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
         Some(Select::Layer(id, _)) => session.select_layer(id),
         Some(Select::Group(g, m)) => session.select_group(g, m.command || m.shift),
         None => {}
+    }
+    if let Some(id) = convert {
+        if !session.is_layer_selected(id) {
+            session.select_layer(id);
+        }
+        session.convert_layers_to_object();
     }
     for command in commands {
         if session.execute(command).is_err() {

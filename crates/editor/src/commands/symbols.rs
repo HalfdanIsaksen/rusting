@@ -134,6 +134,8 @@ pub struct ConvertToSymbol {
     layers: Vec<LayerId>,
     range: FrameRange,
     name: Option<String>,
+    symbol_id: SymbolId,
+    layer_id: LayerId,
     built: Option<Conversion>,
     previous: Option<Previous>,
 }
@@ -145,6 +147,8 @@ impl ConvertToSymbol {
             layers,
             range,
             name: None,
+            symbol_id: SymbolId::new(),
+            layer_id: LayerId::new(),
             built: None,
             previous: None,
         }
@@ -156,14 +160,14 @@ impl ConvertToSymbol {
         self
     }
 
-    /// ID of the symbol created by the last apply.
-    pub fn symbol_id(&self) -> Option<SymbolId> {
-        self.built.as_ref().map(|c| c.symbol.id)
+    /// ID of the symbol this command creates (fixed now so redo reuses it).
+    pub fn symbol_id(&self) -> SymbolId {
+        self.symbol_id
     }
 
-    /// ID of the layer holding the instance, after the first apply.
-    pub fn layer_id(&self) -> Option<LayerId> {
-        self.built.as_ref().map(|c| c.layer.id)
+    /// ID of the new layer holding the instance.
+    pub fn layer_id(&self) -> LayerId {
+        self.layer_id
     }
 
     fn build(&self, doc: &Document) -> Result<Conversion, CommandError> {
@@ -187,6 +191,7 @@ impl ConvertToSymbol {
         let length = end.0 - start.0;
         let name = self.name.clone().unwrap_or_else(|| doc.next_symbol_name());
         let mut symbol = Symbol::new(name.clone(), length);
+        symbol.id = self.symbol_id;
         let mut copies: BTreeMap<DrawingId, DrawingId> = BTreeMap::new();
         let mut drawings = Vec::new();
         let mut tracks = Vec::new();
@@ -267,6 +272,7 @@ impl ConvertToSymbol {
         // Objects are placed in the parent's space; the symbol's layers
         // keep their own transforms, so the object layer adds none.
         let mut layer = layer;
+        layer.id = self.layer_id;
         layer.transform = document::scene::Transform2D::IDENTITY;
         let mut track = Track::new();
         track.set_key(start, Keyframe::Instance(InstanceKey::new(symbol.id)));
@@ -320,6 +326,8 @@ pub struct ConvertItemsToSymbol {
     frame: FrameIndex,
     items: Vec<ItemId>,
     name: Option<String>,
+    symbol_id: SymbolId,
+    layer_id: LayerId,
     built: Option<Conversion>,
     previous: Option<Previous>,
 }
@@ -332,6 +340,8 @@ impl ConvertItemsToSymbol {
             frame,
             items,
             name: None,
+            symbol_id: SymbolId::new(),
+            layer_id: LayerId::new(),
             built: None,
             previous: None,
         }
@@ -343,14 +353,14 @@ impl ConvertItemsToSymbol {
         self
     }
 
-    /// ID of the symbol created by the last apply.
-    pub fn symbol_id(&self) -> Option<SymbolId> {
-        self.built.as_ref().map(|c| c.symbol.id)
+    /// ID of the symbol this command creates (fixed now so redo reuses it).
+    pub fn symbol_id(&self) -> SymbolId {
+        self.symbol_id
     }
 
-    /// ID of the layer holding the instance, after the first apply.
-    pub fn layer_id(&self) -> Option<LayerId> {
-        self.built.as_ref().map(|c| c.layer.id)
+    /// ID of the new layer holding the instance.
+    pub fn layer_id(&self) -> LayerId {
+        self.layer_id
     }
 
     fn build(&self, doc: &Document) -> Result<Conversion, CommandError> {
@@ -397,6 +407,7 @@ impl ConvertItemsToSymbol {
 
         let name = self.name.clone().unwrap_or_else(|| doc.next_symbol_name());
         let mut symbol = Symbol::new(name.clone(), 1);
+        symbol.id = self.symbol_id;
         let drawing = DrawingId::new();
         let mut inner = Track::new();
         inner.set_key(FrameIndex(0), Keyframe::Drawing(drawing));
@@ -406,7 +417,8 @@ impl ConvertItemsToSymbol {
             .map_or_else(|| "Layer 1".to_owned(), |l| l.name.clone());
         symbol.push_layer(Layer::new(layer_name), inner);
 
-        let (layer, index) = object_layer(doc, &name, self.layer)?;
+        let (mut layer, index) = object_layer(doc, &name, self.layer)?;
+        layer.id = self.layer_id;
         let mut track = Track::new();
         let key =
             InstanceKey::new(symbol.id).with_transform(InstanceTransform::from_translation(centre));

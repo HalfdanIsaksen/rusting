@@ -581,6 +581,17 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
                 {
                     start_tag_rename(ui, session, index);
                 }
+                ui.separator();
+                if ui
+                    .button("Convert to Object")
+                    .on_hover_text(
+                        "Turn the selected layers and frames (all frames when none are \
+                         selected) into an object in the Library",
+                    )
+                    .clicked()
+                {
+                    session.convert_layers_to_object();
+                }
             }
         }
     });

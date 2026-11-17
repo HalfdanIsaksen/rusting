@@ -14,6 +14,7 @@ pub mod eyedropper;
 pub mod icons;
 pub mod import;
 pub mod logo;
+pub mod objects;
 pub mod onion;
 pub mod paint_order;
 pub mod panels;
@@ -25,6 +26,7 @@ pub mod theme;
 pub mod tools;
 
 pub use eyedropper::{PickSource, PickedColor};
+pub use objects::InstanceAt;
 pub use onion::{OnionDrawing, OnionSkin};
 pub use paint_order::PaintOrder;
 pub use panels::library::AssetDrag;
