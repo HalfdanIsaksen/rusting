@@ -8,9 +8,11 @@ use crate::paint_order::PaintOrder;
 use crate::session::Session;
 use crate::shapes::GradientDirection;
 use crate::tools::{EraserMode, FillStyle};
-use document::animation_core::Rgba;
+use document::animation_core::{FrameIndex, LayerId, Rgba};
 use document::drawing::GapClosing;
+use document::scene::AudioClip;
 use editor::Tool;
+use editor::commands::SetAudioClip;
 
 /// Quick colour swatches (linear RGB).
 const SWATCHES: [[f32; 3]; 8] = [
@@ -101,10 +103,90 @@ fn merge_same_colour(ui: &mut egui::Ui, session: &mut Session) {
         .on_hover_text(MERGE_HINT);
 }
 
+/// The active audio layer's clip (ADR-020): its sound, volume and start
+/// frame. Each drag or typed edit is one undo step.
+fn audio_clip(ui: &mut egui::Ui, session: &mut Session, layer: LayerId) {
+    let doc = &session.document;
+    let Some(clip) = doc
+        .layers()
+        .get(layer)
+        .and_then(|l| l.audio_clip())
+        .copied()
+    else {
+        return;
+    };
+    let editable = doc.layers().is_editable(layer);
+    ui.strong("Audio clip");
+    match doc.clip_sound(&clip) {
+        Some(sound) => {
+            let name = doc.asset(clip.asset).map_or("", |a| a.name.as_str());
+            ui.label(format!(
+                "{name} ({}, {})",
+                sound.format.label(),
+                super::library::format_duration(sound.duration)
+            ));
+        }
+        None => {
+            ui.colored_label(ui.visuals().warn_fg_color, "The sound is missing");
+        }
+    }
+    let last = doc.frame_count.max(1);
+    let mut volume = (clip.volume * 100.0).round();
+    let mut start = clip.start.display_number();
+    let (volume_changed, start_changed, active) = ui
+        .add_enabled_ui(editable, |ui| {
+            let v = ui
+                .add(egui::Slider::new(&mut volume, 0.0..=100.0).suffix("%").text("Volume"))
+                .on_hover_text("How loud the clip plays");
+            let s = ui
+                .add(egui::DragValue::new(&mut start).range(1..=last).prefix("Starts at frame "))
+                .on_hover_text("The frame the sound starts on. You can also drag the clip in its timeline row.");
+            let active = v.dragged() || v.has_focus() || s.dragged() || s.has_focus();
+            (v.changed(), s.changed(), active)
+        })
+        .inner;
+    let gesture_id = ui.scope_id().with(("audio_clip_gesture", layer));
+    let mut gesture: Option<u64> = ui.data(|d| d.get_temp(gesture_id));
+    if (volume_changed || start_changed) && gesture.is_none() {
+        gesture = Some(ui.ctx().cumulative_pass_nr());
+    }
+    if active {
+        if let Some(g) = gesture {
+            ui.data_mut(|d| d.insert_temp(gesture_id, g));
+        }
+    } else {
+        ui.data_mut(|d| d.remove::<u64>(gesture_id));
+    }
+    if (volume_changed || start_changed)
+        && let Some(g) = gesture
+    {
+        let changed = AudioClip {
+            volume: volume / 100.0,
+            start: FrameIndex(start.saturating_sub(1)),
+            ..clip
+        };
+        let _ = session.execute(Box::new(SetAudioClip::new(layer, changed).in_gesture(g)));
+    }
+    if !editable {
+        ui.weak("Unlock the layer to change its clip.");
+    }
+    ui.weak("Hide the layer (eye icon) to mute it.");
+}
+
 /// Draws the tool settings panel.
 pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
     // Leave room for the value box beside each slider.
     ui.spacing_mut().slider_width = (ui.available_width() - 60.0).max(60.0);
+    if let Some(layer) = session.state.active_layer.filter(|&l| {
+        session
+            .document
+            .layers()
+            .get(l)
+            .is_some_and(|l| l.is_audio())
+    }) {
+        audio_clip(ui, session, layer);
+        return;
+    }
     ui.horizontal(|ui| active_tool_label(ui, session));
     // The eyedropper only reads the canvas, so a locked layer is no problem.
     if let Some(reason) = session
