@@ -219,7 +219,7 @@ impl AudioPlayer {
         let player = Player::connect_new(mixer);
         player.set_volume(clip.volume);
         match length {
-            Some(length) => player.append(source.take_duration(length).fade_out(length / 4)),
+            Some(length) => player.append(source.take_duration(length)),
             None => player.append(source),
         }
         Some(player)
