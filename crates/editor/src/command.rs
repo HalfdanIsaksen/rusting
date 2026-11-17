@@ -65,6 +65,9 @@ pub enum CommandError {
     /// There is no object (instance key) at the frame.
     #[error("there is no object at frame {0}")]
     NoInstance(FrameIndex),
+    /// A motion tween needs two keys of the same object (ADR-019).
+    #[error("a motion tween needs a key of an object followed by another key of the same object")]
+    NotTweenable,
     /// Nothing was selected to turn into an object.
     #[error("select layers and frames, or items on the canvas, to make an object")]
     NothingToConvert,

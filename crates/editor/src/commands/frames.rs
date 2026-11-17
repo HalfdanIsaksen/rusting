@@ -114,7 +114,9 @@ impl Command for DuplicateFrame {
             .tracks()
             .iter()
             .filter_map(|(&layer, track)| {
-                let (at, key) = track.instance_at(self.frame)?;
+                // Inside a motion tween, the copy shows what this frame
+                // displays (ADR-019).
+                let (at, key) = track.displayed_instance(self.frame)?;
                 let length = doc.symbol(key.symbol).map_or(1, |s| s.frame_count);
                 let again = key.advanced(self.frame.0 - at.0, length);
                 Some((layer, Keyframe::Instance(again)))
@@ -599,6 +601,40 @@ mod tests {
         assert_eq!(d, before);
         h.redo(&mut d).unwrap();
         assert!(d.track(l).unwrap().key_at(FrameIndex(6)).is_some());
+    }
+
+    #[test]
+    fn duplicating_a_tweened_frame_copies_what_it_shows() {
+        use animation_core::{Interpolation, Vec2};
+        use document::Symbol;
+        use document::timeline::{InstanceKey, InstanceTransform};
+        let mut d = doc();
+        let l = d.add_layer("L");
+        let symbol = Symbol::new("S", 12);
+        let sid = symbol.id;
+        d.insert_symbol(symbol);
+        let start = InstanceKey {
+            tween: Some(Interpolation::Linear),
+            ..InstanceKey::new(sid)
+        };
+        let end = InstanceKey::new(sid)
+            .with_transform(InstanceTransform::from_translation(Vec2::new(10.0, 0.0)));
+        let t = d.track_mut(l).unwrap();
+        t.set_key(FrameIndex(0), Keyframe::Instance(start));
+        t.set_key(FrameIndex(10), Keyframe::Instance(end));
+        let before = d.clone();
+        let mut h = History::new();
+        h.execute(&mut d, Box::new(DuplicateFrame::new(FrameIndex(4))))
+            .unwrap();
+        let track = d.track(l).unwrap();
+        let copy = track.key_at(FrameIndex(5)).unwrap().instance().unwrap();
+        assert_eq!(copy.transform.translation, Vec2::new(4.0, 0.0));
+        assert_eq!(copy.first_frame, FrameIndex(4));
+        assert_eq!(copy.tween, Some(Interpolation::Linear));
+        let spans: Vec<_> = track.tweens().map(|s| (s.start.0, s.end.0)).collect();
+        assert_eq!(spans, [(0, 5), (5, 11)]);
+        h.undo(&mut d).unwrap();
+        assert_eq!(d, before);
     }
 
     #[test]

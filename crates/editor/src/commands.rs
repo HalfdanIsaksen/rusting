@@ -23,7 +23,7 @@ pub use opacity::SetOpacity;
 pub use select::{TransformItems, TranslateItems, remove_items};
 pub use symbols::{
     ConvertItemsToSymbol, ConvertToSymbol, InstanceProps, PlaceInstance, RemoveSymbol,
-    RenameSymbol, SetInstanceProps, SetInstanceTransform,
+    RenameSymbol, SetInstanceProps, SetInstanceTransform, SetTween,
 };
 
 use crate::{Command, CommandError};

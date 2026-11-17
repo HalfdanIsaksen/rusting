@@ -1,10 +1,10 @@
 //! Object commands (ADR-018): turning layers and frames, or canvas items,
-//! into a symbol, placing and moving instances, and managing symbols in the
-//! library.
+//! into a symbol, placing and moving instances, motion tweens between
+//! instance keys (ADR-019), and managing symbols in the library.
 
 use super::{editable_layer, frame_in_range};
 use crate::{Command, CommandError};
-use animation_core::{DrawingId, FrameIndex, FrameRange, LayerId, SymbolId};
+use animation_core::{DrawingId, FrameIndex, FrameRange, Interpolation, LayerId, SymbolId};
 use document::drawing::{DrawingContent, ItemId};
 use document::scene::Layer;
 use document::timeline::{InstanceKey, InstanceMode, InstanceTransform, Keyframe, Track};
@@ -104,15 +104,18 @@ fn object_layer(
     Ok((layer, index))
 }
 
-/// The key that continues what `key` (sitting `elapsed` frames earlier)
-/// shows, as a new key: the same drawing, or the instance with its playback
-/// advanced. `None` for an empty key.
-fn continuation(doc: &Document, key: &Keyframe, elapsed: u32) -> Option<Keyframe> {
+/// A new key on `frame` that continues what `track` shows there: the same
+/// drawing, or the instance with its playback advanced and, inside a motion
+/// tween, its displayed (blended) placement and opacity. `None` for an
+/// empty key or no key.
+fn continuation(doc: &Document, track: &Track, frame: FrameIndex) -> Option<Keyframe> {
+    let (at, key) = track.exposed_key(frame)?;
     match key {
         Keyframe::Drawing(_) => Some(*key),
-        Keyframe::Instance(i) => {
-            let length = doc.symbol(i.symbol).map_or(1, |s| s.frame_count);
-            Some(Keyframe::Instance(i.advanced(elapsed, length)))
+        Keyframe::Instance(_) => {
+            let (_, shown) = track.displayed_instance(frame)?;
+            let length = doc.symbol(shown.symbol).map_or(1, |s| s.frame_count);
+            Some(Keyframe::Instance(shown.advanced(frame.0 - at.0, length)))
         }
         Keyframe::Empty => None,
     }
@@ -202,8 +205,7 @@ impl ConvertToSymbol {
             // The symbol's copy of the range.
             let mut inner = Track::new();
             if track.key_at(start).is_none()
-                && let Some((at, key)) = track.exposed_key(start)
-                && let Some(key) = continuation(doc, key, start.0 - at.0)
+                && let Some(key) = continuation(doc, track, start)
             {
                 inner.set_key(FrameIndex(0), key);
             }
@@ -241,9 +243,8 @@ impl ConvertToSymbol {
             // The original layer without the range.
             let mut outer = track.clone();
             let after = (end.0 < doc.frame_count && track.key_at(end).is_none())
-                .then(|| track.exposed_key(end))
-                .flatten()
-                .and_then(|(at, key)| continuation(doc, key, end.0 - at.0));
+                .then(|| continuation(doc, track, end))
+                .flatten();
             let inside: Vec<FrameIndex> = outer
                 .keys()
                 .map(|(f, _)| f)
@@ -607,7 +608,10 @@ fn exposed_instance(
 ///
 /// On the instance key's own frame the key changes. On a later frame of
 /// its exposure, a new instance key is made there, continuing the same
-/// playback with the new placement (the start of a motion tween).
+/// playback with the new placement. Inside a motion tween (ADR-019) the
+/// new key starts from what that frame displays: its opacity is the
+/// blended one, and it keeps the tween, so the tween now runs from the
+/// first key to the new one and on from it to the old end key.
 #[derive(Debug)]
 pub struct SetInstanceTransform {
     layer: LayerId,
@@ -647,7 +651,11 @@ impl Command for SetInstanceTransform {
             (Some(key), key.with_transform(self.transform))
         } else {
             frame_in_range(doc, self.frame)?;
-            let later = key.advanced(self.frame.0 - at.0, length);
+            let (_, shown) = doc
+                .track(self.layer)
+                .and_then(|t| t.displayed_instance(self.frame))
+                .unwrap_or((at, key));
+            let later = shown.advanced(self.frame.0 - at.0, length);
             (None, later.with_transform(self.transform))
         };
         doc.track_mut(self.layer)
@@ -669,6 +677,95 @@ impl Command for SetInstanceTransform {
             Some(key) => track.set_key(self.frame, Keyframe::Instance(key)),
             None => track.remove_key(self.frame),
         };
+        Ok(())
+    }
+}
+
+/// Adds, changes or removes the motion tween (ADR-019) from the instance
+/// key on `frame` to the next key on the layer.
+///
+/// Setting a tween is refused with [`CommandError::NotTweenable`] unless
+/// the key on `frame` and the next key are instances of the same object.
+/// Removing one only needs the key on `frame` to be an instance, so a tween
+/// whose pair was broken (and is inactive) can be removed too.
+/// `Some(Interpolation::Step)` means no tween and removes it.
+#[derive(Debug)]
+pub struct SetTween {
+    layer: LayerId,
+    frame: FrameIndex,
+    tween: Option<Interpolation>,
+    /// The key's tween before the change.
+    previous: Option<Option<Interpolation>>,
+}
+
+impl SetTween {
+    /// Creates the command.
+    pub fn new(layer: LayerId, frame: FrameIndex, tween: Option<Interpolation>) -> Self {
+        Self {
+            layer,
+            frame,
+            tween: tween.filter(|t| *t != Interpolation::Step),
+            previous: None,
+        }
+    }
+
+    /// Whether a tween can start on the key at `frame` of `layer`: it and
+    /// the next key are instances of the same object.
+    pub fn can_tween(doc: &Document, layer: LayerId, frame: FrameIndex) -> bool {
+        let Some(track) = doc.track(layer) else {
+            return false;
+        };
+        let Some(start) = track.key_at(frame).and_then(Keyframe::instance) else {
+            return false;
+        };
+        track
+            .next_key_after(frame)
+            .and_then(|(_, k)| k.instance())
+            .is_some_and(|end| end.symbol == start.symbol)
+    }
+
+    fn set(doc: &mut Document, layer: LayerId, frame: FrameIndex, tween: Option<Interpolation>) {
+        if let Some((_, Keyframe::Instance(key))) = doc
+            .track_mut(layer)
+            .and_then(|t| t.keys_mut().find(|(f, _)| *f == frame))
+        {
+            key.tween = tween;
+        }
+    }
+}
+
+impl Command for SetTween {
+    fn label(&self) -> &str {
+        if self.tween.is_some() {
+            "Create Motion Tween"
+        } else {
+            "Remove Tween"
+        }
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        editable_layer(doc, self.layer)?;
+        let key = doc
+            .track(self.layer)
+            .ok_or(CommandError::LayerNotFound)?
+            .key_at(self.frame)
+            .and_then(Keyframe::instance)
+            .copied()
+            .ok_or(CommandError::NotTweenable)?;
+        if self.tween.is_some() && !Self::can_tween(doc, self.layer, self.frame) {
+            return Err(CommandError::NotTweenable);
+        }
+        Self::set(doc, self.layer, self.frame, self.tween);
+        self.previous = Some(key.tween);
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        let previous = self
+            .previous
+            .take()
+            .ok_or(CommandError::NoInstance(self.frame))?;
+        Self::set(doc, self.layer, self.frame, previous);
         Ok(())
     }
 }
@@ -1218,6 +1315,170 @@ mod tests {
             ),
             Err(CommandError::NoInstance(FrameIndex(1)))
         );
+    }
+
+    /// `with_symbol` with instance keys on frames 2 (x = 0, opacity 1)
+    /// and 12 (x = 100, opacity 0.5, continuing playback), no tween yet.
+    fn two_instance_keys() -> (Document, LayerId, SymbolId) {
+        let (mut d, l, sid) = with_symbol();
+        let start = InstanceKey::new(sid);
+        let end = InstanceKey {
+            opacity: 0.5,
+            ..start
+                .advanced(10, 12)
+                .with_transform(InstanceTransform::from_translation(Vec2::new(100.0, 0.0)))
+        };
+        let t = d.track_mut(l).unwrap();
+        t.set_key(FrameIndex(2), Keyframe::Instance(start));
+        t.set_key(FrameIndex(12), Keyframe::Instance(end));
+        (d, l, sid)
+    }
+
+    fn tween_of(d: &Document, l: LayerId, frame: u32) -> Option<Interpolation> {
+        d.track(l)
+            .unwrap()
+            .key_at(FrameIndex(frame))
+            .and_then(Keyframe::instance)
+            .unwrap()
+            .tween
+    }
+
+    #[test]
+    fn set_tween_adds_changes_and_removes_exactly() {
+        let (mut d, l, _) = two_instance_keys();
+        for ease in Interpolation::TWEENS {
+            check_inverse(
+                &mut d,
+                Box::new(SetTween::new(l, FrameIndex(2), Some(ease))),
+            );
+        }
+        let mut h = History::new();
+        h.execute(
+            &mut d,
+            Box::new(SetTween::new(l, FrameIndex(2), Some(Interpolation::EaseIn))),
+        )
+        .unwrap();
+        assert_eq!(tween_of(&d, l, 2), Some(Interpolation::EaseIn));
+        check_inverse(
+            &mut d,
+            Box::new(SetTween::new(
+                l,
+                FrameIndex(2),
+                Some(Interpolation::EaseOut),
+            )),
+        );
+        check_inverse(&mut d, Box::new(SetTween::new(l, FrameIndex(2), None)));
+        // Step means no tween.
+        h.execute(
+            &mut d,
+            Box::new(SetTween::new(l, FrameIndex(2), Some(Interpolation::Step))),
+        )
+        .unwrap();
+        assert_eq!(tween_of(&d, l, 2), None);
+    }
+
+    #[test]
+    fn set_tween_only_works_between_keys_of_one_object() {
+        let (mut d, l, sid) = two_instance_keys();
+        let mut h = History::new();
+        let mut refused = |d: &mut Document, frame: u32| {
+            let before = d.clone();
+            let result = h.execute(
+                d,
+                Box::new(SetTween::new(
+                    l,
+                    FrameIndex(frame),
+                    Some(Interpolation::Linear),
+                )),
+            );
+            assert_eq!(*d, before);
+            result
+        };
+        // The last key has no next key; frame 5 is not a key.
+        assert_eq!(refused(&mut d, 12), Err(CommandError::NotTweenable));
+        assert_eq!(refused(&mut d, 5), Err(CommandError::NotTweenable));
+        // A drawing key, or an instance of another object, as the next key.
+        let other = Symbol::new("Other", 1);
+        let other_id = other.id;
+        d.insert_symbol(other);
+        d.track_mut(l).unwrap().set_key(
+            FrameIndex(12),
+            Keyframe::Instance(InstanceKey::new(other_id)),
+        );
+        assert_eq!(refused(&mut d, 2), Err(CommandError::NotTweenable));
+        let drawn = drawing(&mut d, 0.0);
+        d.track_mut(l)
+            .unwrap()
+            .set_key(FrameIndex(12), Keyframe::Drawing(drawn));
+        assert_eq!(refused(&mut d, 2), Err(CommandError::NotTweenable));
+        assert_eq!(refused(&mut d, 12), Err(CommandError::NotTweenable));
+        // An inactive tween can still be removed.
+        d.track_mut(l).unwrap().set_key(
+            FrameIndex(2),
+            Keyframe::Instance(InstanceKey {
+                tween: Some(Interpolation::Linear),
+                ..InstanceKey::new(sid)
+            }),
+        );
+        check_inverse(&mut d, Box::new(SetTween::new(l, FrameIndex(2), None)));
+        // Locked layers are refused.
+        d.layer_mut(l).unwrap().locked = true;
+        assert_eq!(
+            History::new().execute(&mut d, Box::new(SetTween::new(l, FrameIndex(2), None))),
+            Err(CommandError::LayerLocked)
+        );
+    }
+
+    #[test]
+    fn moving_inside_a_tween_starts_from_what_is_shown() {
+        let (mut d, l, _) = two_instance_keys();
+        let mut h = History::new();
+        h.execute(
+            &mut d,
+            Box::new(SetTween::new(l, FrameIndex(2), Some(Interpolation::Linear))),
+        )
+        .unwrap();
+        // Frame 7 is half way: x = 50, opacity 0.75, inner frame 5.
+        let (_, shown) = d
+            .track(l)
+            .unwrap()
+            .displayed_instance(FrameIndex(7))
+            .unwrap();
+        assert_eq!(shown.transform.translation.x, 50.0);
+        // The tools move what is shown by (0, 20).
+        let moved = InstanceTransform::from_translation(Vec2::new(50.0, 20.0));
+        check_inverse(
+            &mut d,
+            Box::new(SetInstanceTransform::new(l, FrameIndex(7), moved)),
+        );
+        h.execute(
+            &mut d,
+            Box::new(SetInstanceTransform::new(l, FrameIndex(7), moved)),
+        )
+        .unwrap();
+        let track = d.track(l).unwrap();
+        let middle = *track.key_at(FrameIndex(7)).unwrap().instance().unwrap();
+        // The new key shows exactly the moved picture, with the blended
+        // opacity and continuing playback, and keeps tweening on.
+        assert_eq!(middle.transform, moved);
+        assert_eq!(middle.opacity, 0.75);
+        assert_eq!(middle.first_frame, FrameIndex(5));
+        assert_eq!(middle.tween, Some(Interpolation::Linear));
+        assert_eq!(track.displayed_instance(FrameIndex(7)).unwrap().1, middle);
+        // The tween now runs 2 → 7 → 12.
+        let spans: Vec<_> = track.tweens().map(|s| (s.start.0, s.end.0)).collect();
+        assert_eq!(spans, [(2, 7), (7, 12)]);
+        let x = |f| {
+            track
+                .displayed_instance(FrameIndex(f))
+                .unwrap()
+                .1
+                .transform
+                .translation
+        };
+        assert_eq!(x(2), Vec2::ZERO);
+        assert_eq!(x(12), Vec2::new(100.0, 0.0));
+        assert!((x(9) - Vec2::new(70.0, 12.0)).length() < 1e-4);
     }
 
     #[test]
