@@ -141,6 +141,12 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
                 &mut view.tool_settings,
                 Some(&shortcuts::TOGGLE_TOOL_SETTINGS),
             );
+            toggle(
+                ui,
+                "Library",
+                &mut view.library,
+                Some(&shortcuts::TOGGLE_LIBRARY),
+            );
             ui.separator();
             ui.checkbox(&mut session.onion.enabled, "Onion skin");
             let mut preview = session.preview.is_open();

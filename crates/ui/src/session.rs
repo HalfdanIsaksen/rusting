@@ -154,6 +154,8 @@ pub struct ViewSettings {
     pub timeline: bool,
     /// The tool settings panel on the right.
     pub tool_settings: bool,
+    /// The library panel on the right (imported pictures; ADR-017).
+    pub library: bool,
 }
 
 impl Default for ViewSettings {
@@ -162,6 +164,7 @@ impl Default for ViewSettings {
             toolbar: true,
             timeline: true,
             tool_settings: true,
+            library: true,
         }
     }
 }

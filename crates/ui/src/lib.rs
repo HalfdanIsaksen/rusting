@@ -27,6 +27,7 @@ pub mod tools;
 pub use eyedropper::{PickSource, PickedColor};
 pub use onion::{OnionDrawing, OnionSkin};
 pub use paint_order::PaintOrder;
+pub use panels::library::AssetDrag;
 pub use panels::{preview_window, show};
 pub use playback::Playback;
 pub use preview::Preview;

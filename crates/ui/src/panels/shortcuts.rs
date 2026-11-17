@@ -38,6 +38,8 @@ pub const TOGGLE_TIMELINE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::C
 /// Show or hide the tool settings panel.
 pub const TOGGLE_TOOL_SETTINGS: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND, Key::Num3);
+/// Show or hide the library panel.
+pub const TOGGLE_LIBRARY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Num4);
 
 /// Handles global shortcuts. Plain-key shortcuts are skipped while a text
 /// field has keyboard focus. While the text tool takes typing
@@ -49,18 +51,20 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
     let modal_open = session.dialog().is_some() || session.resize_canvas.is_some();
 
     // Most specific first: Shift+Cmd+S before Cmd+S (egui ignores extra Shift).
-    let (save_as, save, new, open, quit, toolbar, timeline, tool_settings) = ctx.input_mut(|i| {
-        (
-            i.consume_shortcut(&SAVE_AS),
-            i.consume_shortcut(&SAVE),
-            i.consume_shortcut(&NEW),
-            i.consume_shortcut(&OPEN),
-            i.consume_shortcut(&QUIT),
-            i.consume_shortcut(&TOGGLE_TOOLBAR),
-            i.consume_shortcut(&TOGGLE_TIMELINE),
-            i.consume_shortcut(&TOGGLE_TOOL_SETTINGS),
-        )
-    });
+    let (save_as, save, new, open, quit, toolbar, timeline, tool_settings, library) = ctx
+        .input_mut(|i| {
+            (
+                i.consume_shortcut(&SAVE_AS),
+                i.consume_shortcut(&SAVE),
+                i.consume_shortcut(&NEW),
+                i.consume_shortcut(&OPEN),
+                i.consume_shortcut(&QUIT),
+                i.consume_shortcut(&TOGGLE_TOOLBAR),
+                i.consume_shortcut(&TOGGLE_TIMELINE),
+                i.consume_shortcut(&TOGGLE_TOOL_SETTINGS),
+                i.consume_shortcut(&TOGGLE_LIBRARY),
+            )
+        });
     if !modal_open {
         if save_as || save || new || open || quit {
             session.commit_text();
@@ -68,6 +72,7 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
         session.view.toolbar ^= toolbar;
         session.view.timeline ^= timeline;
         session.view.tool_settings ^= tool_settings;
+        session.view.library ^= library;
         if save_as {
             session.save_as();
         } else if save {
@@ -325,9 +330,12 @@ mod tests {
         assert!(!s.view.timeline);
         press(&mut s, TOGGLE_TOOL_SETTINGS);
         assert!(!s.view.tool_settings);
+        press(&mut s, TOGGLE_LIBRARY);
+        assert!(!s.view.library);
         press(&mut s, TOGGLE_TOOLBAR);
         press(&mut s, TOGGLE_TIMELINE);
         press(&mut s, TOGGLE_TOOL_SETTINGS);
+        press(&mut s, TOGGLE_LIBRARY);
         assert_eq!(s.view, crate::session::ViewSettings::default());
     }
 
@@ -441,7 +449,13 @@ mod tests {
         let all = [
             NEW, OPEN, SAVE, SAVE_AS, UNDO, REDO, REDO_ALT, SELECT_ALL, QUIT,
         ];
-        for view in [TOGGLE_TOOLBAR, TOGGLE_TIMELINE, DUPLICATE_FRAME] {
+        for view in [
+            TOGGLE_TOOLBAR,
+            TOGGLE_TIMELINE,
+            TOGGLE_TOOL_SETTINGS,
+            TOGGLE_LIBRARY,
+            DUPLICATE_FRAME,
+        ] {
             assert!(all.iter().all(|s| s.logical_key != view.logical_key));
         }
     }

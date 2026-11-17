@@ -2,6 +2,7 @@
 
 mod dialogs;
 mod layers;
+pub mod library;
 mod menu;
 mod preview;
 mod resize_canvas;
@@ -63,6 +64,14 @@ pub fn show(
             .min_size(180.0)
             .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::same(8)))
             .show(ui, |ui| tool_options::panel(ui, session));
+    }
+    if session.view.library {
+        egui::Panel::right("library")
+            .resizable(true)
+            .default_size(200.0)
+            .min_size(150.0)
+            .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::same(8)))
+            .show(ui, |ui| library::panel(ui, session));
     }
     egui::CentralPanel::no_frame().show(ui, |ui| canvas(ui, session));
 

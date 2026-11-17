@@ -458,6 +458,29 @@ pub fn chevron_right(painter: &Painter, rect: Rect, color: Color32) {
     ));
 }
 
+/// A framed landscape (a picture in the library).
+pub fn picture(painter: &Painter, rect: Rect, color: Color32) {
+    outline(
+        painter,
+        rect,
+        color,
+        &[(0.12, 0.2), (0.88, 0.2), (0.88, 0.8), (0.12, 0.8)],
+    );
+    filled(
+        painter,
+        rect,
+        color,
+        &[(0.18, 0.74), (0.42, 0.44), (0.6, 0.74)],
+    );
+    filled(
+        painter,
+        rect,
+        color,
+        &[(0.46, 0.74), (0.64, 0.54), (0.82, 0.74)],
+    );
+    painter.circle_filled(at(rect, 0.68, 0.36), rect.width() * 0.07, color);
+}
+
 /// A folder (a layer group).
 pub fn folder(painter: &Painter, rect: Rect, color: Color32) {
     outline(

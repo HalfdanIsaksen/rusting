@@ -9,7 +9,7 @@ use crate::session::{Request, Session};
 use document::animation_core::{AssetId, Vec2};
 use document::drawing::{Image, ImageData, ItemId};
 use document::{Asset, AssetKind};
-use editor::commands::{AddAsset, AddImage, Batch};
+use editor::commands::{AddAsset, AddImage, Batch, RemoveAsset, RenameAsset};
 use editor::{Command, Tool};
 
 impl Session {
@@ -52,6 +52,29 @@ impl Session {
             self.set_status(format!("Placed {}", asset.name));
         }
         placed.is_some()
+    }
+
+    /// Renames library asset `asset`; one undo step. A blank or unchanged
+    /// name does nothing.
+    pub fn rename_asset(&mut self, asset: AssetId, name: &str) {
+        let name = name.trim();
+        if name.is_empty() || self.document.asset(asset).is_none_or(|a| a.name == name) {
+            return;
+        }
+        let _ = self.execute(Box::new(RenameAsset::new(asset, name)));
+    }
+
+    /// Deletes library asset `asset`; one undo step. Refused, with a status
+    /// message, while the animation shows a copy of it.
+    pub fn delete_asset(&mut self, asset: AssetId) -> bool {
+        let Some(name) = self.document.asset(asset).map(|a| a.name.clone()) else {
+            return false;
+        };
+        let deleted = self.execute(Box::new(RemoveAsset::new(asset))).is_ok();
+        if deleted {
+            self.set_status(format!("Deleted {name} from the library"));
+        }
+        deleted
     }
 
     /// Runs `first` (if any) and an [`AddImage`] of `asset`'s picture as one
@@ -174,6 +197,27 @@ mod tests {
         s.undo();
         assert_eq!(s.active_drawing().unwrap().images().len(), 1);
         assert!(!s.place_asset(AssetId::new(), None));
+    }
+
+    #[test]
+    fn library_assets_rename_and_delete_only_when_unused() {
+        let mut s = Session::new();
+        assert!(s.import_image("pic.png", ImageData::new(4, 4, vec![1])));
+        let asset = *s.document.assets().keys().next().unwrap();
+        s.rename_asset(asset, "  Sky ");
+        assert_eq!(s.document.asset(asset).unwrap().name, "Sky");
+        let steps = s.history.undo_len();
+        s.rename_asset(asset, "Sky");
+        s.rename_asset(asset, " ");
+        assert_eq!(s.history.undo_len(), steps, "no-op renames add no step");
+
+        assert!(!s.delete_asset(asset), "in use");
+        assert!(s.document.asset(asset).is_some());
+        s.delete_selection();
+        assert!(s.delete_asset(asset));
+        assert!(s.document.assets().is_empty());
+        s.undo();
+        assert_eq!(s.document.asset(asset).unwrap().name, "Sky");
     }
 
     #[test]
