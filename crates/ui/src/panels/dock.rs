@@ -143,8 +143,12 @@ impl PanelLayout {
     /// Whether `pane` was drawn last frame: visible, and the open tab if it
     /// shares a place with others.
     pub fn is_on_screen(&self, pane: Pane) -> bool {
-        self.tile(pane)
-            .is_some_and(|tile| self.tree.tiles.rect(tile).is_some())
+        self.rect(pane).is_some()
+    }
+
+    /// Where `pane` was drawn last frame, tab bar included, if it was.
+    pub fn rect(&self, pane: Pane) -> Option<egui::Rect> {
+        self.tree.tiles.rect(self.tile(pane)?)
     }
 
     /// Hidden flags per pane, in [`Pane::ALL`] order.
