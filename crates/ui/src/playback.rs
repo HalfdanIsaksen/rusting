@@ -109,6 +109,56 @@ impl<T: TimeSource> Playback<T> {
     }
 }
 
+/// A change in playback that sound has to follow (ADR-020). The host gets
+/// one per drawn frame from [`crate::Session::playback_event`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlaybackEvent {
+    /// Playback started at this frame.
+    Started(FrameIndex),
+    /// While playing, the playhead jumped to this frame (a loop wrapped,
+    /// or the user moved the playhead).
+    Seeked(FrameIndex),
+    /// Playback stopped.
+    Stopped,
+    /// While paused, the playhead moved to this frame (scrubbing or
+    /// stepping).
+    Scrubbed(FrameIndex),
+}
+
+/// Turns the playing flag and the current frame, sampled once per drawn
+/// frame, into [`PlaybackEvent`]s.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlaybackWatch {
+    last: Option<(bool, FrameIndex)>,
+}
+
+impl PlaybackWatch {
+    /// The event since the last call, given whether playback runs now and
+    /// the frame shown. Moving forward by up to a quarter second (at least
+    /// two frames) between calls is normal playback; anything else while
+    /// playing is a seek.
+    pub fn update(&mut self, playing: bool, frame: FrameIndex, fps: Fps) -> Option<PlaybackEvent> {
+        let last = self.last.replace((playing, frame));
+        let Some((was_playing, was)) = last else {
+            return playing.then_some(PlaybackEvent::Started(frame));
+        };
+        match (was_playing, playing) {
+            (false, true) => Some(PlaybackEvent::Started(frame)),
+            (true, false) => Some(PlaybackEvent::Stopped),
+            (true, true) => {
+                let max_step = (fps.as_f64() * 0.25).ceil().max(2.0) as u32;
+                (frame < was || frame.0 - was.0 > max_step).then_some(PlaybackEvent::Seeked(frame))
+            }
+            (false, false) => (frame != was).then_some(PlaybackEvent::Scrubbed(frame)),
+        }
+    }
+
+    /// Forgets the last state, e.g. when another document is opened.
+    pub fn reset(&mut self) {
+        self.last = None;
+    }
+}
+
 fn range_of(doc: &Document, frame: FrameIndex) -> FrameRange {
     let all = FrameRange::first_n(doc.frame_count.max(1));
     doc.tag_at(frame).map_or(all, |t| {
@@ -134,6 +184,30 @@ mod tests {
         d.fps = Fps::whole(fps).unwrap();
         d.frame_count = frames;
         d
+    }
+
+    #[test]
+    fn watch_reports_start_stop_seek_and_scrub() {
+        use PlaybackEvent::*;
+        let fps = Fps::whole(24).unwrap();
+        let mut w = PlaybackWatch::default();
+        let mut at = |playing, f| w.update(playing, FrameIndex(f), fps);
+        assert_eq!(at(false, 0), None);
+        assert_eq!(at(false, 0), None);
+        assert_eq!(at(false, 3), Some(Scrubbed(FrameIndex(3))));
+        assert_eq!(at(true, 3), Some(Started(FrameIndex(3))));
+        assert_eq!(at(true, 4), None);
+        assert_eq!(at(true, 10), None, "6 frames is a quarter second");
+        assert_eq!(at(true, 17), Some(Seeked(FrameIndex(17))));
+        assert_eq!(at(true, 0), Some(Seeked(FrameIndex(0))), "loop wrapped");
+        assert_eq!(at(false, 0), Some(Stopped));
+        let mut fresh = PlaybackWatch::default();
+        assert_eq!(
+            fresh.update(true, FrameIndex(5), fps),
+            Some(Started(FrameIndex(5)))
+        );
+        fresh.reset();
+        assert_eq!(fresh.update(false, FrameIndex(9), fps), None);
     }
 
     #[test]

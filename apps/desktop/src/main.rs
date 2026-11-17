@@ -4,6 +4,7 @@
 //! panels, and the renderer draws the canvas into its own texture, which egui
 //! shows in the central panel (ADR-002). Frames are drawn only on demand.
 
+mod audio;
 mod export;
 mod icon;
 mod import;
@@ -94,6 +95,8 @@ struct App {
     egui_ctx: egui::Context,
     egui_state: Option<egui_winit::State>,
     shell: Shell,
+    /// Plays audio layers along with playback and scrubbing.
+    audio: audio::AudioPlayer,
     /// When egui asked to be repainted next (for animations, tooltips, ...).
     next_repaint: Option<Instant>,
     /// The window title last set, to avoid redundant updates.
@@ -120,6 +123,7 @@ impl App {
             },
             egui_state: None,
             shell: Shell::new(session),
+            audio: audio::AudioPlayer::new(),
             next_repaint: None,
             title: String::new(),
             fatal: None,
@@ -323,6 +327,9 @@ impl App {
             handle_request(&mut self.shell, request, event_loop);
             window.request_redraw();
         }
+
+        // Sound follows playback and scrubbing (ADR-020).
+        self.audio.update(&mut self.shell.session);
 
         // 5. Export: ask where to save confirmed options, then render a few
         // frames of the running export (the worker thread encodes them).
