@@ -29,7 +29,7 @@ pub use eyedropper::{PickSource, PickedColor};
 pub use objects::InstanceAt;
 pub use onion::{OnionDrawing, OnionSkin};
 pub use paint_order::PaintOrder;
-pub use panels::library::AssetDrag;
+pub use panels::library::{AssetDrag, ObjectDrag};
 pub use panels::{preview_window, show};
 pub use playback::Playback;
 pub use preview::Preview;

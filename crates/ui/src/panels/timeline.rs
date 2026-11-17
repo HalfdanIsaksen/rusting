@@ -2,6 +2,7 @@
 //! the frame grid (one row per layer, keys and exposures, scrubbing). The
 //! layer controls on the left of the grid live in [`super::layers`].
 
+use super::library::ObjectDrag;
 use super::shortcuts;
 use super::status::fps_text;
 use crate::icons::{self, IconFn};
@@ -678,6 +679,39 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
                 x..=x + range.len() as f32 * cell,
                 rect.top() + RULER_HEIGHT..=rect.bottom(),
             ),
+            2.0,
+            Stroke::new(2.0, color),
+            StrokeKind::Inside,
+        );
+    }
+
+    // An object dragged from the library: outline the cell it would land
+    // on, and place it there on release (ADR-018).
+    let cell_at = |pos: Pos2| Some((row_at(rows, pos.y - rect.top())?, frame_at(pos.x)));
+    let pointer = ui.input(|i| i.pointer.latest_pos());
+    if let Some(drag) = response.dnd_release_payload::<ObjectDrag>() {
+        if let Some((layer, frame)) = pointer.and_then(cell_at) {
+            session.place_symbol_at(drag.0, layer, frame);
+        }
+    } else if response.dnd_hover_payload::<ObjectDrag>().is_some()
+        && let Some((layer, frame)) = pointer.and_then(cell_at)
+        && let Some(i) = rows.iter().position(|r| r.layer() == Some(layer))
+    {
+        let editable = session.document.layers().is_editable(layer);
+        ui.ctx().set_cursor_icon(if editable {
+            egui::CursorIcon::Copy
+        } else {
+            egui::CursorIcon::NoDrop
+        });
+        let top = rect.top() + RULER_HEIGHT + i as f32 * ROW_HEIGHT;
+        let x = rect.left() + frame.0 as f32 * cell;
+        let color = if editable {
+            INSTANCE_TINT
+        } else {
+            Color32::from_rgb(230, 70, 60)
+        };
+        ui.painter_at(rect).rect_stroke(
+            Rect::from_x_y_ranges(x..=x + cell, top..=top + ROW_HEIGHT),
             2.0,
             Stroke::new(2.0, color),
             StrokeKind::Inside,

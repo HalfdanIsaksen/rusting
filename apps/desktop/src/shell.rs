@@ -161,9 +161,10 @@ fn canvas(
     view_controls(ui, rect, viewport);
 }
 
-/// A picture dragged from the library (ADR-017): while it is held over the
-/// canvas, outline where it will land; on release, place it centred on the
-/// pointer (one undo step, then selected, like File → Import).
+/// A picture or object dragged from the library (ADR-017, ADR-018): while it
+/// is held over the canvas, outline where it will land; on release, place it
+/// centred on the pointer (one undo step, then selected). A picture goes on
+/// the active layer like File → Import, an object on a new layer.
 fn handle_asset_drop(
     ui: &egui::Ui,
     response: &egui::Response,
@@ -179,15 +180,24 @@ fn handle_asset_drop(
         session.place_asset(drag.0, Some(at));
         return;
     }
-    let Some(drag) = response.dnd_hover_payload::<ui::AssetDrag>() else {
-        return;
-    };
-    if session.draw_block_reason().is_some() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::NoDrop);
+    // An object goes on a new layer, so the active layer's lock doesn't matter.
+    if let Some(drag) = response.dnd_release_payload::<ui::ObjectDrag>() {
+        session.place_symbol_on_canvas(drag.0, Some(at));
         return;
     }
+    let size = if let Some(drag) = response.dnd_hover_payload::<ui::AssetDrag>() {
+        if session.draw_block_reason().is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::NoDrop);
+            return;
+        }
+        session.placed_size(drag.0)
+    } else if let Some(drag) = response.dnd_hover_payload::<ui::ObjectDrag>() {
+        session.symbol_size(drag.0)
+    } else {
+        return;
+    };
     ui.ctx().set_cursor_icon(egui::CursorIcon::Copy);
-    let Some(size) = session.placed_size(drag.0) else {
+    let Some(size) = size else {
         return;
     };
     let corner = |p: Vec2| {

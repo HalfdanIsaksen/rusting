@@ -481,6 +481,29 @@ pub fn picture(painter: &Painter, rect: Rect, color: Color32) {
     painter.circle_filled(at(rect, 0.68, 0.36), rect.width() * 0.07, color);
 }
 
+/// A cube: an object (a reusable animated symbol, ADR-018).
+pub fn object(painter: &Painter, rect: Rect, color: Color32) {
+    // Front face, then the top and side faces behind it.
+    outline(
+        painter,
+        rect,
+        color,
+        &[(0.14, 0.36), (0.64, 0.36), (0.64, 0.86), (0.14, 0.86)],
+    );
+    outline(
+        painter,
+        rect,
+        color,
+        &[(0.14, 0.36), (0.36, 0.14), (0.86, 0.14), (0.64, 0.36)],
+    );
+    outline(
+        painter,
+        rect,
+        color,
+        &[(0.64, 0.36), (0.86, 0.14), (0.86, 0.64), (0.64, 0.86)],
+    );
+}
+
 /// A folder (a layer group).
 pub fn folder(painter: &Painter, rect: Rect, color: Color32) {
     outline(
