@@ -56,7 +56,7 @@ Set `RUST_LOG=debug` for more log output.
 | Document | What it covers |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Crate dependency graph, data model, coordinate spaces, frame flow |
-| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-017) |
+| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-018) |
 | [docs/roadmap.md](docs/roadmap.md) | Development phases and their acceptance criteria |
 | [docs/smoke-test.md](docs/smoke-test.md) | Manual end-to-end test checklist |
 | [docs/releasing.md](docs/releasing.md) | How to tag a release and update the Homebrew tap |
@@ -106,6 +106,14 @@ The tool strip runs down the side of the canvas:
 - Select several layers with `Cmd/Ctrl`+click (toggle) or `Shift`+click (range); duplicate and remove act on the whole selection.
 - Onion skin (View → Onion skin).
 
+### Objects
+- **Convert to Object**: select layers in the timeline and drag across frames, then right-click the frames or a layer and choose Convert to Object (or press `F8`). Those frames become an object that holds their animation. It is listed in the Library under Objects, and a new layer above plays it where the frames were. Without a frame selection, all frames are used. Items selected on the canvas become a one-frame object with `F8` (or Edit → Convert to Object), placed where they were.
+- An object plays its own animation wherever it is placed, until the next key on its layer. A 12-frame object placed on 18 frames plays one and a half times. In Tool Settings, set it to **Loop** or **Play once** (holds its last frame), pick the object frame it starts on, and set its opacity.
+- Drag an object from the Library onto a frame cell in the timeline to place it on that layer and frame, or onto the canvas to place it on a new layer where you drop it.
+- With the Selection or Transform tool, click an object to select it as one unit, then drag, nudge, scale or rotate it. Moving it on a later frame of its exposure adds a new key there, so the object keeps playing from the new place.
+- The timeline shows object exposures in blue, with a diamond on the key and a tick where each loop starts. Rename or delete objects in the Library (Delete works once the object is not placed anywhere). Objects can contain other objects.
+- Editing an object's contents in place is not supported yet. Drawing tools refuse a frame where the layer shows an object.
+
 ### Look
 - Uses the colours of the Rusting website (warm dark browns with an orange accent). The light or dark palette follows the operating system setting.
 - The app icon (window, taskbar and Dock) and the start menu show the website's logo: an orange brush stroke with an amber dot. Its source is `assets/logo.svg`.
@@ -124,7 +132,7 @@ The tool strip runs down the side of the canvas:
 - **Export GIF**: the frame range as a looping animated GIF at the document frame rate, for animations up to 15 seconds. A longer range is refused with a message to export it as a video or image sequence instead.
 - **Export Sprite Sheet**: every frame tag becomes its own row of frames in one PNG/JPG image. Without tags, the chosen frame range goes on one row.
 - **Import** (File → Import…, below Export): pick one or more PNG or JPEG pictures. Each goes onto the current layer and frame, centred on the canvas and shrunk to fit if it is larger, and is selected so you can move it right away. Pictures move, scale, rotate and delete with the selection tools like any other item, paint under the strokes and fills you draw on top of them (handy for tracing), show in the preview and in every export, and are saved inside the project file. Each imported picture is also added to the Library.
-- **Library** (the panel on the right of the canvas): lists every imported file, under Images, by file name. Drag a picture onto the canvas to place another copy where you drop it, or right-click it → Place on Canvas to put one in the centre. Double-click a row to rename it. Right-click → Delete removes it from the library, but only once no frame uses it. The project file stores each library picture once, however many times it is placed, and keeps unused library pictures.
+- **Library** (the panel on the right of the canvas): lists every imported file, under Images, by file name, and every object under Objects. Drag a picture onto the canvas to place another copy where you drop it, or right-click it → Place on Canvas to put one in the centre. Double-click a row to rename it. Right-click → Delete removes it from the library, but only once no frame uses it. The project file stores each library picture once, however many times it is placed, and keeps unused library pictures.
 
 ## Contributing workflow
 

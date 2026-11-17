@@ -28,7 +28,7 @@ Arrows point from a dependency to its dependents. Rules:
 | `FrameIndex(u32)` | Zero-based frame. UI shows `display_number()` (one-based). |
 | `FrameRange` | Half-open `start..end` |
 | `Fps` | Rational frames/second (e.g. 24000/1001) |
-| `LayerId`, `GroupId`, `DrawingId`, `StrokeId`, `FillId`, `ImageId`, `AssetId`, `DocumentId` | UUID v4 newtypes, stable across save and load |
+| `LayerId`, `GroupId`, `DrawingId`, `StrokeId`, `FillId`, `ImageId`, `AssetId`, `SymbolId`, `DocumentId` | UUID v4 newtypes, stable across save and load |
 | `Rgba` | Straight-alpha color, f32 components |
 | `Interpolation` | `Step`, `Linear` (Bezier later) |
 | `Vec2` | `glam::Vec2`, re-exported |
@@ -41,7 +41,10 @@ Document
 │     + groups: Vec<LayerGroup>; Layer.group: Option<GroupId>, members adjacent
 │     (one level, no nesting; group visibility/lock/opacity apply to members; ADR-013)
 ├─ tracks: BTreeMap<LayerId, Track>    (timeline crate)
-│     Track = BTreeMap<FrameIndex, Keyframe>;  Keyframe = Drawing(DrawingId) | Empty
+│     Track = BTreeMap<FrameIndex, Keyframe>
+│     Keyframe = Drawing(DrawingId) | Empty | Instance(InstanceKey)
+│     InstanceKey { symbol, transform: InstanceTransform { translation, scale,
+│       rotation }, opacity, mode: Loop | Once, first_frame }  (ADR-018)
 ├─ drawings: BTreeMap<DrawingId, DrawingContent>  (drawing crate)
 │     DrawingContent::Vector(VectorDrawing { strokes: Vec<Stroke>, fills: Vec<Fill>,
 │                                            images: Vec<Image> })
@@ -52,11 +55,17 @@ Document
 │     strokes, list order within each group
 │     (VectorDrawing::paint_order; ADR-007, ADR-010, ADR-011, ADR-015)
 │     Image.asset: Option<AssetId> = the library entry it was placed from (ADR-017)
-└─ assets: BTreeMap<AssetId, Asset>    (the library; document crate, ADR-017)
-      Asset { id, name, kind: AssetKind };  AssetKind = Image(ImageData)
-      An asset stays until the user deletes it (RemoveAsset is refused while a
-      drawing a keyframe shows uses it). Files store a placed image's bytes
-      only in its asset.
+├─ assets: BTreeMap<AssetId, Asset>    (the library; document crate, ADR-017)
+│     Asset { id, name, kind: AssetKind };  AssetKind = Image(ImageData)
+│     An asset stays until the user deletes it (RemoveAsset is refused while a
+│     drawing a keyframe shows uses it). Files store a placed image's bytes
+│     only in its asset.
+└─ symbols: BTreeMap<SymbolId, Symbol>   (objects; document crate, ADR-018)
+      Symbol { id, name, layers: LayerStack, tracks, frame_count }
+      Its drawings live in the shared pool, in the symbol's own coordinates,
+      and are never garbage collected while the symbol is in the library.
+      Instance keys place it: frame f shows inner frame
+      first_frame + (f − key), wrapped (Loop) or held at the end (Once).
 ```
 Drawings live in a pool, separate from keyframes. Later this lets one drawing be exposed on several frames (cycles and holds) without copying it.
 
@@ -73,7 +82,7 @@ input → ui/desktop → editor::Command → History → Document
                                                │
                      EditorState.current_frame ┘→ Document::evaluate(frame) → RenderList → renderer
 ```
-`evaluate` is cheap and allocates only one `Vec`. The renderer caches stroke, fill and image meshes by `MeshId` (a `StrokeId`, `FillId` or `ImageId`) and rebuilds a mesh only when its item changes. Image textures are decoded once per image and uploaded on the next render.
+`evaluate` is cheap and allocates only one `Vec`. Instance keys are expanded recursively (at most `MAX_SYMBOL_DEPTH` levels): each visible symbol layer becomes a `RenderLayer` of the document layer holding the instance, with `transform: Affine2` = layer × instance × symbol layer, opacities multiplied, and `in_object` set so editing tools leave it alone. The renderer caches stroke, fill and image meshes by `MeshId` (a `StrokeId`, `FillId` or `ImageId`) and rebuilds a mesh only when its item changes. Image textures are decoded once per image and uploaded on the next render.
 
 ## Error handling
 - Library crates return typed `thiserror` errors (`FileFormatError`, `CommandError`, `RendererError`).
