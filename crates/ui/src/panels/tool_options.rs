@@ -1,6 +1,6 @@
 //! The tool settings panel on the right of the canvas: settings for the
-//! active tool (size, opacity, colour, draw order, eraser mode, gap closing)
-//! and the
+//! active tool (size, opacity, colour, draw order, eraser mode, gap closing),
+//! the settings and motion tween of the object under the playhead, and the
 //! "drawing is blocked" warning.
 
 use super::toolbar::TOOLS;
@@ -8,7 +8,7 @@ use crate::paint_order::PaintOrder;
 use crate::session::Session;
 use crate::shapes::GradientDirection;
 use crate::tools::{EraserMode, FillStyle};
-use document::animation_core::{FrameIndex, Rgba};
+use document::animation_core::{FrameIndex, Interpolation, Rgba};
 use document::drawing::GapClosing;
 use document::timeline::InstanceMode;
 use editor::Tool;
@@ -247,6 +247,48 @@ fn object_settings(ui: &mut egui::Ui, session: &mut Session) {
     }
     if props != before {
         session.set_instance_props(props, gesture);
+    }
+    tween_settings(ui, session);
+}
+
+/// The motion tween (ADR-019) from the object key under the playhead to
+/// the next key: pick None or an ease. Hidden when the next key is not the
+/// same object and there is no tween to remove.
+fn tween_settings(ui: &mut egui::Ui, session: &mut Session) {
+    let Some(at) = session.tween_at_playhead() else {
+        return;
+    };
+    match at.end {
+        Some(end) => {
+            ui.label("Motion tween").on_hover_text(
+                "Move, scale, rotate and fade the object smoothly from this key to the next",
+            );
+            let mut tween = at.tween;
+            let label = |t: Option<Interpolation>| t.map_or("None", Interpolation::label);
+            egui::ComboBox::from_id_salt("object_tween")
+                .selected_text(label(tween))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut tween, None, label(None));
+                    for ease in Interpolation::TWEENS {
+                        ui.selectable_value(&mut tween, Some(ease), ease.label());
+                    }
+                });
+            ui.weak(format!(
+                "Frames {}–{}",
+                at.key_frame.display_number(),
+                end.display_number()
+            ));
+            if tween != at.tween {
+                session.set_tween_at_playhead(tween);
+            }
+        }
+        None if at.tween.is_some() => {
+            ui.weak("Motion tween off: the next key is not this object");
+            if ui.button("Remove Tween").clicked() {
+                session.set_tween_at_playhead(None);
+            }
+        }
+        None => {}
     }
 }
 
