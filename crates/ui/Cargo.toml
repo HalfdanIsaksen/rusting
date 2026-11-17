@@ -15,5 +15,9 @@ egui.workspace = true
 epaint_default_fonts.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+# The fonts the desktop app bundles, so tests lay out text as the app does.
+egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
+
 [lints]
 workspace = true
