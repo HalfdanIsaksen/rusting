@@ -740,7 +740,8 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
         && let Some((layer, frame)) = pointer.and_then(cell_at)
         && let Some(i) = rows.iter().position(|r| r.layer() == Some(layer))
     {
-        let editable = session.document.layers().is_editable(layer);
+        // Objects can't go on an audio layer (ADR-020).
+        let editable = session.document.layers().is_editable(layer) && !rows[i].audio;
         ui.ctx().set_cursor_icon(if editable {
             egui::CursorIcon::Copy
         } else {

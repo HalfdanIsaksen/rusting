@@ -217,10 +217,13 @@ impl Session {
 
     /// Turns the selected layers' frames (see [`Self::object_range`]) into
     /// a new object in the library, placed on a new layer above them; one
-    /// undo step. The new layer becomes the active one. Returns false, with
-    /// a status message, if that is not possible.
+    /// undo step. The new layer becomes the active one. Selected audio
+    /// layers are skipped (objects hold no sound), and the status message
+    /// says so. Returns false, with a status message, if that is not
+    /// possible.
     pub fn convert_layers_to_object(&mut self) -> bool {
         let layers = self.selected_layers();
+        let skipped = ConvertToSymbol::skipped_audio_layers(&self.document, &layers).len();
         let range = self.object_range();
         let command = ConvertToSymbol::new(layers, range);
         let (layer, symbol) = (command.layer_id(), command.symbol_id());
@@ -229,7 +232,12 @@ impl Session {
         }
         self.clear_frame_selection();
         self.select_layer(layer);
-        self.report_new_object(symbol);
+        let note = match skipped {
+            0 => "",
+            1 => "; the audio layer stays outside it",
+            _ => "; the audio layers stay outside it",
+        };
+        self.report_new_object(symbol, note);
         true
     }
 
@@ -250,13 +258,16 @@ impl Session {
         self.tools.cancel();
         self.select_layer(new_layer);
         self.select_instance();
-        self.report_new_object(symbol);
+        self.report_new_object(symbol, "");
         true
     }
 
-    fn report_new_object(&mut self, symbol: SymbolId) {
+    /// Says where the new object went, followed by `note`.
+    fn report_new_object(&mut self, symbol: SymbolId, note: &str) {
         if let Some(name) = self.document.symbol(symbol).map(|s| s.name.clone()) {
-            self.set_status(format!("Made {name}; it is in the Library under Objects"));
+            self.set_status(format!(
+                "Made {name}; it is in the Library under Objects{note}"
+            ));
         }
     }
 
@@ -629,5 +640,73 @@ mod tests {
         assert!(span_picked(f(0), Some(f(6)), 18, r(2, 4)));
         // A span the selection only touches at its last key is not picked.
         assert!(!span_picked(f(0), Some(f(6)), 18, r(6, 10)));
+    }
+
+    fn sound() -> document::AudioData {
+        document::AudioData {
+            format: document::AudioFormat::Wav,
+            sample_rate: 8000,
+            channels: 1,
+            duration: 0.5,
+            peaks: vec![10; 50],
+            bytes: std::sync::Arc::from(vec![1u8]),
+        }
+    }
+
+    #[test]
+    fn converting_with_an_audio_layer_selected_leaves_it_out() {
+        let (mut s, layer) = twelve_frames();
+        let audio = s.import_audio("song.wav", sound()).unwrap();
+        s.select_layers(layer, [layer, audio]);
+        assert!(s.convert_layers_to_object());
+        let status = s.status().unwrap();
+        assert!(!status.is_error);
+        assert!(
+            status.text.contains("the audio layer stays outside it"),
+            "{}",
+            status.text
+        );
+        let symbol = s.document.symbols().values().next().unwrap();
+        assert_eq!(symbol.layers.len(), 1);
+        assert!(s.document.layers().get(audio).unwrap().is_audio());
+
+        // Only the audio layer selected: refused, nothing changes.
+        let before = s.document.clone();
+        s.select_layers(audio, [audio]);
+        assert!(!s.convert_layers_to_object());
+        assert!(s.status().unwrap().is_error);
+        assert_eq!(s.document, before);
+    }
+
+    #[test]
+    fn objects_dropped_on_an_audio_row_are_refused_but_sounds_go_anywhere() {
+        let (mut s, layer) = twelve_frames();
+        s.select_layers(layer, [layer]);
+        assert!(s.convert_layers_to_object());
+        let object_layer = s.state.active_layer.unwrap();
+        let symbol = *s.document.symbols().keys().next().unwrap();
+        let audio = s.import_audio("song.wav", sound()).unwrap();
+        let before = s.document.clone();
+        assert!(!s.place_symbol_at(symbol, audio, FrameIndex(3)));
+        assert!(s.status().unwrap().is_error);
+        assert_eq!(s.document, before);
+
+        // A library sound dropped on the object's row starts a new audio
+        // layer; the object layer keeps its keys.
+        let asset = s
+            .document
+            .layers()
+            .get(audio)
+            .unwrap()
+            .audio_clip()
+            .unwrap()
+            .asset;
+        s.set_active_layer(object_layer);
+        let keys = s.document.track(object_layer).unwrap().clone();
+        let new = s.place_audio(asset, FrameIndex(5)).unwrap();
+        assert_ne!(new, audio);
+        let clip = s.document.layers().get(new).unwrap().audio_clip().unwrap();
+        assert_eq!(clip.start, FrameIndex(5));
+        assert_eq!(s.document.track(object_layer).unwrap(), &keys);
     }
 }

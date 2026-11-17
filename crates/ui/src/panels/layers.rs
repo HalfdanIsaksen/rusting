@@ -359,12 +359,14 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
             }
             if let RowKind::Layer(id) = row.kind {
                 response.context_menu(|ui| {
+                    // Objects hold no sound (ADR-020).
                     if ui
-                        .button("Convert to Object")
+                        .add_enabled(!row.audio, egui::Button::new("Convert to Object"))
                         .on_hover_text(
                             "Turn the selected layers (and the selected frames, or all \
                              frames) into an object in the Library",
                         )
+                        .on_disabled_hover_text("Audio layers can't go inside an object")
                         .clicked()
                     {
                         convert = Some(id);

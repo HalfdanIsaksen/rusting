@@ -907,6 +907,79 @@ mod tests {
         assert!(!restored.panels.is_on_screen(Pane::Timeline));
     }
 
+    /// Every text drawn in one frame of the whole editor.
+    fn texts(ctx: &egui::Context, session: &mut Session) -> Vec<String> {
+        fn walk(shape: &egui::Shape, out: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(t) => out.push(t.galley.text().to_owned()),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, out)),
+                _ => {}
+            }
+        }
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, WINDOW)),
+            ..Default::default()
+        };
+        let mut output = ctx.run_ui(input, |ui| crate::show(ui, session, |_, _| {}));
+        output.textures_delta.clear();
+        let mut out = Vec::new();
+        for clipped in &output.shapes {
+            walk(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn docked_tool_settings_follow_the_active_audio_or_object_layer() {
+        use document::Symbol;
+        use document::scene::Layer;
+        use document::timeline::{Keyframe, Track};
+        let ctx = egui::Context::default();
+        let mut s = Session::new();
+        let mut symbol = Symbol::new("Ball", 4);
+        let drawing = s
+            .document
+            .add_drawing(document::drawing::DrawingContent::Vector(
+                document::drawing::VectorDrawing::new(),
+            ));
+        let mut track = Track::new();
+        track.set_key(
+            document::animation_core::FrameIndex(0),
+            Keyframe::Drawing(drawing),
+        );
+        symbol.push_layer(Layer::new("in"), track);
+        let sid = symbol.id;
+        s.document.insert_symbol(symbol);
+        assert!(s.place_symbol_on_canvas(sid, None));
+        let object_layer = s.state.active_layer.expect("object layer");
+        let sound = document::AudioData {
+            format: document::AudioFormat::Wav,
+            sample_rate: 8000,
+            channels: 1,
+            duration: 0.5,
+            peaks: vec![10; 50],
+            bytes: std::sync::Arc::from(vec![1u8]),
+        };
+        let audio_layer = s.import_audio("song.wav", sound).expect("audio layer");
+        settle(&ctx, &mut s, WINDOW);
+        library_under_tool_settings(&mut s.panels);
+        settle(&ctx, &mut s, WINDOW);
+        assert!(s.panels.is_on_screen(Pane::ToolSettings));
+
+        s.set_active_layer(audio_layer);
+        let shown = texts(&ctx, &mut s);
+        assert!(shown.iter().any(|t| t == "Audio clip"), "{shown:?}");
+        assert!(!shown.iter().any(|t| t == "First frame"), "{shown:?}");
+
+        s.set_active_layer(object_layer);
+        let shown = texts(&ctx, &mut s);
+        assert!(shown.iter().any(|t| t == "First frame"), "{shown:?}");
+        assert!(!shown.iter().any(|t| t == "Audio clip"), "{shown:?}");
+        // The library lists both, in their own sections.
+        assert!(shown.iter().any(|t| t == "Audio (1)"), "{shown:?}");
+        assert!(shown.iter().any(|t| t == "Objects (1)"), "{shown:?}");
+    }
+
     #[test]
     fn a_panel_behind_another_tab_is_not_on_screen() {
         let ctx = egui::Context::default();
