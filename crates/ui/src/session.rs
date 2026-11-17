@@ -35,8 +35,9 @@ pub enum Request {
     Quit,
     /// Show the export options for `ExportKind`, then a save dialog.
     Export(ExportKind),
-    /// Show an open-file dialog for PNG/JPEG pictures, then call
-    /// [`Session::import_image`] for each picked file.
+    /// Show an open-file dialog for PNG/JPEG pictures and MP3/WAV sounds,
+    /// then call [`Session::import_image`] or [`Session::import_audio`] for
+    /// each picked file.
     ImportDialog,
 }
 

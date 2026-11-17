@@ -626,28 +626,53 @@ fn handle_request(shell: &mut Shell, request: ui::Request, event_loop: &ActiveEv
         ui::Request::Quit => event_loop.exit(),
         ui::Request::ImportDialog => {
             let picked = rfd::FileDialog::new()
-                .set_title("Import Image")
+                .set_title("Import")
+                .add_filter("Pictures and sounds", import::ALL_EXTENSIONS)
                 .add_filter("Images (PNG, JPEG)", import::EXTENSIONS)
+                .add_filter("Audio (MP3, WAV)", import::AUDIO_EXTENSIONS)
                 .pick_files();
             for path in picked.unwrap_or_default() {
-                let name = path.file_name().map_or_else(
-                    || path.display().to_string(),
-                    |n| n.to_string_lossy().into_owned(),
-                );
-                match import::read_image(&path) {
-                    Ok(data) => {
-                        if !session.import_image(&name, data) {
-                            break;
-                        }
-                    }
-                    Err(err) => {
-                        session.show_error("Could not import image", format!("{name}\n\n{err}"));
-                        break;
-                    }
+                if !import_file(session, &path) {
+                    break;
                 }
             }
         }
         ui::Request::Export(_) => {}
+    }
+}
+
+/// Imports one picked file into the session: a picture onto the canvas, a
+/// sound onto a new audio layer. Returns false (after showing why) if it
+/// could not, so the rest of a multi-file pick is skipped.
+fn import_file(session: &mut ui::Session, path: &Path) -> bool {
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    match import::file_kind(path) {
+        Some(import::FileKind::Picture) => match import::read_image(path) {
+            Ok(data) => session.import_image(&name, data),
+            Err(err) => {
+                session.show_error("Could not import image", format!("{name}\n\n{err}"));
+                false
+            }
+        },
+        Some(import::FileKind::Audio(format)) => match import::read_audio(path, format) {
+            Ok(data) => session.import_audio(&name, data).is_some(),
+            Err(err) => {
+                session.show_error("Could not import audio", format!("{name}\n\n{err}"));
+                false
+            }
+        },
+        None => {
+            session.show_error(
+                "Could not import file",
+                format!(
+                    "{name}\n\nOnly PNG and JPEG pictures and MP3 and WAV sounds can be imported."
+                ),
+            );
+            false
+        }
     }
 }
 

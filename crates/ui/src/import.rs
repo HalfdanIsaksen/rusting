@@ -1,20 +1,21 @@
 //! File → Import and the library: placing PNG/JPEG pictures on the canvas
-//! (ADR-015, ADR-017).
+//! (ADR-015, ADR-017) and MP3/WAV sounds on audio layers (ADR-020).
 //!
-//! The host shows the file dialog and reads the file
-//! ([`crate::Request::ImportDialog`]); this module adds the picture to the
+//! The host shows the file dialog and reads (and, for sounds, decodes) the
+//! file ([`crate::Request::ImportDialog`]); this module adds it to the
 //! library, decides where it goes, and places it as one undoable step.
 
 use crate::session::{Request, Session};
-use document::animation_core::{AssetId, Vec2};
+use document::animation_core::{AssetId, FrameIndex, LayerId, Vec2};
 use document::drawing::{Image, ImageData, ItemId};
-use document::{Asset, AssetKind};
-use editor::commands::{AddAsset, AddImage, Batch, RemoveAsset, RenameAsset};
+use document::scene::AudioClip;
+use document::{Asset, AssetKind, AudioData};
+use editor::commands::{AddAsset, AddAudioLayer, AddImage, Batch, RemoveAsset, RenameAsset};
 use editor::{Command, Tool};
 
 impl Session {
     /// Asks the host to show the import dialog; it then calls
-    /// [`Self::import_image`] for each picked file.
+    /// [`Self::import_image`] or [`Self::import_audio`] for each picked file.
     pub fn import(&mut self) {
         self.requests.push(Request::ImportDialog);
     }
@@ -35,6 +36,54 @@ impl Session {
             self.set_status(format!("Imported {name}"));
         }
         placed
+    }
+
+    /// Adds sound `data` to the library under `name` (the file name) and
+    /// puts it on a new audio layer on top, starting at the first frame;
+    /// one undo step. The active layer stays as it was, so drawing carries
+    /// on. Returns the new layer's ID.
+    pub fn import_audio(&mut self, name: &str, data: AudioData) -> Option<LayerId> {
+        let asset = Asset::new(name, AssetKind::Audio(data));
+        let add = Box::new(AddAsset::new(asset.clone()));
+        let layer = self.add_audio_layer(&asset, FrameIndex(0), "Import Audio", Some(add))?;
+        self.set_status(format!("Imported {name} on a new audio layer"));
+        Some(layer)
+    }
+
+    /// Puts library sound `asset` on a new audio layer on top, starting at
+    /// `frame` (clamped to the animation); one undo step. Returns the new
+    /// layer's ID, or `None` (with a status message) if it is not a sound.
+    pub fn place_audio(&mut self, asset: AssetId, frame: FrameIndex) -> Option<LayerId> {
+        let asset = self.document.asset(asset).cloned()?;
+        let last = self.document.last_frame().unwrap_or(FrameIndex(0));
+        let layer = self.add_audio_layer(&asset, frame.min(last), "Place Audio", None)?;
+        self.set_status(format!(
+            "Placed {} from frame {}",
+            asset.name,
+            frame.min(last).display_number()
+        ));
+        Some(layer)
+    }
+
+    /// Runs `first` (if any) and an [`AddAudioLayer`] for `asset` starting at
+    /// `start` as one undo step labelled `label`.
+    fn add_audio_layer(
+        &mut self,
+        asset: &Asset,
+        start: FrameIndex,
+        label: &str,
+        first: Option<Box<dyn Command>>,
+    ) -> Option<LayerId> {
+        if asset.audio().is_none() {
+            self.set_error(format!("{label}: “{}” is not a sound", asset.name));
+            return None;
+        }
+        let add = AddAudioLayer::new(asset.name.clone(), AudioClip::new(asset.id, start));
+        let layer = add.layer_id();
+        let mut commands: Vec<Box<dyn Command>> = first.into_iter().collect();
+        commands.push(Box::new(add));
+        self.execute(Box::new(Batch::new(label, commands))).ok()?;
+        Some(layer)
     }
 
     /// Places library picture `asset` on the active layer at the current
@@ -234,6 +283,81 @@ mod tests {
         assert!(s.document.assets().is_empty());
         s.undo();
         assert_eq!(s.document.asset(asset).unwrap().name, "Sky");
+    }
+
+    fn sound(duration: f64) -> AudioData {
+        AudioData {
+            format: document::AudioFormat::Wav,
+            sample_rate: 8000,
+            channels: 1,
+            duration,
+            peaks: vec![1, 2, 3],
+            bytes: std::sync::Arc::from(vec![1u8, 2, 3]),
+        }
+    }
+
+    #[test]
+    fn imported_sound_gets_an_audio_layer_in_one_undo_step() {
+        let mut s = Session::new();
+        let active = s.state.active_layer;
+        let layer = s.import_audio("song.wav", sound(2.0)).unwrap();
+        let top = s.document.layers().iter().next_back().unwrap();
+        assert_eq!(top.id, layer);
+        assert_eq!(top.name, "song.wav");
+        let clip = *top.audio_clip().unwrap();
+        assert_eq!(clip.start, FrameIndex(0));
+        assert_eq!(s.document.asset(clip.asset).unwrap().name, "song.wav");
+        assert!(s.document.asset_in_use(clip.asset));
+        assert_eq!(s.state.active_layer, active, "drawing carries on");
+        s.undo();
+        assert!(s.document.assets().is_empty());
+        assert!(s.document.layers().get(layer).is_none());
+    }
+
+    #[test]
+    fn library_sound_is_placed_at_a_frame() {
+        let mut s = Session::new();
+        let first = s.import_audio("song.wav", sound(2.0)).unwrap();
+        let asset = s
+            .document
+            .layers()
+            .get(first)
+            .unwrap()
+            .audio_clip()
+            .unwrap()
+            .asset;
+        let layer = s.place_audio(asset, FrameIndex(5)).unwrap();
+        let clip = s
+            .document
+            .layers()
+            .get(layer)
+            .unwrap()
+            .audio_clip()
+            .unwrap();
+        assert_eq!(clip.start, FrameIndex(5));
+        let layer = s.place_audio(asset, FrameIndex(999)).unwrap();
+        let clip = s
+            .document
+            .layers()
+            .get(layer)
+            .unwrap()
+            .audio_clip()
+            .unwrap();
+        assert_eq!(clip.start, s.document.last_frame().unwrap(), "clamped");
+        assert!(s.place_audio(AssetId::new(), FrameIndex(0)).is_none());
+        // A picture is not a sound, and dropping one on the timeline does
+        // nothing.
+        assert!(s.import_image("pic.png", ImageData::new(2, 2, vec![1])));
+        let picture = s
+            .document
+            .assets()
+            .values()
+            .find(|a| a.image().is_some())
+            .unwrap()
+            .id;
+        let steps = s.history.undo_len();
+        assert!(s.place_audio(picture, FrameIndex(0)).is_none());
+        assert_eq!(s.history.undo_len(), steps);
     }
 
     #[test]

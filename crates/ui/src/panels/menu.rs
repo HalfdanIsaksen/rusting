@@ -56,7 +56,10 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
             });
             if ui
                 .button("Import…")
-                .on_hover_text("Place a PNG or JPEG picture on the current layer and frame")
+                .on_hover_text(
+                    "Place PNG or JPEG pictures on the current layer and frame, or put MP3 or \
+                     WAV sounds on new audio layers",
+                )
                 .clicked()
             {
                 session.import();

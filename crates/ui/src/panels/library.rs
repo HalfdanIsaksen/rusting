@@ -59,7 +59,7 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .button("Import…")
-                .on_hover_text("Add PNG or JPEG pictures to the library and the canvas")
+                .on_hover_text("Add PNG or JPEG pictures or MP3 or WAV sounds to the library")
                 .clicked()
             {
                 session.import();
