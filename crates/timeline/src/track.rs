@@ -1,7 +1,7 @@
 //! Per-layer drawing tracks.
 
 use crate::instance::InstanceKey;
-use animation_core::{DrawingId, FrameIndex, FrameRange, SymbolId};
+use animation_core::{DrawingId, FrameIndex, FrameRange, Interpolation, SymbolId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ops::Bound;
@@ -40,6 +40,37 @@ impl Keyframe {
     /// The symbol this keyframe places, if it is an instance key.
     pub fn symbol(&self) -> Option<SymbolId> {
         self.instance().map(|key| key.symbol)
+    }
+}
+
+/// An active motion tween between two instance keys of the same symbol
+/// (ADR-019): frames `start..end` blend from the key on `start` toward the
+/// key on `end`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TweenSpan {
+    /// The first key's frame (the key holding the tween).
+    pub start: FrameIndex,
+    /// The second key's frame.
+    pub end: FrameIndex,
+    /// The easing curve.
+    pub ease: Interpolation,
+}
+
+impl TweenSpan {
+    /// The eased blend factor at `frame`: 0 on `start`, rising toward 1 on
+    /// `end` (clamped outside the span).
+    pub fn factor(&self, frame: FrameIndex) -> f32 {
+        let length = self.end.0.saturating_sub(self.start.0);
+        if length == 0 {
+            return 0.0;
+        }
+        let elapsed = frame.0.saturating_sub(self.start.0);
+        self.ease.factor(elapsed as f32 / length as f32)
+    }
+
+    /// Whether `frame` lies in `start..end`.
+    pub fn contains(&self, frame: FrameIndex) -> bool {
+        self.start <= frame && frame < self.end
     }
 }
 
@@ -111,6 +142,45 @@ impl Track {
     pub fn instance_at(&self, frame: FrameIndex) -> Option<(FrameIndex, &InstanceKey)> {
         self.exposed_key(frame)
             .and_then(|(f, k)| k.instance().map(|i| (f, i)))
+    }
+
+    /// The motion tween starting at the key on `frame` (ADR-019), if that
+    /// key is an instance with a tween and the next key is an instance of
+    /// the same symbol. A tween whose pair is broken is inactive: `None`.
+    pub fn tween_from(&self, frame: FrameIndex) -> Option<TweenSpan> {
+        let start = self.key_at(frame)?.instance()?;
+        let ease = start.tween?;
+        let (end, next) = self.next_key_after(frame)?;
+        let next = next.instance()?;
+        (next.symbol == start.symbol).then_some(TweenSpan {
+            start: frame,
+            end,
+            ease,
+        })
+    }
+
+    /// The active motion tween whose span `start..end` holds `frame`.
+    pub fn tween_at(&self, frame: FrameIndex) -> Option<TweenSpan> {
+        let (start, _) = self.exposed_key(frame)?;
+        self.tween_from(start)
+    }
+
+    /// Every active motion tween, in frame order.
+    pub fn tweens(&self) -> impl Iterator<Item = TweenSpan> + '_ {
+        self.keys.keys().filter_map(|&f| self.tween_from(f))
+    }
+
+    /// The instance shown at `frame` as it is displayed: the exposed
+    /// instance key with its frame, its placement and opacity blended
+    /// toward the next key when a motion tween is active there. Playback
+    /// (`first_frame`, mode) stays the exposed key's.
+    pub fn displayed_instance(&self, frame: FrameIndex) -> Option<(FrameIndex, InstanceKey)> {
+        let (at, key) = self.instance_at(frame)?;
+        let Some(span) = self.tween_from(at) else {
+            return Some((at, *key));
+        };
+        let end = self.key_at(span.end).and_then(Keyframe::instance)?;
+        Some((at, key.blended(end, span.factor(frame))))
     }
 
     /// Every key with its frame, mutably (to edit instance placements in
@@ -232,5 +302,110 @@ mod tests {
         assert_eq!(t.remove_key(FrameIndex(1)), Some(Keyframe::Drawing(a)));
         assert!(t.is_empty());
         assert_eq!(t.remove_key(FrameIndex(1)), None);
+    }
+
+    mod tweens {
+        use super::*;
+        use crate::{InstanceTransform, instance::InstanceKey};
+        use animation_core::Vec2;
+
+        /// Instance keys of one symbol on frames 0 (x = 0, opacity 1,
+        /// tweened with `ease`) and 10 (x = 100, opacity 0).
+        fn pair(ease: Interpolation) -> (Track, SymbolId) {
+            let symbol = SymbolId::new();
+            let mut t = Track::new();
+            let start = InstanceKey {
+                tween: Some(ease),
+                ..InstanceKey::new(symbol)
+            };
+            let end = InstanceKey {
+                opacity: 0.0,
+                ..InstanceKey::new(symbol).with_transform(InstanceTransform {
+                    translation: Vec2::new(100.0, 0.0),
+                    scale: Vec2::splat(3.0),
+                    rotation: 2.0,
+                })
+            };
+            t.set_key(FrameIndex(0), Keyframe::Instance(start));
+            t.set_key(FrameIndex(10), Keyframe::Instance(end));
+            (t, symbol)
+        }
+
+        fn x_at(t: &Track, frame: u32) -> f32 {
+            t.displayed_instance(FrameIndex(frame))
+                .unwrap()
+                .1
+                .transform
+                .translation
+                .x
+        }
+
+        #[test]
+        fn each_ease_blends_start_middle_and_end() {
+            // (ease, value at the midpoint frame 5)
+            let cases = [
+                (Interpolation::Linear, 50.0),
+                (Interpolation::EaseIn, 12.5),
+                (Interpolation::EaseOut, 87.5),
+                (Interpolation::EaseInOut, 50.0),
+            ];
+            for (ease, middle) in cases {
+                let (t, _) = pair(ease);
+                assert_eq!(x_at(&t, 0), 0.0, "{ease:?} start");
+                assert!((x_at(&t, 5) - middle).abs() < 1e-3, "{ease:?} middle");
+                // The second key shows its own placement exactly.
+                assert_eq!(x_at(&t, 10), 100.0, "{ease:?} end");
+                // Every part blends: scale, rotation and opacity too.
+                let (at, mid) = t.displayed_instance(FrameIndex(5)).unwrap();
+                assert_eq!(at, FrameIndex(0));
+                let f = ease.factor(0.5);
+                assert!((mid.transform.scale.x - (1.0 + 2.0 * f)).abs() < 1e-5);
+                assert!((mid.transform.rotation - 2.0 * f).abs() < 1e-5);
+                assert!((mid.opacity - (1.0 - f)).abs() < 1e-5);
+                assert_eq!(mid.tween, Some(ease));
+                // Just before the end it is nearly there, and never past it.
+                let last = x_at(&t, 9);
+                assert!(last > middle - 1e-3 && last < 100.0, "{ease:?} frame 9");
+            }
+        }
+
+        #[test]
+        fn span_and_lookup() {
+            let (t, _) = pair(Interpolation::EaseIn);
+            let span = t.tween_from(FrameIndex(0)).unwrap();
+            assert_eq!((span.start, span.end), (FrameIndex(0), FrameIndex(10)));
+            assert_eq!(t.tween_at(FrameIndex(7)), Some(span));
+            assert!(span.contains(FrameIndex(9)) && !span.contains(FrameIndex(10)));
+            assert_eq!(t.tween_at(FrameIndex(10)), None);
+            assert_eq!(t.tween_from(FrameIndex(10)), None);
+            assert_eq!(t.tweens().collect::<Vec<_>>(), [span]);
+        }
+
+        #[test]
+        fn broken_pairs_leave_the_tween_inactive() {
+            // Another object as the next key.
+            let (mut t, symbol) = pair(Interpolation::Linear);
+            let other = InstanceKey::new(SymbolId::new());
+            t.set_key(FrameIndex(10), Keyframe::Instance(other));
+            assert_eq!(t.tween_at(FrameIndex(5)), None);
+            assert_eq!(x_at(&t, 5), 0.0);
+            // A drawing or empty key, or no next key at all.
+            t.set_key(FrameIndex(10), Keyframe::Empty);
+            assert_eq!(x_at(&t, 5), 0.0);
+            t.remove_key(FrameIndex(10));
+            assert_eq!(x_at(&t, 5), 0.0);
+            // The tween is still stored and works again once the pair is.
+            assert_eq!(
+                t.key_at(FrameIndex(0))
+                    .and_then(Keyframe::instance)
+                    .unwrap()
+                    .tween,
+                Some(Interpolation::Linear)
+            );
+            let end = InstanceKey::new(symbol)
+                .with_transform(InstanceTransform::from_translation(Vec2::new(40.0, 0.0)));
+            t.set_key(FrameIndex(4), Keyframe::Instance(end));
+            assert_eq!(x_at(&t, 2), 20.0);
+        }
     }
 }

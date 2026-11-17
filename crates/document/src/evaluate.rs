@@ -3,7 +3,9 @@
 //! Instance keys (ADR-018) are expanded recursively: the symbol's own
 //! layers are evaluated at the instance's inner frame and come out as more
 //! [`RenderLayer`]s of the layer that holds the instance, with the
-//! transforms combined and the opacities multiplied.
+//! transforms combined and the opacities multiplied. Inside a motion tween
+//! (ADR-019) the placement and opacity are blended toward the next key,
+//! while the inner frame keeps counting from the first key.
 
 use crate::Document;
 use animation_core::glam::Affine2;
@@ -138,11 +140,12 @@ impl Document {
     }
 
     /// Document-space bounds of the object shown on `layer` at `frame`
-    /// (the instance key exposed there), including the layer transform.
+    /// (the instance key exposed there, blended when a motion tween runs
+    /// there), including the layer transform.
     /// `None` if no instance is exposed or it shows nothing.
     pub fn instance_bounds(&self, layer: LayerId, frame: FrameIndex) -> Option<(Vec2, Vec2)> {
         let l = self.layers().get(layer)?;
-        let (at, key) = self.track(layer)?.instance_at(frame)?;
+        let (at, key) = self.track(layer)?.displayed_instance(frame)?;
         let mut layers = Vec::new();
         let context = Context {
             layer_id: layer,
@@ -151,7 +154,7 @@ impl Document {
             transform: l.transform.to_affine(),
             depth: 0,
         };
-        self.push_instance(key, frame.0 - at.0, context, &mut layers);
+        self.push_instance(&key, frame.0 - at.0, context, &mut layers);
         RenderList { layers }.bounds()
     }
 
@@ -176,8 +179,12 @@ impl Document {
                     });
                 }
             }
-            Some((at, Keyframe::Instance(key))) => {
-                self.push_instance(key, frame.0 - at.0, context, out);
+            Some((at, Keyframe::Instance(_))) => {
+                // Blended toward the next key inside a motion tween
+                // (ADR-019); the inner frame still counts from `at`.
+                if let Some((_, key)) = track.displayed_instance(frame) {
+                    self.push_instance(&key, frame.0 - at.0, context, out);
+                }
             }
             Some((_, Keyframe::Empty)) | None => {}
         }
@@ -224,6 +231,7 @@ mod tests {
     use super::*;
     use crate::{CanvasSize, Symbol};
     use animation_core::DrawingId;
+    use animation_core::Interpolation;
     use drawing::{BrushStyle, DrawingContent, Stroke, StrokePoint};
     use scene::{Layer, LayerGroup};
     use timeline::{InstanceMode, InstanceTransform};
@@ -446,5 +454,83 @@ mod tests {
             .unwrap()
             .set_key(FrameIndex(0), Keyframe::Instance(InstanceKey::new(cid)));
         assert!(d.evaluate(FrameIndex(0)).layers.is_empty());
+    }
+
+    /// The 12-frame object tweened with `ease` from frame 2 (x = 0,
+    /// opacity 1) to frame 12 (x = 100, opacity 0.5, continuing playback).
+    fn tweened_object(ease: Interpolation) -> (Document, LayerId, Vec<DrawingId>) {
+        let (mut d, layer, sid, drawings) = twelve_frame_object();
+        let track = d.track_mut(layer).unwrap();
+        let start = InstanceKey {
+            tween: Some(ease),
+            ..InstanceKey::new(sid)
+        };
+        let end = InstanceKey {
+            opacity: 0.5,
+            ..start
+                .advanced(10, 12)
+                .with_transform(InstanceTransform::from_translation(Vec2::new(100.0, 0.0)))
+        };
+        track.set_key(FrameIndex(2), Keyframe::Instance(start));
+        track.set_key(
+            FrameIndex(12),
+            Keyframe::Instance(InstanceKey { tween: None, ..end }),
+        );
+        (d, layer, drawings)
+    }
+
+    fn placed_x(d: &Document, frame: u32) -> f32 {
+        d.evaluate(FrameIndex(frame)).layers[0]
+            .transform
+            .transform_point2(Vec2::ZERO)
+            .x
+    }
+
+    #[test]
+    fn tween_blends_placement_and_opacity_for_each_ease() {
+        let cases = [
+            (Interpolation::Linear, 50.0),
+            (Interpolation::EaseIn, 12.5),
+            (Interpolation::EaseOut, 87.5),
+            (Interpolation::EaseInOut, 50.0),
+        ];
+        for (ease, middle) in cases {
+            let (d, layer, _) = tweened_object(ease);
+            assert_eq!(placed_x(&d, 2), 0.0, "{ease:?} start");
+            assert!((placed_x(&d, 7) - middle).abs() < 1e-3, "{ease:?} middle");
+            assert_eq!(placed_x(&d, 12), 100.0, "{ease:?} end");
+            assert_eq!(placed_x(&d, 19), 100.0, "{ease:?} after the end");
+            let opacity = |f| d.evaluate(FrameIndex(f)).layers[0].opacity;
+            assert_eq!(opacity(2), 1.0);
+            assert!((opacity(7) - (1.0 - 0.5 * ease.factor(0.5))).abs() < 1e-5);
+            assert_eq!(opacity(12), 0.5);
+            // Hit testing follows the blended placement.
+            let (start_min, _) = d.instance_bounds(layer, FrameIndex(2)).unwrap();
+            let (min, _) = d.instance_bounds(layer, FrameIndex(7)).unwrap();
+            assert!(
+                (min.x - start_min.x - middle).abs() < 1e-3,
+                "{ease:?} bounds"
+            );
+        }
+    }
+
+    #[test]
+    fn inner_frame_continues_through_the_tween() {
+        let (d, _, drawings) = tweened_object(Interpolation::EaseInOut);
+        // Frames 2..20: the object plays 0..11 then loops 0..5 without a
+        // jump at the second key (frame 12 shows inner frame 10).
+        let played: Vec<_> = (2..20).map(|f| shown(&d, &drawings, f).unwrap()).collect();
+        let expected: Vec<usize> = (0..12).chain(0..6).collect();
+        assert_eq!(played, expected);
+    }
+
+    #[test]
+    fn a_broken_pair_holds_the_first_key() {
+        let (mut d, layer, _) = tweened_object(Interpolation::Linear);
+        d.track_mut(layer)
+            .unwrap()
+            .set_key(FrameIndex(12), Keyframe::Empty);
+        assert_eq!(placed_x(&d, 7), 0.0);
+        assert!(d.evaluate(FrameIndex(12)).layers.is_empty());
     }
 }

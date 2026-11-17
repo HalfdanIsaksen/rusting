@@ -9,7 +9,7 @@
 //! [`InstanceMode::Once`] (see [`InstanceKey::inner_frame`]).
 
 use animation_core::glam::Affine2;
-use animation_core::{FrameIndex, SymbolId, Vec2};
+use animation_core::{FrameIndex, Interpolation, SymbolId, Vec2};
 use serde::{Deserialize, Serialize};
 
 /// How an instance plays its symbol's animation past the symbol's end.
@@ -115,6 +115,11 @@ pub struct InstanceKey {
     pub mode: InstanceMode,
     /// The symbol frame shown on the key's own frame.
     pub first_frame: FrameIndex,
+    /// A motion tween from this key to the next key on the track (ADR-019).
+    /// It only takes effect while the next key is an instance of the same
+    /// symbol; otherwise this key holds still. Never `Some(Step)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tween: Option<Interpolation>,
 }
 
 impl InstanceKey {
@@ -127,6 +132,7 @@ impl InstanceKey {
             opacity: 1.0,
             mode: InstanceMode::Loop,
             first_frame: FrameIndex(0),
+            tween: None,
         }
     }
 
@@ -134,6 +140,18 @@ impl InstanceKey {
     pub fn with_transform(mut self, transform: InstanceTransform) -> Self {
         self.transform = transform;
         self
+    }
+
+    /// This key blended toward `end` by `factor` (0 gives `self`, 1 gives
+    /// `end`'s placement): transform and opacity blend, while the symbol,
+    /// playback (mode, first frame) and tween stay this key's, so the
+    /// object keeps animating through a motion tween.
+    pub fn blended(&self, end: &InstanceKey, factor: f32) -> Self {
+        Self {
+            transform: self.transform.lerp(&end.transform, factor),
+            opacity: self.opacity + (end.opacity - self.opacity) * factor,
+            ..*self
+        }
     }
 
     /// The symbol frame shown `elapsed` frames after the key's own frame,
