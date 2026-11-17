@@ -44,7 +44,10 @@ Document
 │     Track = BTreeMap<FrameIndex, Keyframe>
 │     Keyframe = Drawing(DrawingId) | Empty | Instance(InstanceKey)
 │     InstanceKey { symbol, transform: InstanceTransform { translation, scale,
-│       rotation }, opacity, mode: Loop | Once, first_frame }  (ADR-018)
+│       rotation }, opacity, mode: Loop | Once, first_frame,
+│       tween: Option<Interpolation> }  (ADR-018, ADR-019)
+│     A tween is active while the next key places the same symbol
+│     (Track::tween_from → TweenSpan { start, end, ease }).
 ├─ drawings: BTreeMap<DrawingId, DrawingContent>  (drawing crate)
 │     DrawingContent::Vector(VectorDrawing { strokes: Vec<Stroke>, fills: Vec<Fill>,
 │                                            images: Vec<Image> })
@@ -82,7 +85,7 @@ input → ui/desktop → editor::Command → History → Document
                                                │
                      EditorState.current_frame ┘→ Document::evaluate(frame) → RenderList → renderer
 ```
-`evaluate` is cheap and allocates only one `Vec`. Instance keys are expanded recursively (at most `MAX_SYMBOL_DEPTH` levels): each visible symbol layer becomes a `RenderLayer` of the document layer holding the instance, with `transform: Affine2` = layer × instance × symbol layer, opacities multiplied, and `in_object` set so editing tools leave it alone. The renderer caches stroke, fill and image meshes by `MeshId` (a `StrokeId`, `FillId` or `ImageId`) and rebuilds a mesh only when its item changes. Image textures are decoded once per image and uploaded on the next render.
+`evaluate` is cheap and allocates only one `Vec`. Instance keys are expanded recursively (at most `MAX_SYMBOL_DEPTH` levels): each visible symbol layer becomes a `RenderLayer` of the document layer holding the instance, with `transform: Affine2` = layer × instance × symbol layer, opacities multiplied, and `in_object` set so editing tools leave it alone. Inside an active motion tween, `Track::displayed_instance` blends the key's transform and opacity toward the next key by the eased factor, and the inner frame keeps counting from the first key (ADR-019). The renderer caches stroke, fill and image meshes by `MeshId` (a `StrokeId`, `FillId` or `ImageId`) and rebuilds a mesh only when its item changes. Image textures are decoded once per image and uploaded on the next render.
 
 ## Error handling
 - Library crates return typed `thiserror` errors (`FileFormatError`, `CommandError`, `RendererError`).

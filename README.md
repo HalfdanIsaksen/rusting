@@ -56,7 +56,7 @@ Set `RUST_LOG=debug` for more log output.
 | Document | What it covers |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Crate dependency graph, data model, coordinate spaces, frame flow |
-| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-018) |
+| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-019) |
 | [docs/roadmap.md](docs/roadmap.md) | Development phases and their acceptance criteria |
 | [docs/smoke-test.md](docs/smoke-test.md) | Manual end-to-end test checklist |
 | [docs/releasing.md](docs/releasing.md) | How to tag a release and update the Homebrew tap |
@@ -112,6 +112,7 @@ The tool strip runs down the side of the canvas:
 - Drag an object from the Library onto a frame cell in the timeline to place it on that layer and frame, or onto the canvas to place it on a new layer where you drop it.
 - With the Selection or Transform tool, click an object to select it as one unit, then drag, nudge, scale or rotate it. Moving it on a later frame of its exposure adds a new key there, so the object keeps playing from the new place.
 - The timeline shows object exposures in blue, with a diamond on the key and a tick where each loop starts. Rename or delete objects in the Library (Delete works once the object is not placed anywhere). Objects can contain other objects.
+- **Motion tweens**: place an object on one key, go to a later frame and move, scale, rotate or fade it there (that adds a second key of the same object). Select the frames from the first key to the second, right-click → Create Motion Tween → Linear, Ease In, Ease Out or Ease In-Out. The object then glides between the two keys, blending position, scale, rotation and opacity, while it keeps playing its own animation. The timeline shows the tween as a purple band with an arrow. Change the ease in Tool Settings (Motion tween) or remove it with right-click → Remove Tween. Moving the object on a frame inside a tween adds a key there, starting from where it is drawn, and the tween runs through it. Only objects can be tweened, and only between two keys of the same object. Rotation turns the direct way between the two angles, not the shortest one.
 - Editing an object's contents in place is not supported yet. Drawing tools refuse a frame where the layer shows an object.
 
 ### Look
