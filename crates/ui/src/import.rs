@@ -54,6 +54,24 @@ impl Session {
         placed.is_some()
     }
 
+    /// The size (document units) library picture `asset` gets when placed:
+    /// its pixel size, shrunk to fit the canvas. `None` if it is not a
+    /// picture. The canvas uses it to outline a drop before it happens.
+    pub fn placed_size(&self, asset: AssetId) -> Option<Vec2> {
+        let data = self.document.asset(asset)?.image()?;
+        Some(fit_within(
+            Vec2::new(data.width.max(1) as f32, data.height.max(1) as f32),
+            self.canvas_size(),
+        ))
+    }
+
+    fn canvas_size(&self) -> Vec2 {
+        Vec2::new(
+            self.document.canvas.width as f32,
+            self.document.canvas.height as f32,
+        )
+    }
+
     /// Renames library asset `asset`; one undo step. A blank or unchanged
     /// name does nothing.
     pub fn rename_asset(&mut self, asset: AssetId, name: &str) {
@@ -96,10 +114,7 @@ impl Session {
             return None;
         };
         let layer = self.state.active_layer?;
-        let canvas = Vec2::new(
-            self.document.canvas.width as f32,
-            self.document.canvas.height as f32,
-        );
+        let canvas = self.canvas_size();
         let size = fit_within(
             Vec2::new(data.width.max(1) as f32, data.height.max(1) as f32),
             canvas,
@@ -192,6 +207,7 @@ mod tests {
         let placed = &drawing.images()[1];
         assert_eq!(placed.asset, Some(asset));
         assert_eq!(placed.bounds(), (v(80.0, 40.0), v(120.0, 60.0)));
+        assert_eq!(s.placed_size(asset), Some(v(40.0, 20.0)));
         assert_eq!(s.tools.selection(), [ItemId::Image(placed.id)]);
         assert_eq!(s.document.assets().len(), 1);
         s.undo();

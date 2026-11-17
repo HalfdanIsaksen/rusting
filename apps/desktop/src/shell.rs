@@ -157,7 +157,53 @@ fn canvas(
         egui::Color32::WHITE,
     );
     paint_overlays(ui, &response, rect, viewport, session, panning);
+    handle_asset_drop(ui, &response, rect, viewport, session);
     view_controls(ui, rect, viewport);
+}
+
+/// A picture dragged from the library (ADR-017): while it is held over the
+/// canvas, outline where it will land; on release, place it centred on the
+/// pointer (one undo step, then selected, like File → Import).
+fn handle_asset_drop(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    rect: egui::Rect,
+    viewport: &Viewport,
+    session: &mut Session,
+) {
+    let Some(pointer) = ui.input(|i| i.pointer.latest_pos()) else {
+        return;
+    };
+    let at = viewport.screen_to_canvas(Vec2::new(pointer.x - rect.min.x, pointer.y - rect.min.y));
+    if let Some(drag) = response.dnd_release_payload::<ui::AssetDrag>() {
+        session.place_asset(drag.0, Some(at));
+        return;
+    }
+    let Some(drag) = response.dnd_hover_payload::<ui::AssetDrag>() else {
+        return;
+    };
+    if session.draw_block_reason().is_some() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::NoDrop);
+        return;
+    }
+    ui.ctx().set_cursor_icon(egui::CursorIcon::Copy);
+    let Some(size) = session.placed_size(drag.0) else {
+        return;
+    };
+    let corner = |p: Vec2| {
+        let s = viewport.canvas_to_screen(p);
+        egui::pos2(s.x + rect.min.x, s.y + rect.min.y)
+    };
+    let outline = egui::Rect::from_two_pos(corner(at - size * 0.5), corner(at + size * 0.5));
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(outline, 0.0, SELECTION_COLOR.gamma_multiply(0.12));
+    painter.rect_stroke(
+        outline,
+        0.0,
+        egui::Stroke::new(1.0, SELECTION_COLOR),
+        egui::StrokeKind::Inside,
+    );
+    ui.ctx().request_repaint();
 }
 
 /// Brush and eraser: press starts a gesture, every pointer move extends it,
