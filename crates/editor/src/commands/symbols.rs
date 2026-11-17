@@ -7,8 +7,9 @@ use crate::{Command, CommandError};
 use animation_core::{DrawingId, FrameIndex, FrameRange, LayerId, SymbolId};
 use document::drawing::{DrawingContent, ItemId};
 use document::scene::Layer;
-use document::timeline::{InstanceKey, InstanceTransform, Keyframe, Track};
+use document::timeline::{InstanceKey, InstanceMode, InstanceTransform, Keyframe, Track};
 use document::{Document, Symbol};
+use std::any::Any;
 use std::collections::BTreeMap;
 
 /// Everything a conversion adds, built once on the first apply so redo
@@ -447,6 +448,411 @@ impl Command for ConvertItemsToSymbol {
     }
 }
 
+/// Where [`PlaceInstance`] puts its key.
+#[derive(Debug, Clone)]
+enum PlaceTarget {
+    /// An existing layer.
+    Layer(LayerId),
+    /// A new layer inserted at `index`.
+    NewLayer { layer: Box<Layer>, index: usize },
+}
+
+/// Places an object: sets an instance key at a frame, replacing any key
+/// there, on an existing layer or on a new one.
+#[derive(Debug)]
+pub struct PlaceInstance {
+    target: PlaceTarget,
+    frame: FrameIndex,
+    key: InstanceKey,
+    replaced: Option<Option<Keyframe>>,
+}
+
+impl PlaceInstance {
+    /// Places `key` on `layer` at `frame`.
+    pub fn new(layer: LayerId, frame: FrameIndex, key: InstanceKey) -> Self {
+        Self {
+            target: PlaceTarget::Layer(layer),
+            frame,
+            key,
+            replaced: None,
+        }
+    }
+
+    /// Places `key` at `frame` on a new layer called `name`, inserted right
+    /// above `above` (in its group) or on top of the stack when `None`.
+    pub fn on_new_layer(
+        doc: &Document,
+        name: impl Into<String>,
+        above: Option<LayerId>,
+        frame: FrameIndex,
+        key: InstanceKey,
+    ) -> Self {
+        let name = name.into();
+        let (layer, index) = match above.and_then(|id| object_layer(doc, &name, id).ok()) {
+            Some((mut layer, index)) => {
+                layer.transform = document::scene::Transform2D::IDENTITY;
+                (layer, index)
+            }
+            None => (Layer::new(name), doc.layers().len()),
+        };
+        Self {
+            target: PlaceTarget::NewLayer {
+                layer: Box::new(layer),
+                index,
+            },
+            frame,
+            key,
+            replaced: None,
+        }
+    }
+
+    /// The layer the key goes on.
+    pub fn layer_id(&self) -> LayerId {
+        match &self.target {
+            PlaceTarget::Layer(id) => *id,
+            PlaceTarget::NewLayer { layer, .. } => layer.id,
+        }
+    }
+}
+
+impl Command for PlaceInstance {
+    fn label(&self) -> &str {
+        "Place Object"
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        frame_in_range(doc, self.frame)?;
+        valid_instance(doc, &self.key)?;
+        if let PlaceTarget::NewLayer { layer, index } = &self.target {
+            doc.insert_layer(*index, (**layer).clone());
+        }
+        let layer = self.layer_id();
+        if let Err(err) = editable_layer(doc, layer) {
+            if matches!(self.target, PlaceTarget::NewLayer { .. }) {
+                doc.remove_layer(layer);
+            }
+            return Err(err);
+        }
+        let track = doc.track_mut(layer).ok_or(CommandError::LayerNotFound)?;
+        self.replaced = Some(track.set_key(self.frame, Keyframe::Instance(self.key)));
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        let replaced = self
+            .replaced
+            .take()
+            .ok_or(CommandError::NoInstance(self.frame))?;
+        let layer = self.layer_id();
+        if matches!(self.target, PlaceTarget::NewLayer { .. }) {
+            doc.remove_layer(layer).ok_or(CommandError::LayerNotFound)?;
+            return Ok(());
+        }
+        let track = doc.track_mut(layer).ok_or(CommandError::LayerNotFound)?;
+        match replaced {
+            Some(key) => track.set_key(self.frame, key),
+            None => track.remove_key(self.frame),
+        };
+        Ok(())
+    }
+}
+
+/// Fails unless `key` places an existing symbol with sane values.
+fn valid_instance(doc: &Document, key: &InstanceKey) -> Result<(), CommandError> {
+    let symbol = doc.symbol(key.symbol).ok_or(CommandError::SymbolNotFound)?;
+    if !key.transform.is_finite() {
+        return Err(CommandError::InvalidValue(
+            "the object's placement is not a number",
+        ));
+    }
+    if !(0.0..=1.0).contains(&key.opacity) {
+        return Err(CommandError::InvalidValue(
+            "opacity must be between 0 and 100%",
+        ));
+    }
+    if key.first_frame.0 >= symbol.frame_count {
+        return Err(CommandError::InvalidValue(
+            "the first frame is past the end of the object",
+        ));
+    }
+    Ok(())
+}
+
+/// The instance key exposed on `layer` at `frame`, with its key frame.
+fn exposed_instance(
+    doc: &Document,
+    layer: LayerId,
+    frame: FrameIndex,
+) -> Result<(FrameIndex, InstanceKey), CommandError> {
+    doc.track(layer)
+        .ok_or(CommandError::LayerNotFound)?
+        .instance_at(frame)
+        .map(|(f, k)| (f, *k))
+        .ok_or(CommandError::NoInstance(frame))
+}
+
+/// Moves, scales or rotates the object shown on a layer at a frame.
+///
+/// On the instance key's own frame the key changes. On a later frame of
+/// its exposure, a new instance key is made there, continuing the same
+/// playback with the new placement (the start of a motion tween).
+#[derive(Debug)]
+pub struct SetInstanceTransform {
+    layer: LayerId,
+    frame: FrameIndex,
+    transform: InstanceTransform,
+    /// The key at `frame` before, or `None` if the command created it.
+    previous: Option<Option<InstanceKey>>,
+}
+
+impl SetInstanceTransform {
+    /// Creates the command.
+    pub fn new(layer: LayerId, frame: FrameIndex, transform: InstanceTransform) -> Self {
+        Self {
+            layer,
+            frame,
+            transform,
+            previous: None,
+        }
+    }
+}
+
+impl Command for SetInstanceTransform {
+    fn label(&self) -> &str {
+        "Move Object"
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        editable_layer(doc, self.layer)?;
+        if !self.transform.is_finite() {
+            return Err(CommandError::InvalidValue(
+                "the object's placement is not a number",
+            ));
+        }
+        let (at, key) = exposed_instance(doc, self.layer, self.frame)?;
+        let length = doc.symbol(key.symbol).map_or(1, |s| s.frame_count);
+        let (previous, new) = if at == self.frame {
+            (Some(key), key.with_transform(self.transform))
+        } else {
+            frame_in_range(doc, self.frame)?;
+            let later = key.advanced(self.frame.0 - at.0, length);
+            (None, later.with_transform(self.transform))
+        };
+        doc.track_mut(self.layer)
+            .ok_or(CommandError::LayerNotFound)?
+            .set_key(self.frame, Keyframe::Instance(new));
+        self.previous = Some(previous);
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        let previous = self
+            .previous
+            .take()
+            .ok_or(CommandError::NoInstance(self.frame))?;
+        let track = doc
+            .track_mut(self.layer)
+            .ok_or(CommandError::LayerNotFound)?;
+        match previous {
+            Some(key) => track.set_key(self.frame, Keyframe::Instance(key)),
+            None => track.remove_key(self.frame),
+        };
+        Ok(())
+    }
+}
+
+/// The playback settings of an instance (see [`SetInstanceProps`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InstanceProps {
+    /// Loop or play once.
+    pub mode: InstanceMode,
+    /// The symbol frame shown on the key's own frame.
+    pub first_frame: FrameIndex,
+    /// Opacity in `0..=1`.
+    pub opacity: f32,
+}
+
+impl InstanceProps {
+    /// The settings of `key`.
+    pub fn of(key: &InstanceKey) -> Self {
+        Self {
+            mode: key.mode,
+            first_frame: key.first_frame,
+            opacity: key.opacity,
+        }
+    }
+
+    fn apply_to(self, key: InstanceKey) -> InstanceKey {
+        InstanceKey {
+            mode: self.mode,
+            first_frame: self.first_frame,
+            opacity: self.opacity,
+            ..key
+        }
+    }
+}
+
+/// Changes Loop / Play once, the first frame and the opacity of the
+/// instance key exposed on a layer at a frame.
+#[derive(Debug)]
+pub struct SetInstanceProps {
+    layer: LayerId,
+    frame: FrameIndex,
+    props: InstanceProps,
+    gesture: Option<u64>,
+    /// The key frame and its settings before the change.
+    previous: Option<(FrameIndex, InstanceProps)>,
+}
+
+impl SetInstanceProps {
+    /// Creates the command.
+    pub fn new(layer: LayerId, frame: FrameIndex, props: InstanceProps) -> Self {
+        Self {
+            layer,
+            frame,
+            props,
+            gesture: None,
+            previous: None,
+        }
+    }
+
+    /// Marks the change as part of drag `gesture`: consecutive changes of
+    /// the same instance in one gesture undo as one step.
+    pub fn in_gesture(mut self, gesture: u64) -> Self {
+        self.gesture = Some(gesture);
+        self
+    }
+}
+
+impl Command for SetInstanceProps {
+    fn label(&self) -> &str {
+        "Change Object Settings"
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        editable_layer(doc, self.layer)?;
+        let (at, key) = exposed_instance(doc, self.layer, self.frame)?;
+        let new = self.props.apply_to(key);
+        valid_instance(doc, &new)?;
+        doc.track_mut(self.layer)
+            .ok_or(CommandError::LayerNotFound)?
+            .set_key(at, Keyframe::Instance(new));
+        self.previous = Some((at, InstanceProps::of(&key)));
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        let (at, props) = self
+            .previous
+            .take()
+            .ok_or(CommandError::NoInstance(self.frame))?;
+        let track = doc
+            .track_mut(self.layer)
+            .ok_or(CommandError::LayerNotFound)?;
+        let key = track
+            .key_at(at)
+            .and_then(Keyframe::instance)
+            .copied()
+            .ok_or(CommandError::NoInstance(at))?;
+        track.set_key(at, Keyframe::Instance(props.apply_to(key)));
+        Ok(())
+    }
+
+    fn merge(&mut self, next: &dyn Command) -> bool {
+        let Some(next) = (next as &dyn Any).downcast_ref::<Self>() else {
+            return false;
+        };
+        let same_key = match (&self.previous, &next.previous) {
+            (Some((a, _)), Some((b, _))) => a == b,
+            _ => false,
+        };
+        if self.gesture.is_none()
+            || next.gesture != self.gesture
+            || next.layer != self.layer
+            || !same_key
+        {
+            return false;
+        }
+        self.props = next.props;
+        true
+    }
+}
+
+/// Renames a symbol (object) in the library.
+#[derive(Debug)]
+pub struct RenameSymbol {
+    id: SymbolId,
+    name: String,
+}
+
+impl RenameSymbol {
+    /// Creates the command.
+    pub fn new(id: SymbolId, name: impl Into<String>) -> Self {
+        Self {
+            id,
+            name: name.into(),
+        }
+    }
+
+    fn swap(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        let symbol = doc
+            .symbol_mut(self.id)
+            .ok_or(CommandError::SymbolNotFound)?;
+        std::mem::swap(&mut symbol.name, &mut self.name);
+        Ok(())
+    }
+}
+
+impl Command for RenameSymbol {
+    fn label(&self) -> &str {
+        "Rename Object"
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        self.swap(doc)
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        self.swap(doc)
+    }
+}
+
+/// Removes a symbol from the library. Refused with
+/// [`CommandError::SymbolInUse`] while an instance key places it.
+#[derive(Debug)]
+pub struct RemoveSymbol {
+    id: SymbolId,
+    removed: Option<Symbol>,
+}
+
+impl RemoveSymbol {
+    /// Creates the command.
+    pub fn new(id: SymbolId) -> Self {
+        Self { id, removed: None }
+    }
+}
+
+impl Command for RemoveSymbol {
+    fn label(&self) -> &str {
+        "Delete Object"
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        let symbol = doc.symbol(self.id).ok_or(CommandError::SymbolNotFound)?;
+        if doc.symbol_in_use(self.id) {
+            return Err(CommandError::SymbolInUse(symbol.name.clone()));
+        }
+        self.removed = doc.remove_symbol(self.id);
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        let symbol = self.removed.take().ok_or(CommandError::SymbolNotFound)?;
+        doc.insert_symbol(symbol);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -683,6 +1089,200 @@ mod tests {
                 Box::new(ConvertItemsToSymbol::new(l, FrameIndex(8), vec![take_id])),
             ),
             Err(CommandError::NothingToConvert)
+        );
+    }
+    /// A document with a 12-frame symbol and an empty layer.
+    fn with_symbol() -> (Document, LayerId, SymbolId) {
+        let mut d = doc();
+        let l = d.add_layer("L");
+        let mut symbol = Symbol::new("Ball", 12);
+        let id = drawing(&mut d, 0.0);
+        let mut track = Track::new();
+        track.set_key(FrameIndex(0), Keyframe::Drawing(id));
+        symbol.push_layer(Layer::new("in"), track);
+        let sid = symbol.id;
+        d.insert_symbol(symbol);
+        (d, l, sid)
+    }
+
+    fn check_inverse(d: &mut Document, cmd: Box<dyn Command>) {
+        let before = d.clone();
+        let mut h = History::new();
+        h.execute(d, cmd).unwrap();
+        assert_ne!(*d, before);
+        let after = d.clone();
+        h.undo(d).unwrap();
+        assert_eq!(*d, before);
+        h.redo(d).unwrap();
+        assert_eq!(*d, after);
+        h.undo(d).unwrap();
+    }
+
+    #[test]
+    fn place_instance_on_a_layer_or_a_new_one() {
+        let (mut d, l, sid) = with_symbol();
+        let key = InstanceKey::new(sid);
+        check_inverse(&mut d, Box::new(PlaceInstance::new(l, FrameIndex(3), key)));
+        // Replacing an existing key restores it on undo.
+        d.track_mut(l)
+            .unwrap()
+            .set_key(FrameIndex(3), Keyframe::Empty);
+        check_inverse(&mut d, Box::new(PlaceInstance::new(l, FrameIndex(3), key)));
+
+        let cmd = PlaceInstance::on_new_layer(&d, "Ball", Some(l), FrameIndex(0), key);
+        let new = cmd.layer_id();
+        let mut h = History::new();
+        h.execute(&mut d, Box::new(cmd)).unwrap();
+        assert_eq!(d.layers().index_of(new), Some(1));
+        assert_eq!(
+            d.track(new).unwrap().key_at(FrameIndex(0)),
+            Some(&Keyframe::Instance(key))
+        );
+        h.undo(&mut d).unwrap();
+        let on_top = PlaceInstance::on_new_layer(&d, "Ball", None, FrameIndex(0), key);
+        check_inverse(&mut d, Box::new(on_top));
+
+        let mut h = History::new();
+        let missing = InstanceKey::new(SymbolId::new());
+        assert_eq!(
+            h.execute(
+                &mut d,
+                Box::new(PlaceInstance::new(l, FrameIndex(0), missing))
+            ),
+            Err(CommandError::SymbolNotFound)
+        );
+        let before = d.clone();
+        d.layer_mut(l).unwrap().locked = true;
+        let locked = d.clone();
+        assert_eq!(
+            h.execute(&mut d, Box::new(PlaceInstance::new(l, FrameIndex(0), key))),
+            Err(CommandError::LayerLocked)
+        );
+        assert_eq!(d, locked);
+        d = before;
+        assert_eq!(
+            h.execute(&mut d, Box::new(PlaceInstance::new(l, FrameIndex(30), key))),
+            Err(CommandError::FrameOutOfRange {
+                frame: FrameIndex(30),
+                frame_count: 24
+            })
+        );
+    }
+
+    #[test]
+    fn set_instance_transform_edits_the_key_or_starts_a_new_one() {
+        let (mut d, l, sid) = with_symbol();
+        d.track_mut(l)
+            .unwrap()
+            .set_key(FrameIndex(2), Keyframe::Instance(InstanceKey::new(sid)));
+        let moved = InstanceTransform::from_translation(Vec2::new(5.0, 6.0));
+        check_inverse(
+            &mut d,
+            Box::new(SetInstanceTransform::new(l, FrameIndex(2), moved)),
+        );
+        check_inverse(
+            &mut d,
+            Box::new(SetInstanceTransform::new(l, FrameIndex(7), moved)),
+        );
+
+        let mut h = History::new();
+        h.execute(
+            &mut d,
+            Box::new(SetInstanceTransform::new(l, FrameIndex(7), moved)),
+        )
+        .unwrap();
+        let track = d.track(l).unwrap();
+        let first = track.key_at(FrameIndex(2)).unwrap().instance().unwrap();
+        let second = track.key_at(FrameIndex(7)).unwrap().instance().unwrap();
+        assert_eq!(first.transform, InstanceTransform::IDENTITY);
+        assert_eq!(second.transform, moved);
+        // The new key continues the playback: frame 7 still shows inner frame 5.
+        assert_eq!(second.first_frame, FrameIndex(5));
+
+        assert_eq!(
+            h.execute(
+                &mut d,
+                Box::new(SetInstanceTransform::new(l, FrameIndex(1), moved))
+            ),
+            Err(CommandError::NoInstance(FrameIndex(1)))
+        );
+    }
+
+    #[test]
+    fn set_instance_props_validates_and_merges_gestures() {
+        let (mut d, l, sid) = with_symbol();
+        d.track_mut(l)
+            .unwrap()
+            .set_key(FrameIndex(2), Keyframe::Instance(InstanceKey::new(sid)));
+        let props = InstanceProps {
+            mode: InstanceMode::Once,
+            first_frame: FrameIndex(4),
+            opacity: 0.5,
+        };
+        check_inverse(
+            &mut d,
+            Box::new(SetInstanceProps::new(l, FrameIndex(9), props)),
+        );
+
+        let mut h = History::new();
+        for bad in [
+            InstanceProps {
+                first_frame: FrameIndex(12),
+                ..props
+            },
+            InstanceProps {
+                opacity: 1.5,
+                ..props
+            },
+        ] {
+            assert!(matches!(
+                h.execute(
+                    &mut d,
+                    Box::new(SetInstanceProps::new(l, FrameIndex(2), bad))
+                ),
+                Err(CommandError::InvalidValue(_))
+            ));
+        }
+
+        let before = d.clone();
+        for opacity in [0.9, 0.7, 0.4] {
+            let p = InstanceProps { opacity, ..props };
+            h.execute(
+                &mut d,
+                Box::new(SetInstanceProps::new(l, FrameIndex(3), p).in_gesture(7)),
+            )
+            .unwrap();
+        }
+        assert_eq!(h.undo_len(), 1);
+        let key = d
+            .track(l)
+            .unwrap()
+            .key_at(FrameIndex(2))
+            .unwrap()
+            .instance()
+            .unwrap();
+        assert_eq!(key.opacity, 0.4);
+        h.undo(&mut d).unwrap();
+        assert_eq!(d, before);
+    }
+
+    #[test]
+    fn rename_and_remove_symbols() {
+        let (mut d, l, sid) = with_symbol();
+        check_inverse(&mut d, Box::new(RenameSymbol::new(sid, "Wheel")));
+        check_inverse(&mut d, Box::new(RemoveSymbol::new(sid)));
+
+        d.track_mut(l)
+            .unwrap()
+            .set_key(FrameIndex(0), Keyframe::Instance(InstanceKey::new(sid)));
+        let mut h = History::new();
+        assert_eq!(
+            h.execute(&mut d, Box::new(RemoveSymbol::new(sid))),
+            Err(CommandError::SymbolInUse("Ball".into()))
+        );
+        assert_eq!(
+            h.execute(&mut d, Box::new(RemoveSymbol::new(SymbolId::new()))),
+            Err(CommandError::SymbolNotFound)
         );
     }
 }
