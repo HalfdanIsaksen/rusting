@@ -53,6 +53,24 @@ pub enum CommandError {
     /// The asset is placed somewhere in the animation, so it can't be removed.
     #[error("\"{0}\" is used in the animation; delete its placed copies first")]
     AssetInUse(String),
+    /// The frame shows an object, which can't be drawn into.
+    #[error("this frame shows an object; objects can't be edited in place")]
+    ObjectFrame,
+    /// The command referred to a symbol (object) that does not exist.
+    #[error("object not found in the library")]
+    SymbolNotFound,
+    /// The object is placed somewhere, so it can't be removed.
+    #[error("\"{0}\" is used in the animation; remove its placed copies first")]
+    SymbolInUse(String),
+    /// There is no object (instance key) at the frame.
+    #[error("there is no object at frame {0}")]
+    NoInstance(FrameIndex),
+    /// Nothing was selected to turn into an object.
+    #[error("select layers and frames, or items on the canvas, to make an object")]
+    NothingToConvert,
+    /// A value is outside its allowed range.
+    #[error("{0}")]
+    InvalidValue(&'static str),
     /// The canvas must be at least one pixel wide and high.
     #[error("the canvas must be at least 1×1 pixels")]
     EmptyCanvas,

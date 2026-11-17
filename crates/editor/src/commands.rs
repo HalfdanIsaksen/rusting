@@ -149,6 +149,21 @@ fn editable_layer(doc: &Document, layer: LayerId) -> Result<(), CommandError> {
     }
 }
 
+/// Fails with [`CommandError::ObjectFrame`] if `layer` shows an object
+/// (an instance key) at `frame`: objects are not edited in place, and
+/// drawing there would otherwise start a new drawing key that cuts the
+/// object short.
+pub(crate) fn not_object_frame(
+    doc: &Document,
+    layer: LayerId,
+    frame: FrameIndex,
+) -> Result<(), CommandError> {
+    match doc.track(layer).and_then(|t| t.instance_at(frame)) {
+        Some(_) => Err(CommandError::ObjectFrame),
+        None => Ok(()),
+    }
+}
+
 /// Fails unless `frame` lies inside the animation.
 pub(crate) fn frame_in_range(doc: &Document, frame: FrameIndex) -> Result<(), CommandError> {
     if frame.0 < doc.frame_count {
@@ -235,6 +250,7 @@ impl Command for AddStroke {
     fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
         editable_layer(doc, self.layer)?;
         frame_in_range(doc, self.frame)?;
+        not_object_frame(doc, self.layer, self.frame)?;
         let target = match doc.drawing_at(self.layer, self.frame) {
             Some(id) => {
                 vector_mut(doc, id)?.add_stroke(self.stroke.clone(), self.behind);
@@ -1029,6 +1045,29 @@ mod tests {
         assert_eq!(d, before);
         h.redo(&mut d).unwrap();
         assert_eq!(d.drawing_at(l, FrameIndex(2)), Some(drawing));
+    }
+
+    #[test]
+    fn drawing_on_an_object_frame_is_refused() {
+        use document::timeline::InstanceKey;
+        let mut d = doc();
+        let l = d.add_layer("L");
+        let symbol = document::Symbol::new("S", 4);
+        let key = InstanceKey::new(symbol.id);
+        d.insert_symbol(symbol);
+        d.track_mut(l)
+            .unwrap()
+            .set_key(FrameIndex(1), Keyframe::Instance(key));
+        let before = d.clone();
+        let mut h = History::new();
+        assert_eq!(
+            h.execute(&mut d, Box::new(AddStroke::new(l, FrameIndex(3), stroke()))),
+            Err(CommandError::ObjectFrame)
+        );
+        assert_eq!(d, before);
+        // Before the object starts, drawing works as usual.
+        h.execute(&mut d, Box::new(AddStroke::new(l, FrameIndex(0), stroke())))
+            .unwrap();
     }
 
     #[test]

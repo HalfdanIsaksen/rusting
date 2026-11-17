@@ -1,6 +1,6 @@
 //! Image commands: placing and removing imported pictures (ADR-015).
 
-use super::{StrokeTarget, editable_layer, frame_in_range, vector_mut};
+use super::{StrokeTarget, editable_layer, frame_in_range, not_object_frame, vector_mut};
 use crate::{Command, CommandError};
 use animation_core::{DrawingId, FrameIndex, ImageId, LayerId};
 use document::Document;
@@ -50,6 +50,7 @@ impl Command for AddImage {
     fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
         editable_layer(doc, self.layer)?;
         frame_in_range(doc, self.frame)?;
+        not_object_frame(doc, self.layer, self.frame)?;
         let target = match doc.drawing_at(self.layer, self.frame) {
             Some(id) => {
                 vector_mut(doc, id)?.push_image(self.image.clone());

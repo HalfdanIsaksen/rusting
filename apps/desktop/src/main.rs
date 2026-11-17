@@ -12,11 +12,11 @@ mod shell;
 use document::animation_core::Rgba;
 use document::animation_core::Vec2;
 use document::animation_core::glam::Mat4;
-use document::drawing::{Fill, ItemId, PaintItem, Stroke};
+use document::drawing::{Fill, ItemId, PaintItem, Stroke, VectorDrawing};
 use document::scene::BlendMode;
 use renderer::{
     CanvasFrame, CanvasRenderer, DrawListBuilder, Gpu, Mesh, OffscreenRenderer, StrokeDraw,
-    StrokeKey, Viewport, fill_color, fill_gradient, stroke_color, transform_matrix,
+    StrokeKey, Viewport, affine_matrix, fill_color, fill_gradient, stroke_color, transform_matrix,
 };
 use shell::Shell;
 use std::path::{Path, PathBuf};
@@ -445,7 +445,12 @@ fn collect_draws(
     let selected = session.tools.selection();
     for layer in &doc.evaluate(frame).layers {
         draws.set_layer(Some(layer.layer_id), layer.blend);
-        let transform = transform_matrix(&layer.transform);
+        let transform = affine_matrix(&layer.transform);
+        if layer.in_object {
+            // Objects are not edited in place: draw their contents as they are.
+            draw_items(&mut draws, layer.drawing, layer.opacity, transform);
+            continue;
+        }
         let moved = transform * Mat4::from_translation(offset.extend(0.0));
         let is_selection_layer = selection_layer == Some(layer.layer_id);
         let is_moving = is_selection_layer && offset != Vec2::ZERO;
@@ -556,6 +561,29 @@ fn collect_draws(
         });
     }
     draws.finish()
+}
+
+/// Adds every item of `drawing` in paint order, unchanged.
+fn draw_items(
+    draws: &mut DrawListBuilder<'_>,
+    drawing: &VectorDrawing,
+    opacity: f32,
+    transform: Mat4,
+) {
+    for item in drawing.paint_order() {
+        match item {
+            PaintItem::Image(image) => draws.image(image, opacity, transform),
+            PaintItem::Fill(fill) => draws.fill(
+                fill,
+                fill_color(fill, opacity),
+                fill_gradient(fill, opacity),
+                transform,
+            ),
+            PaintItem::Stroke(stroke) => {
+                draws.stroke(stroke, stroke_color(stroke, opacity), transform);
+            }
+        }
+    }
 }
 
 /// Adds the stroke or shape being drawn: its fill, then its stroke.

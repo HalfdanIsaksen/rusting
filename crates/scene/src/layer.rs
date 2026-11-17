@@ -29,6 +29,15 @@ impl Transform2D {
         let scaled = local * self.scale;
         Vec2::from_angle(self.rotation).rotate(scaled) + self.translation
     }
+
+    /// The same mapping as a matrix.
+    pub fn to_affine(&self) -> animation_core::glam::Affine2 {
+        animation_core::glam::Affine2::from_scale_angle_translation(
+            self.scale,
+            self.rotation,
+            self.translation,
+        )
+    }
 }
 
 impl Default for Transform2D {

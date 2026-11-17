@@ -4,7 +4,7 @@
 //! exports exactly as it looks on screen: the same tessellation, the same
 //! colour and opacity rules, the same bottom-to-top order.
 
-use crate::canvas::{StrokeDraw, transform_matrix};
+use crate::canvas::{StrokeDraw, affine_matrix};
 use crate::stroke_cache::{StrokeCache, StrokeKey};
 use animation_core::glam::Mat4;
 use animation_core::{LayerId, Rgba};
@@ -135,7 +135,7 @@ impl<'a> DrawListBuilder<'a> {
     pub fn render_list(&mut self, list: &RenderList<'_>) {
         for layer in &list.layers {
             self.set_layer(Some(layer.layer_id), layer.blend);
-            let transform = transform_matrix(&layer.transform);
+            let transform = affine_matrix(&layer.transform);
             for item in layer.drawing.paint_order() {
                 match item {
                     PaintItem::Image(image) => self.image(image, layer.opacity, transform),

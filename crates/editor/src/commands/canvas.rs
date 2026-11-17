@@ -1,11 +1,12 @@
 //! Canvas commands: resizing the canvas around an anchor.
 
 use crate::{Command, CommandError};
-use animation_core::{DrawingId, Vec2};
+use animation_core::{DrawingId, LayerId, Vec2};
 use document::drawing::DrawingContent;
 use document::scene::Transform2D;
-use document::{CanvasAnchor, CanvasSize, Document};
-use std::collections::BTreeMap;
+use document::timeline::{Keyframe, Track};
+use document::{CanvasAnchor, CanvasSize, Document, Symbol};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Changes the canvas size and moves all artwork (every drawing on every
 /// layer and frame) so it keeps its place relative to `anchor`.
@@ -17,8 +18,17 @@ use std::collections::BTreeMap;
 pub struct ResizeCanvas {
     size: CanvasSize,
     anchor: CanvasAnchor,
-    /// Old size and the drawings as they were before the move.
-    originals: Option<(CanvasSize, BTreeMap<DrawingId, DrawingContent>)>,
+    /// Old size, the drawings and the tracks with objects as they were
+    /// before the move.
+    originals: Option<Originals>,
+}
+
+/// What [`ResizeCanvas`] changed, for undo.
+#[derive(Debug)]
+struct Originals {
+    canvas: CanvasSize,
+    drawings: BTreeMap<DrawingId, DrawingContent>,
+    tracks: BTreeMap<LayerId, Track>,
 }
 
 impl ResizeCanvas {
@@ -64,9 +74,24 @@ impl Command for ResizeCanvas {
             }
         }
 
+        // Objects keep their own coordinates: their drawings stay put, and
+        // the instances placing them move instead.
+        let in_symbols: BTreeSet<DrawingId> = doc
+            .symbols()
+            .values()
+            .flat_map(Symbol::drawings)
+            .filter(|id| !per_drawing.contains_key(id))
+            .collect();
+
         let mut originals = BTreeMap::new();
+        let mut tracks = BTreeMap::new();
         if delta != Vec2::ZERO {
-            let ids: Vec<DrawingId> = doc.drawings().keys().copied().collect();
+            let ids: Vec<DrawingId> = doc
+                .drawings()
+                .keys()
+                .filter(|id| !in_symbols.contains(id))
+                .copied()
+                .collect();
             for id in ids {
                 let offset = per_drawing.get(&id).copied().unwrap_or(delta);
                 if let Some(content) = doc.drawing_mut(id) {
@@ -77,17 +102,47 @@ impl Command for ResizeCanvas {
                 }
             }
         }
+        if delta != Vec2::ZERO {
+            let layers: Vec<(LayerId, Vec2)> = doc
+                .layers()
+                .iter()
+                .map(|l| (l.id, local_delta(&l.transform, delta)))
+                .collect();
+            for (layer, local) in layers {
+                let Some(track) = doc.track_mut(layer) else {
+                    continue;
+                };
+                if !track.keys().any(|(_, k)| k.instance().is_some()) {
+                    continue;
+                }
+                tracks.insert(layer, track.clone());
+                for (_, key) in track.keys_mut() {
+                    if let Keyframe::Instance(instance) = key {
+                        instance.transform.translation += local;
+                    }
+                }
+            }
+        }
         doc.canvas = self.size;
-        self.originals = Some((old, originals));
+        self.originals = Some(Originals {
+            canvas: old,
+            drawings: originals,
+            tracks,
+        });
         Ok(())
     }
 
     fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
-        let (old, originals) = self.originals.take().ok_or(CommandError::DrawingNotFound)?;
-        for (id, content) in originals {
+        let originals = self.originals.take().ok_or(CommandError::DrawingNotFound)?;
+        for (id, content) in originals.drawings {
             doc.insert_drawing(id, content);
         }
-        doc.canvas = old;
+        for (layer, track) in originals.tracks {
+            if let Some(t) = doc.track_mut(layer) {
+                *t = track;
+            }
+        }
+        doc.canvas = originals.canvas;
         Ok(())
     }
 }
@@ -199,5 +254,38 @@ mod tests {
         let p = Vec2::new(3.0, 4.0);
         let moved = t.apply(p + local_delta(&t, delta));
         assert!((moved - (t.apply(p) + delta)).length() < 1e-4);
+    }
+
+    #[test]
+    fn objects_move_by_their_instances_not_their_drawings() {
+        use document::timeline::InstanceKey;
+        let (mut doc, mut history) = setup();
+        // Move the existing drawing into a symbol placed on a new layer.
+        let layer = doc.layers().iter().next().unwrap().id;
+        let track = doc.track(layer).unwrap().clone();
+        let mut symbol = Symbol::new("S", 1);
+        symbol.push_layer(document::scene::Layer::new("in"), track);
+        let sid = symbol.id;
+        doc.insert_symbol(symbol);
+        let obj = doc.add_layer("obj");
+        doc.track_mut(obj)
+            .unwrap()
+            .set_key(FrameIndex(0), Keyframe::Instance(InstanceKey::new(sid)));
+        doc.remove_layer(layer);
+        let before = doc.clone();
+        let point = first_point(&doc);
+
+        history
+            .execute(
+                &mut doc,
+                Box::new(ResizeCanvas::new(size(200, 150), CanvasAnchor::Center)),
+            )
+            .unwrap();
+        let offset = CanvasAnchor::Center.offset(size(100, 100), size(200, 150));
+        assert_eq!(first_point(&doc), point);
+        let key = doc.track(obj).unwrap().key_at(FrameIndex(0)).unwrap();
+        assert_eq!(key.instance().unwrap().transform.translation, offset);
+        history.undo(&mut doc).unwrap();
+        assert_eq!(doc, before);
     }
 }
