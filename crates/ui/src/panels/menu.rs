@@ -162,6 +162,16 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
                 &mut view.library,
                 Some(&shortcuts::TOGGLE_LIBRARY),
             );
+            if ui
+                .button("Reset Panel Layout")
+                .on_hover_text(
+                    "Put every panel back in its original place and size, and show them all. \
+                     Drag a panel's tab to move it.",
+                )
+                .clicked()
+            {
+                session.reset_panel_layout();
+            }
             ui.separator();
             ui.checkbox(&mut session.onion.enabled, "Onion skin");
             let mut preview = session.preview.is_open();

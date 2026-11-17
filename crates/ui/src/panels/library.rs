@@ -136,8 +136,8 @@ fn exists(doc: &Document, entry: Entry) -> bool {
 
 /// Draws the library panel.
 pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
+    // The pane's tab carries the "Library" title (ADR-021).
     ui.horizontal(|ui| {
-        ui.heading("Library");
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .button("Import…")

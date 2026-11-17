@@ -5,6 +5,7 @@
 //! [`Session::execute`], so it is undoable.
 
 use crate::onion::OnionSkin;
+use crate::panels::dock::PanelLayout;
 use crate::playback::Playback;
 use crate::preview::Preview;
 use crate::tools::ToolController;
@@ -222,6 +223,8 @@ pub struct Session {
     pub timeline: TimelineView,
     /// Which panels are shown. Kept when the document changes.
     pub view: ViewSettings,
+    /// Where the panels are docked (ADR-021). Kept when the document changes.
+    pub panels: PanelLayout,
     /// Set by the canvas when Space was used to pan, so releasing Space does
     /// not also toggle playback.
     pub space_panned: bool,
@@ -265,6 +268,7 @@ impl Session {
             tools: ToolController::default(),
             timeline: TimelineView::default(),
             view: ViewSettings::default(),
+            panels: PanelLayout::default(),
             space_panned: false,
             resize_canvas: None,
             layer_selection: BTreeSet::new(),
@@ -795,6 +799,33 @@ impl Session {
                 false
             }
         }
+    }
+
+    // ----- Panel layout (ADR-021) ---------------------------------------
+
+    /// View → Reset Panel Layout: the default layout with every panel shown.
+    pub fn reset_panel_layout(&mut self) {
+        self.panels = PanelLayout::default();
+        self.view = ViewSettings::default();
+    }
+
+    /// Restores a layout saved with [`Self::panel_layout_json`], including
+    /// which panels are shown. Returns `false` and keeps the current layout
+    /// if `json` is not a valid layout.
+    pub fn restore_panel_layout(&mut self, json: &str) -> bool {
+        let Some(layout) = PanelLayout::from_json(json) else {
+            return false;
+        };
+        layout.apply_to_view(&mut self.view);
+        self.panels = layout;
+        true
+    }
+
+    /// The panel layout and which panels are shown, as JSON to save between
+    /// launches.
+    pub fn panel_layout_json(&mut self) -> String {
+        self.panels.sync(&self.view);
+        self.panels.to_json()
     }
 
     /// Shows the start menu instead of the editor.
