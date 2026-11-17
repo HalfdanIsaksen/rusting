@@ -75,7 +75,11 @@ use std::path::{Path, PathBuf};
 ///   length; absent means none), and keys may be `Instance` keys placing a
 ///   symbol (ADR-018). v10 files need no migration. Older builds must reject
 ///   these files: they cannot read instance keys.
-pub const FORMAT_VERSION: u32 = 11;
+/// - 12: instance keys may have a `tween` (`"Linear"`, `"EaseIn"`,
+///   `"EaseOut"` or `"EaseInOut"`; absent means none), a motion tween to the
+///   next key (ADR-019). v11 files need no migration. Older builds must
+///   reject these files: they would drop the tweens and change the motion.
+pub const FORMAT_VERSION: u32 = 12;
 
 /// File extension for project files (without the dot).
 pub const FILE_EXTENSION: &str = "rusting";
@@ -251,6 +255,19 @@ pub enum ValidationError {
         first_frame: FrameIndex,
         /// The object's length.
         frame_count: u32,
+    },
+    /// An object key has a motion tween that does not move (`Step`).
+    #[error(
+        "layer \"{layer_name}\" ({layer}) has an object at frame {frame} with a \"Step\" tween; \
+         a tween must be Linear, EaseIn, EaseOut or EaseInOut"
+    )]
+    StepTween {
+        /// Layer holding the key.
+        layer: LayerId,
+        /// Name of that layer.
+        layer_name: String,
+        /// The key's frame.
+        frame: FrameIndex,
     },
     /// Objects place each other in a loop.
     #[error("object \"{name}\" ({id}) contains itself")]
@@ -870,6 +887,13 @@ fn check_keys(
                 frame_count: symbol.frame_count,
             });
         }
+        if instance.tween == Some(animation_core::Interpolation::Step) {
+            return Err(ValidationError::StepTween {
+                layer: layer.id,
+                layer_name: layer.name.clone(),
+                frame,
+            });
+        }
         let what = |part: &str| {
             format!(
                 "layer \"{}\" object at frame {} {part}",
@@ -1394,6 +1418,98 @@ mod tests {
         let layer = unplaced.layers().iter().next().unwrap().id;
         unplaced.track_mut(layer).unwrap().remove_key(FrameIndex(2));
         assert_eq!(from_str(&to_string(&unplaced).unwrap()).unwrap(), unplaced);
+    }
+
+    /// `symbol_sample()` with a second key of the outer object on frame
+    /// 10, tweened from the key on frame 2 with `ease`.
+    fn tween_sample(ease: animation_core::Interpolation) -> Document {
+        use timeline::InstanceTransform;
+        let (mut doc, _, _) = symbol_sample();
+        let layer = doc.layers().iter().next().unwrap().id;
+        let track = doc.track_mut(layer).unwrap();
+        let Some(Keyframe::Instance(start)) = track.key_at(FrameIndex(2)).copied() else {
+            panic!("instance key expected");
+        };
+        track.set_key(
+            FrameIndex(2),
+            Keyframe::Instance(timeline::InstanceKey {
+                tween: Some(ease),
+                ..start
+            }),
+        );
+        track.set_key(
+            FrameIndex(10),
+            Keyframe::Instance(
+                start.with_transform(InstanceTransform::from_translation(Vec2::new(40.0, 20.0))),
+            ),
+        );
+        doc
+    }
+
+    #[test]
+    fn tweens_roundtrip_for_every_ease() {
+        for ease in animation_core::Interpolation::TWEENS {
+            let doc = tween_sample(ease);
+            let text = to_string(&doc).unwrap();
+            assert!(text.contains(&format!("\"tween\": \"{ease:?}\"")));
+            let loaded = from_str(&text).unwrap();
+            assert_eq!(loaded, doc);
+            for f in 0..doc.frame_count {
+                assert_eq!(loaded.evaluate(FrameIndex(f)), doc.evaluate(FrameIndex(f)));
+            }
+        }
+        // Keys without a tween don't write the field.
+        let (plain, _, _) = symbol_sample();
+        assert!(!to_string(&plain).unwrap().contains("tween"));
+    }
+
+    #[test]
+    fn version_11_files_load_unchanged() {
+        let (doc, _, _) = symbol_sample();
+        let v11 = edit_json(&doc, |j| j["format_version"] = 11.into());
+        assert!(!v11.contains("tween"));
+        assert_eq!(from_str(&v11).unwrap(), doc);
+    }
+
+    #[test]
+    fn bad_tweens_are_rejected() {
+        let doc = tween_sample(animation_core::Interpolation::Linear);
+        let set_tween = |value: serde_json::Value| {
+            edit_json(&doc, |j| {
+                for track in j["document"]["tracks"]
+                    .as_object_mut()
+                    .unwrap()
+                    .values_mut()
+                {
+                    if let Some(key) = track["keys"].get_mut("2") {
+                        key["Instance"]["tween"] = value.clone();
+                    }
+                }
+            })
+        };
+        assert!(matches!(
+            invalid(&set_tween("Step".into())),
+            ValidationError::StepTween {
+                frame: FrameIndex(2),
+                ..
+            }
+        ));
+        assert!(matches!(
+            from_str(&set_tween("Bounce".into())),
+            Err(FileFormatError::Malformed(_))
+        ));
+        // A tween can only sit on an object key: other keys have no fields.
+        let on_empty = edit_json(&doc, |j| {
+            let tracks = j["document"]["tracks"].as_object_mut().unwrap();
+            let track = tracks.values_mut().next().unwrap();
+            track["keys"]["15"] = serde_json::json!({ "Empty": { "tween": "Linear" } });
+        });
+        assert!(from_str(&on_empty).is_err());
+        // A broken pair still loads; the tween is inactive until it is whole.
+        let mut broken = doc.clone();
+        let layer = broken.layers().iter().next().unwrap().id;
+        broken.track_mut(layer).unwrap().remove_key(FrameIndex(10));
+        assert_eq!(from_str(&to_string(&broken).unwrap()).unwrap(), broken);
     }
 
     #[test]
