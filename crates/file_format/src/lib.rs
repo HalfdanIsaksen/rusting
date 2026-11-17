@@ -16,6 +16,11 @@
 //! the asset on load. Assets nothing uses are saved too: the library owns
 //! them.
 //!
+//! # Audio
+//! A library sound (ADR-020) is saved once, with its file bytes as base64
+//! and its peak table. An audio layer saves its `kind` (the clip) and an
+//! empty track.
+//!
 //! # Unknown fields
 //! Within a supported version, fields this build does not know are **ignored**
 //! by [`from_str`] and [`load`]; the document still loads. A writer that adds
@@ -63,7 +68,16 @@ use std::path::{Path, PathBuf};
 ///   its `data`, which is filled back in from the asset on load (ADR-017).
 ///   v9 files need no migration. Older builds must reject these files: they
 ///   would load the pictures as empty.
-pub const FORMAT_VERSION: u32 = 10;
+/// - 11, 12: reserved for objects (ADR-018) and motion tweens (ADR-019),
+///   built on other branches. This branch skips them; the numbers are put
+///   in order when the branches are merged.
+/// - 13: the library may hold `Audio` assets (MP3/WAV bytes as base64, plus
+///   format, sample rate, channels, duration and peaks), and layers may have
+///   a `kind` of `{"Audio": clip}` (absent means a drawing layer; ADR-020).
+///   v10 files need no migration. Older builds must reject these files: they
+///   would fail on the unknown asset kind, or load audio layers as drawing
+///   layers.
+pub const FORMAT_VERSION: u32 = 13;
 
 /// File extension for project files (without the dot).
 pub const FILE_EXTENSION: &str = "rusting";
@@ -202,8 +216,38 @@ pub enum ValidationError {
         /// The asset's own ID.
         id: AssetId,
     },
-    /// A library picture has no pixels or no file bytes.
-    #[error("library asset \"{name}\" ({id}) is an empty picture")]
+    /// An audio layer plays a library asset that is not in the file.
+    #[error(
+        "audio layer \"{name}\" ({layer}) plays library asset {asset}, which is not in the file"
+    )]
+    MissingAudioAsset {
+        /// The layer.
+        layer: LayerId,
+        /// Its name.
+        name: String,
+        /// The missing asset.
+        asset: AssetId,
+    },
+    /// An audio layer plays a library asset that is not a sound.
+    #[error("audio layer \"{name}\" ({layer}) plays library asset {asset}, which is not a sound")]
+    NotAnAudioAsset {
+        /// The layer.
+        layer: LayerId,
+        /// Its name.
+        name: String,
+        /// The asset.
+        asset: AssetId,
+    },
+    /// An audio layer has keyframes; its track must be empty.
+    #[error("audio layer \"{name}\" ({layer}) has keyframes")]
+    AudioLayerHasKeys {
+        /// The layer.
+        layer: LayerId,
+        /// Its name.
+        name: String,
+    },
+    /// A library picture or sound has no content.
+    #[error("library asset \"{name}\" ({id}) is empty")]
     EmptyAsset {
         /// The asset.
         id: AssetId,
@@ -625,6 +669,39 @@ pub fn validate(doc: &Document) -> Result<(), ValidationError> {
         }
     }
 
+    for (layer, clip) in doc.audio_layers() {
+        let name = || layer.name.clone();
+        match doc.asset(clip.asset) {
+            None => {
+                return Err(ValidationError::MissingAudioAsset {
+                    layer: layer.id,
+                    name: name(),
+                    asset: clip.asset,
+                });
+            }
+            Some(a) if a.audio().is_none() => {
+                return Err(ValidationError::NotAnAudioAsset {
+                    layer: layer.id,
+                    name: name(),
+                    asset: clip.asset,
+                });
+            }
+            Some(_) => {}
+        }
+        if doc.track(layer.id).is_some_and(|t| !t.is_empty()) {
+            return Err(ValidationError::AudioLayerHasKeys {
+                layer: layer.id,
+                name: name(),
+            });
+        }
+        check_range(
+            || format!("audio layer \"{}\" volume", layer.name),
+            clip.volume,
+            unit(clip.volume),
+            "0..=1",
+        )?;
+    }
+
     let mut seen_assets = BTreeSet::new();
     for asset in doc.assets().values() {
         if !seen_assets.insert(asset.id) {
@@ -638,6 +715,7 @@ pub fn validate(doc: &Document) -> Result<(), ValidationError> {
         if asset
             .image()
             .is_some_and(document::drawing::ImageData::is_empty)
+            || asset.audio().is_some_and(document::AudioData::is_empty)
         {
             return Err(ValidationError::EmptyAsset {
                 id: asset.id,
@@ -1098,6 +1176,111 @@ mod tests {
         assert!(matches!(
             invalid(&empty),
             ValidationError::EmptyAsset { id, .. } if id == unused.id
+        ));
+    }
+
+    /// `sample()` plus a library sound played by an audio layer from frame
+    /// 3, and the sound's asset.
+    fn audio_sample() -> (Document, document::Asset, LayerId) {
+        use document::scene::{AudioClip, Layer};
+        use document::{Asset, AssetKind, AudioData, AudioFormat};
+        let mut doc = sample();
+        let sound = Asset::new(
+            "song.mp3",
+            AssetKind::Audio(AudioData {
+                format: AudioFormat::Mp3,
+                sample_rate: 44_100,
+                channels: 2,
+                duration: 1.5,
+                peaks: vec![0, 128, 255],
+                bytes: std::sync::Arc::from(vec![0xFF, 0xFB, 9, 9]),
+            }),
+        );
+        doc.insert_asset(sound.clone());
+        let mut clip = AudioClip::new(sound.id, FrameIndex(3));
+        clip.volume = 0.5;
+        let layer = doc.insert_layer(0, Layer::audio("Song", clip));
+        (doc, sound, layer)
+    }
+
+    #[test]
+    fn audio_layers_and_sounds_roundtrip() {
+        let (doc, sound, layer) = audio_sample();
+        let text = to_string(&doc).unwrap();
+        assert!(text.contains("\"Audio\""), "{text}");
+        let loaded = from_str(&text).unwrap();
+        assert_eq!(loaded, doc);
+        assert_eq!(loaded.asset(sound.id), Some(&sound));
+        let clip = loaded.layers().get(layer).unwrap().audio_clip().unwrap();
+        assert_eq!((clip.start, clip.volume), (FrameIndex(3), 0.5));
+        let (_, report) = from_str_with_report(&text).unwrap();
+        assert!(report.is_clean(), "{report:?}");
+        // Drawing layers still leave `kind` out.
+        assert_eq!(text.matches("\"kind\": {").count(), 2, "{text}");
+    }
+
+    #[test]
+    fn version_10_files_load_unchanged() {
+        let (doc, _, _) = library_sample();
+        let v10 = edit_json(&doc, |j| j["format_version"] = 10.into());
+        assert_eq!(from_str(&v10).unwrap(), doc);
+    }
+
+    #[test]
+    fn broken_audio_layers_are_rejected() {
+        let (doc, sound, layer) = audio_sample();
+        let layer_index = 0;
+
+        let missing = edit_json(&doc, |j| {
+            j["document"]["assets"]
+                .as_object_mut()
+                .unwrap()
+                .remove(&sound.id.to_string());
+        });
+        assert!(matches!(
+            invalid(&missing),
+            ValidationError::MissingAudioAsset { asset, .. } if asset == sound.id
+        ));
+
+        let (_, picture, _) = library_sample();
+        let mut not_audio = doc.clone();
+        not_audio.insert_asset(picture.clone());
+        let not_audio = edit_json(&not_audio, |j| {
+            j["document"]["layers"]["layers"][layer_index]["kind"]["Audio"]["asset"] =
+                picture.id.to_string().into();
+        });
+        assert!(matches!(
+            invalid(&not_audio),
+            ValidationError::NotAnAudioAsset { asset, .. } if asset == picture.id
+        ));
+
+        let keys = edit_json(&doc, |j| {
+            let drawing = j["document"]["drawings"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .next()
+                .unwrap()
+                .clone();
+            j["document"]["tracks"][layer.to_string()]["keys"]["0"] =
+                serde_json::json!({ "Drawing": drawing });
+        });
+        assert!(matches!(
+            invalid(&keys),
+            ValidationError::AudioLayerHasKeys { layer: l, .. } if l == layer
+        ));
+
+        let loud = edit_json(&doc, |j| {
+            j["document"]["layers"]["layers"][layer_index]["kind"]["Audio"]["volume"] = 2.0.into();
+        });
+        assert!(matches!(invalid(&loud), ValidationError::OutOfRange { .. }));
+
+        let silent = edit_json(&doc, |j| {
+            j["document"]["assets"][sound.id.to_string()]["kind"]["Audio"]["bytes"] = "".into();
+        });
+        assert!(matches!(
+            invalid(&silent),
+            ValidationError::EmptyAsset { id, .. } if id == sound.id
         ));
     }
 
