@@ -1,6 +1,6 @@
 # ADR-020: Audio layers
 
-**Status:** Proposed (feat/audio-layers branch, cut from feat/asset-library; merged with objects (ADR-018), motion tweens (ADR-019) and dockable panels (ADR-021) for 0.1.9).
+**Status:** Proposed (feat/audio-layers branch, cut from feat/asset-library; merged with objects (ADR-018), motion tweens (ADR-019) and dockable panels (ADR-021) for 0.2.0).
 
 ## Context
 Animators time drawings to sound: dialogue, music, effects. Users asked for a layer that holds an MP3 or WAV file, imported through File → Import and listed in the Library (ADR-017). The sound should play in sync with playback, play a short snippet while scrubbing, and show a waveform on the timeline. Exported video may stay silent for now.
