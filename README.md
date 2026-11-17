@@ -56,7 +56,7 @@ Set `RUST_LOG=debug` for more log output.
 | Document | What it covers |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Crate dependency graph, data model, coordinate spaces, frame flow |
-| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-016) |
+| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-017) |
 | [docs/roadmap.md](docs/roadmap.md) | Development phases and their acceptance criteria |
 | [docs/smoke-test.md](docs/smoke-test.md) | Manual end-to-end test checklist |
 | [docs/releasing.md](docs/releasing.md) | How to tag a release and update the Homebrew tap |
@@ -111,7 +111,7 @@ The tool strip runs down the side of the canvas:
 - The app icon (window, taskbar and Dock) and the start menu show the website's logo: an orange brush stroke with an amber dot. Its source is `assets/logo.svg`.
 
 ### View menu
-- Toggle the **Toolbar** (`Cmd/Ctrl+1`), **Timeline** (`Cmd/Ctrl+2`) and **Tool Settings** (`Cmd/Ctrl+3`) to free up space for the canvas.
+- Toggle the **Toolbar** (`Cmd/Ctrl+1`), **Timeline** (`Cmd/Ctrl+2`), **Tool Settings** (`Cmd/Ctrl+3`) and **Library** (`Cmd/Ctrl+4`) to free up space for the canvas.
 - **Preview**: a smaller floating window that shows only the canvas at the current frame. It has a close button and a Play button that loops the animation without moving the editor's playhead.
 
 ### Help menu
@@ -123,7 +123,8 @@ The tool strip runs down the side of the canvas:
 - Export the current frame as PNG/JPG, an image sequence, or an H.264 video as MP4 or MOV (QuickTime).
 - **Export GIF**: the frame range as a looping animated GIF at the document frame rate, for animations up to 15 seconds. A longer range is refused with a message to export it as a video or image sequence instead.
 - **Export Sprite Sheet**: every frame tag becomes its own row of frames in one PNG/JPG image. Without tags, the chosen frame range goes on one row.
-- **Import** (File → Import…, below Export): pick one or more PNG or JPEG pictures. Each goes onto the current layer and frame, centred on the canvas and shrunk to fit if it is larger, and is selected so you can move it right away. Pictures move, scale, rotate and delete with the selection tools like any other item, paint under the strokes and fills you draw on top of them (handy for tracing), show in the preview and in every export, and are saved inside the project file.
+- **Import** (File → Import…, below Export): pick one or more PNG or JPEG pictures. Each goes onto the current layer and frame, centred on the canvas and shrunk to fit if it is larger, and is selected so you can move it right away. Pictures move, scale, rotate and delete with the selection tools like any other item, paint under the strokes and fills you draw on top of them (handy for tracing), show in the preview and in every export, and are saved inside the project file. Each imported picture is also added to the Library.
+- **Library** (the panel on the right of the canvas): lists every imported file, under Images, by file name. Drag a picture onto the canvas to place another copy where you drop it, or right-click it → Place on Canvas to put one in the centre. Double-click a row to rename it. Right-click → Delete removes it from the library, but only once no frame uses it. The project file stores each library picture once, however many times it is placed, and keeps unused library pictures.
 
 ## Contributing workflow
 
