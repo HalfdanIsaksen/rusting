@@ -2,11 +2,12 @@
 //!
 //! winit drives the window, egui (via egui-winit and egui-wgpu) draws the
 //! panels, and the renderer draws the canvas into its own texture, which egui
-//! shows in the central panel (ADR-002). Frames are drawn only on demand.
+//! shows in the canvas pane (ADR-002, ADR-021). Frames are drawn only on demand.
 
 mod export;
 mod icon;
 mod import;
+mod layout_file;
 mod shell;
 
 use document::animation_core::Rgba;
@@ -100,6 +101,8 @@ struct App {
     title: String,
     /// Set when startup fails, so `main` can report it after the loop exits.
     fatal: Option<String>,
+    /// Where the panel layout is saved between launches (ADR-021).
+    layout_path: Option<PathBuf>,
 }
 
 impl App {
@@ -107,6 +110,10 @@ impl App {
     /// the start menu for a new document.
     fn new(open: Option<&Path>) -> Self {
         let mut session = ui::Session::new();
+        let layout_path = layout_file::path();
+        if let Some(path) = &layout_path {
+            layout_file::load(&mut session, path);
+        }
         if !open.is_some_and(|path| session.open_path(path)) {
             session.show_start_menu(ui::StartMenu::new(Default::default(), false));
         }
@@ -123,6 +130,7 @@ impl App {
             next_repaint: None,
             title: String::new(),
             fatal: None,
+            layout_path,
         }
     }
 
@@ -687,6 +695,13 @@ fn handle_request(shell: &mut Shell, request: ui::Request, event_loop: &ActiveEv
 }
 
 impl ApplicationHandler for App {
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // Only a window that opened has a layout worth keeping.
+        if let (Some(path), Some(_)) = (&self.layout_path, &self.window) {
+            layout_file::save(&mut self.shell.session, path);
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
