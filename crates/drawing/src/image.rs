@@ -227,15 +227,18 @@ fn decode_base64(text: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn to_base64<S: Serializer>(bytes: &Arc<[u8]>, serializer: S) -> Result<S::Ok, S::Error> {
+/// Serializes file bytes as standard base64 text (for `#[serde(serialize_with)]`).
+/// Also used for audio files in the asset library.
+pub fn to_base64<S: Serializer>(bytes: &Arc<[u8]>, serializer: S) -> Result<S::Ok, S::Error> {
     serializer.serialize_str(&encode_base64(bytes))
 }
 
-fn from_base64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Arc<[u8]>, D::Error> {
+/// Reads file bytes written by [`to_base64`] (for `#[serde(deserialize_with)]`).
+pub fn from_base64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Arc<[u8]>, D::Error> {
     let text = String::deserialize(deserializer)?;
     decode_base64(&text)
         .map(Arc::from)
-        .ok_or_else(|| serde::de::Error::custom("image bytes are not valid base64"))
+        .ok_or_else(|| serde::de::Error::custom("file bytes are not valid base64"))
 }
 
 #[cfg(test)]

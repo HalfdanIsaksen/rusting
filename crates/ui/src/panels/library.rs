@@ -232,13 +232,31 @@ fn row(
 fn describe(asset: &Asset) -> String {
     match &asset.kind {
         AssetKind::Image(data) => format!("Image, {}×{}", data.width, data.height),
+        AssetKind::Audio(data) => format!(
+            "Audio, {}, {}",
+            data.format.label(),
+            format_duration(data.duration)
+        ),
     }
+}
+
+/// A length in seconds as `m:ss.s`, e.g. "1:05.3".
+pub fn format_duration(secs: f64) -> String {
+    let tenths = (secs.max(0.0) * 10.0).round() as u64;
+    format!("{}:{:02}.{}", tenths / 600, tenths / 10 % 60, tenths % 10)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use document::drawing::ImageData;
+
+    #[test]
+    fn durations_read_as_minutes_and_seconds() {
+        assert_eq!(format_duration(0.0), "0:00.0");
+        assert_eq!(format_duration(65.34), "1:05.3");
+        assert_eq!(format_duration(599.96), "10:00.0");
+    }
 
     fn draw(session: &mut Session) {
         let ctx = egui::Context::default();

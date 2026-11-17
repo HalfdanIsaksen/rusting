@@ -1,6 +1,6 @@
 //! Layers and the layer stack.
 
-use animation_core::{GroupId, LayerId, Vec2};
+use animation_core::{AssetId, FrameIndex, GroupId, LayerId, Vec2};
 use serde::{Deserialize, Serialize};
 
 /// A 2D transform from layer-local to document coordinates.
@@ -79,6 +79,46 @@ impl BlendMode {
     }
 }
 
+/// A sound placed on the timeline: library audio asset `asset` starts
+/// playing at frame `start` (ADR-020).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AudioClip {
+    /// The library asset holding the sound.
+    pub asset: AssetId,
+    /// The frame the sound starts on.
+    pub start: FrameIndex,
+    /// Loudness multiplier in `0.0..=1.0`.
+    pub volume: f32,
+}
+
+impl AudioClip {
+    /// A clip of `asset` starting at `start`, at full volume.
+    pub fn new(asset: AssetId, start: FrameIndex) -> Self {
+        Self {
+            asset,
+            start,
+            volume: 1.0,
+        }
+    }
+}
+
+/// What a layer holds.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum LayerKind {
+    /// Drawings, shown by the keyframes on the layer's track.
+    #[default]
+    Drawing,
+    /// One sound. Its track stays empty and nothing is drawn (ADR-020).
+    Audio(AudioClip),
+}
+
+impl LayerKind {
+    /// Whether this is a drawing layer (the default, left out of files).
+    pub fn is_drawing(&self) -> bool {
+        matches!(self, Self::Drawing)
+    }
+}
+
 /// A layer in the scene.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Layer {
@@ -100,6 +140,9 @@ pub struct Layer {
     /// The group (folder) the layer is in, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<GroupId>,
+    /// What the layer holds; absent in files means [`LayerKind::Drawing`].
+    #[serde(default, skip_serializing_if = "LayerKind::is_drawing")]
+    pub kind: LayerKind,
 }
 
 impl Layer {
@@ -114,7 +157,37 @@ impl Layer {
             blend: BlendMode::Normal,
             transform: Transform2D::IDENTITY,
             group: None,
+            kind: LayerKind::Drawing,
         }
+    }
+
+    /// Creates a visible, unlocked audio layer playing `clip`, with a fresh ID.
+    pub fn audio(name: impl Into<String>, clip: AudioClip) -> Self {
+        Self {
+            kind: LayerKind::Audio(clip),
+            ..Self::new(name)
+        }
+    }
+
+    /// The sound, if this is an audio layer.
+    pub fn audio_clip(&self) -> Option<&AudioClip> {
+        match &self.kind {
+            LayerKind::Audio(clip) => Some(clip),
+            LayerKind::Drawing => None,
+        }
+    }
+
+    /// Mutable access to the sound, if this is an audio layer.
+    pub fn audio_clip_mut(&mut self) -> Option<&mut AudioClip> {
+        match &mut self.kind {
+            LayerKind::Audio(clip) => Some(clip),
+            LayerKind::Drawing => None,
+        }
+    }
+
+    /// Whether this is an audio layer.
+    pub fn is_audio(&self) -> bool {
+        matches!(self.kind, LayerKind::Audio(_))
     }
 
     /// Whether drawing tools may modify this layer.
@@ -455,6 +528,22 @@ mod tests {
 
     fn names(s: &LayerStack) -> Vec<&str> {
         s.iter().map(|l| l.name.as_str()).collect()
+    }
+
+    #[test]
+    fn audio_layers_hold_a_clip_and_drawing_layers_do_not() {
+        let asset = AssetId::new();
+        let mut layer = Layer::audio("Song", AudioClip::new(asset, FrameIndex(3)));
+        assert!(layer.is_audio());
+        assert_eq!(
+            layer.audio_clip().map(|c| (c.asset, c.start.0)),
+            Some((asset, 3))
+        );
+        layer.audio_clip_mut().unwrap().volume = 0.5;
+        assert_eq!(layer.audio_clip().unwrap().volume, 0.5);
+        let drawing = Layer::new("Ink");
+        assert!(!drawing.is_audio() && drawing.kind.is_drawing());
+        assert!(drawing.audio_clip().is_none());
     }
 
     #[test]

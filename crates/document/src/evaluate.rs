@@ -21,7 +21,8 @@ pub struct RenderLayer<'a> {
 }
 
 /// What to draw for one frame, bottom-to-top. Hidden layers (or layers in a
-/// hidden group) and layers with no exposed drawing are left out.
+/// hidden group), audio layers and layers with no exposed drawing are left
+/// out.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RenderList<'a> {
     /// Layers in back-to-front order.
@@ -34,7 +35,7 @@ impl Document {
         let stack = self.layers();
         let layers = stack
             .iter()
-            .filter(|layer| stack.is_visible(layer.id))
+            .filter(|layer| layer.kind.is_drawing() && stack.is_visible(layer.id))
             .filter_map(|layer| {
                 let drawing_id = self.track(layer.id)?.drawing_at(frame)?;
                 let drawing = self.drawing(drawing_id)?.as_vector()?;
