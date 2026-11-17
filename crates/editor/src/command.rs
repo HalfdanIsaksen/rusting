@@ -74,8 +74,8 @@ pub enum CommandError {
     /// A value is outside its allowed range.
     #[error("{0}")]
     InvalidValue(&'static str),
-    /// The layer is an audio layer, which holds no drawings or keys.
-    #[error("it is an audio layer; draw on a drawing layer")]
+    /// The layer is an audio layer, which holds no drawings, keys or objects.
+    #[error("it is an audio layer, which only holds a sound; use a drawing layer")]
     AudioLayer,
     /// The layer is not an audio layer.
     #[error("the layer is not an audio layer")]

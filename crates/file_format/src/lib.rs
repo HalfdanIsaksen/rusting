@@ -259,6 +259,19 @@ pub enum ValidationError {
         /// Its name.
         name: String,
     },
+    /// An object (symbol) holds an audio layer. Objects only hold drawing
+    /// layers; sound stays on the document's own audio layers.
+    #[error("object \"{symbol_name}\" ({symbol}) holds audio layer \"{name}\" ({layer})")]
+    AudioLayerInObject {
+        /// The object.
+        symbol: SymbolId,
+        /// Its name.
+        symbol_name: String,
+        /// The audio layer.
+        layer: LayerId,
+        /// Its name.
+        name: String,
+    },
     /// A library picture or sound has no content.
     #[error("library asset \"{name}\" ({id}) is empty")]
     EmptyAsset {
@@ -1018,6 +1031,14 @@ fn validate_symbols(
         for layer in symbol.layers.iter() {
             if !seen_layers.insert(layer.id) {
                 return Err(ValidationError::DuplicateLayer(layer.id));
+            }
+            if layer.is_audio() {
+                return Err(ValidationError::AudioLayerInObject {
+                    symbol: symbol.id,
+                    symbol_name: symbol.name.clone(),
+                    layer: layer.id,
+                    name: layer.name.clone(),
+                });
             }
             if !symbol.tracks.contains_key(&layer.id) {
                 return Err(ValidationError::MissingTrack {
@@ -2039,6 +2060,25 @@ mod tests {
         for f in 0..doc.frame_count {
             assert_eq!(loaded.evaluate(FrameIndex(f)), doc.evaluate(FrameIndex(f)));
         }
+    }
+
+    #[test]
+    fn audio_layers_inside_objects_are_rejected() {
+        use document::scene::{AudioClip, Layer};
+        let (mut doc, inner, _) = combined_sample();
+        let sound = doc.audio_layers().next().unwrap().1.asset;
+        doc.symbol_mut(inner).unwrap().push_layer(
+            Layer::audio("Inside", AudioClip::new(sound, FrameIndex(0))),
+            timeline::Track::new(),
+        );
+        assert!(matches!(
+            validate(&doc),
+            Err(ValidationError::AudioLayerInObject { symbol, .. }) if symbol == inner
+        ));
+        assert!(matches!(
+            invalid(&to_string(&doc).unwrap()),
+            ValidationError::AudioLayerInObject { .. }
+        ));
     }
 
     fn edit_json(doc: &Document, f: impl FnOnce(&mut serde_json::Value)) -> String {

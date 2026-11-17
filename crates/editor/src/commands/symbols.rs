@@ -132,6 +132,9 @@ fn continuation(doc: &Document, track: &Track, frame: FrameIndex) -> Option<Keyf
 /// - The new "Object" layer gets an instance key at `range.start` and an
 ///   empty key at `range.end`, so the object plays exactly where the frames
 ///   were.
+/// - Audio layers (ADR-020) are skipped: objects only hold drawing layers,
+///   and the sound stays on its own layer. If only audio layers are given,
+///   the command fails with [`CommandError::AudioLayer`].
 #[derive(Debug)]
 pub struct ConvertToSymbol {
     layers: Vec<LayerId>,
@@ -173,6 +176,15 @@ impl ConvertToSymbol {
         self.layer_id
     }
 
+    /// The given layers that are audio layers, which the conversion skips.
+    pub fn skipped_audio_layers(doc: &Document, layers: &[LayerId]) -> Vec<LayerId> {
+        layers
+            .iter()
+            .copied()
+            .filter(|&id| doc.layers().get(id).is_some_and(|l| l.is_audio()))
+            .collect()
+    }
+
     fn build(&self, doc: &Document) -> Result<Conversion, CommandError> {
         let start = self.range.start;
         let end = FrameIndex(self.range.end.0.min(doc.frame_count));
@@ -181,8 +193,12 @@ impl ConvertToSymbol {
         }
         frame_in_range(doc, start)?;
         let stack = doc.layers();
+        let skipped = Self::skipped_audio_layers(doc, &self.layers);
+        if skipped.len() == self.layers.len() {
+            return Err(CommandError::AudioLayer);
+        }
         let mut layers = Vec::new();
-        for &id in &self.layers {
+        for &id in self.layers.iter().filter(|id| !skipped.contains(id)) {
             editable_layer(doc, id)?;
             let index = stack.index_of(id).ok_or(CommandError::LayerNotFound)?;
             if !layers.iter().any(|&(_, l)| l == id) {
@@ -1557,5 +1573,152 @@ mod tests {
             h.execute(&mut d, Box::new(RemoveSymbol::new(SymbolId::new()))),
             Err(CommandError::SymbolNotFound)
         );
+    }
+
+    /// Objects and audio layers (ADR-018, ADR-020) together.
+    mod with_audio {
+        use super::*;
+        use crate::commands::{AddAudioLayer, RemoveAsset};
+        use animation_core::{AssetId, Interpolation};
+        use document::drawing::{Image, ImageData};
+        use document::scene::AudioClip;
+        use document::{Asset, AssetKind, AudioData, AudioFormat};
+
+        /// `two_layers()` with a sound in the library and an audio layer
+        /// on top playing it from frame 1.
+        fn with_sound() -> (Document, LayerId, LayerId, LayerId, AssetId) {
+            let (mut d, a, b) = two_layers();
+            let sound = Asset::new(
+                "song.wav",
+                AssetKind::Audio(AudioData {
+                    format: AudioFormat::Wav,
+                    sample_rate: 8000,
+                    channels: 1,
+                    duration: 1.0,
+                    peaks: vec![1, 2],
+                    bytes: std::sync::Arc::from(vec![1u8]),
+                }),
+            );
+            let id = sound.id;
+            d.insert_asset(sound);
+            let mut add = AddAudioLayer::new("Song", AudioClip::new(id, FrameIndex(1)));
+            add.apply(&mut d).unwrap();
+            (d, a, b, add.layer_id(), id)
+        }
+
+        #[test]
+        fn convert_to_object_skips_audio_layers() {
+            let (mut d, a, b, song, _) = with_sound();
+            let before = d.clone();
+            let clip = *d.layers().get(song).unwrap().audio_clip().unwrap();
+            let range = FrameRange::new(FrameIndex(0), FrameIndex(6));
+            let layers = vec![a, song, b];
+            assert_eq!(
+                ConvertToSymbol::skipped_audio_layers(&d, &layers),
+                vec![song]
+            );
+            let cmd = ConvertToSymbol::new(layers, range);
+            let symbol = cmd.symbol_id();
+            let mut h = History::new();
+            h.execute(&mut d, Box::new(cmd)).unwrap();
+            let object = d.symbol(symbol).unwrap();
+            assert_eq!(object.layers.len(), 2);
+            assert!(object.layers.iter().all(|l| l.kind.is_drawing()));
+            // The audio layer and its clip are untouched.
+            assert_eq!(d.layers().get(song).unwrap().audio_clip(), Some(&clip));
+            assert!(d.track(song).unwrap().is_empty());
+            h.undo(&mut d).unwrap();
+            assert_eq!(d, before);
+
+            // Only audio layers: nothing to make an object of.
+            assert_eq!(
+                h.execute(&mut d, Box::new(ConvertToSymbol::new(vec![song], range))),
+                Err(CommandError::AudioLayer)
+            );
+            assert_eq!(d, before);
+        }
+
+        #[test]
+        fn object_commands_refuse_audio_layers() {
+            let (mut d, _, _, song, _) = with_sound();
+            let (mut with, _, sid) = with_symbol();
+            // Put the symbol into the document that has the audio layer.
+            let symbol = with.remove_symbol(sid).unwrap();
+            for (id, content) in with.drawings() {
+                d.insert_drawing(*id, content.clone());
+            }
+            d.insert_symbol(symbol);
+            let before = d.clone();
+            let key = InstanceKey::new(sid);
+            let refused: Vec<Box<dyn Command>> = vec![
+                Box::new(PlaceInstance::new(song, FrameIndex(2), key)),
+                Box::new(SetInstanceTransform::new(
+                    song,
+                    FrameIndex(2),
+                    InstanceTransform::from_translation(Vec2::ONE),
+                )),
+                Box::new(SetTween::new(
+                    song,
+                    FrameIndex(2),
+                    Some(Interpolation::Linear),
+                )),
+                Box::new(SetInstanceProps::new(
+                    song,
+                    FrameIndex(2),
+                    InstanceProps::of(&key),
+                )),
+            ];
+            let mut h = History::new();
+            for cmd in refused {
+                let label = cmd.label().to_owned();
+                assert_eq!(
+                    h.execute(&mut d, cmd),
+                    Err(CommandError::AudioLayer),
+                    "{label}"
+                );
+                assert_eq!(d, before, "{label}");
+            }
+            assert!(!SetTween::can_tween(&d, song, FrameIndex(2)));
+            // A new layer above the audio layer is a drawing layer and works.
+            let cmd = PlaceInstance::on_new_layer(&d, "Ball", Some(song), FrameIndex(2), key);
+            let layer = cmd.layer_id();
+            h.execute(&mut d, Box::new(cmd)).unwrap();
+            assert!(d.layers().get(layer).unwrap().kind.is_drawing());
+            assert!(d.track(layer).unwrap().instance_at(FrameIndex(2)).is_some());
+        }
+
+        #[test]
+        fn library_assets_in_objects_and_audio_layers_are_in_use() {
+            let (mut d, a, b, _, sound) = with_sound();
+            let data = ImageData::new(2, 2, vec![1u8, 2, 3]);
+            let picture = Asset::new("photo.png", AssetKind::Image(data.clone()));
+            let pid = picture.id;
+            d.insert_asset(picture);
+            let mut v = VectorDrawing::new();
+            v.push_image(Image::new(data, Vec2::ZERO, Vec2::ONE).with_asset(pid));
+            let drawing = d.add_drawing(DrawingContent::Vector(v));
+            d.track_mut(a)
+                .unwrap()
+                .set_key(FrameIndex(10), Keyframe::Drawing(drawing));
+            // Turn the frames with the picture into an object: the picture
+            // now lives only inside it.
+            let range = FrameRange::new(FrameIndex(0), FrameIndex(d.frame_count));
+            let mut h = History::new();
+            h.execute(&mut d, Box::new(ConvertToSymbol::new(vec![a, b], range)))
+                .unwrap();
+            assert!(
+                d.tracks()
+                    .values()
+                    .all(|t| t.keys().all(|(_, k)| k.drawing().is_none()))
+            );
+            let used = d.used_assets();
+            assert!(used.contains(&pid) && used.contains(&sound));
+            for id in [pid, sound] {
+                assert!(matches!(
+                    h.execute(&mut d, Box::new(RemoveAsset::new(id))),
+                    Err(CommandError::AssetInUse(_))
+                ));
+            }
+        }
     }
 }
