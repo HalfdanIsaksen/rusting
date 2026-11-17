@@ -1,6 +1,10 @@
 //! The [`Document`] type.
 
-use animation_core::{DocumentId, DrawingId, Fps, FrameIndex, FrameRange, GroupId, LayerId, Rgba};
+use crate::assets::Asset;
+use crate::symbol::Symbol;
+use animation_core::{
+    AssetId, DocumentId, DrawingId, Fps, FrameIndex, FrameRange, GroupId, LayerId, Rgba, SymbolId,
+};
 use drawing::DrawingContent;
 use scene::{Arrangement, Layer, LayerGroup, LayerStack};
 use serde::{Deserialize, Serialize};
@@ -58,6 +62,13 @@ pub struct Document {
     layers: LayerStack,
     tracks: BTreeMap<LayerId, Track>,
     drawings: BTreeMap<DrawingId, DrawingContent>,
+    /// The asset library (ADR-017); absent in files means empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    assets: BTreeMap<AssetId, Asset>,
+    /// Symbols (reusable animated objects, ADR-018); absent in files means
+    /// none.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    symbols: BTreeMap<SymbolId, Symbol>,
 }
 
 impl Document {
@@ -74,6 +85,8 @@ impl Document {
             layers: LayerStack::new(),
             tracks: BTreeMap::new(),
             drawings: BTreeMap::new(),
+            assets: BTreeMap::new(),
+            symbols: BTreeMap::new(),
         }
     }
 
@@ -247,11 +260,14 @@ impl Document {
         self.track(layer)?.drawing_at(frame)
     }
 
-    /// Every drawing that some track's keyframe refers to.
+    /// Every drawing that some track's keyframe refers to, including the
+    /// tracks of every symbol in the library (symbols stay until the user
+    /// deletes them, so their drawings must too).
     pub fn referenced_drawings(&self) -> BTreeSet<DrawingId> {
         self.tracks
             .values()
             .flat_map(|track| track.keys().filter_map(|(_, key)| key.drawing()))
+            .chain(self.symbols.values().flat_map(Symbol::drawings))
             .collect()
     }
 
@@ -278,6 +294,100 @@ impl Document {
             self.drawings.remove(id);
         }
         unused
+    }
+
+    /// The asset library, keyed by ID (ADR-017).
+    pub fn assets(&self) -> &BTreeMap<AssetId, Asset> {
+        &self.assets
+    }
+
+    /// Looks up an asset.
+    pub fn asset(&self, id: AssetId) -> Option<&Asset> {
+        self.assets.get(&id)
+    }
+
+    /// Mutable lookup of an asset.
+    pub fn asset_mut(&mut self, id: AssetId) -> Option<&mut Asset> {
+        self.assets.get_mut(&id)
+    }
+
+    /// Adds an asset under its own ID, replacing and returning any previous
+    /// asset with that ID.
+    pub fn insert_asset(&mut self, asset: Asset) -> Option<Asset> {
+        self.assets.insert(asset.id, asset)
+    }
+
+    /// Removes an asset from the library. Items that still refer to it are
+    /// left alone; check [`Self::asset_in_use`] first.
+    pub fn remove_asset(&mut self, id: AssetId) -> Option<Asset> {
+        self.assets.remove(&id)
+    }
+
+    /// Whether something the animation shows refers to asset `id`: an image
+    /// in a drawing that some keyframe refers to (of the document or of a
+    /// symbol in the library), or an audio layer's sound. Drawings and
+    /// layers kept only for undo don't count.
+    pub fn asset_in_use(&self, id: AssetId) -> bool {
+        self.used_assets().contains(&id)
+    }
+
+    /// Every asset that something the animation shows refers to (see
+    /// [`Self::asset_in_use`]).
+    pub fn used_assets(&self) -> BTreeSet<AssetId> {
+        self.referenced_drawings()
+            .into_iter()
+            .filter_map(|id| self.drawings.get(&id)?.as_vector())
+            .flat_map(|v| v.images().iter().filter_map(|i| i.asset))
+            .chain(self.audio_layers().map(|(_, clip)| clip.asset))
+            .collect()
+    }
+
+    /// The symbols (objects) in the library, keyed by ID (ADR-018).
+    pub fn symbols(&self) -> &BTreeMap<SymbolId, Symbol> {
+        &self.symbols
+    }
+
+    /// Looks up a symbol.
+    pub fn symbol(&self, id: SymbolId) -> Option<&Symbol> {
+        self.symbols.get(&id)
+    }
+
+    /// Mutable lookup of a symbol.
+    pub fn symbol_mut(&mut self, id: SymbolId) -> Option<&mut Symbol> {
+        self.symbols.get_mut(&id)
+    }
+
+    /// Adds a symbol under its own ID, replacing and returning any previous
+    /// symbol with that ID.
+    pub fn insert_symbol(&mut self, symbol: Symbol) -> Option<Symbol> {
+        self.symbols.insert(symbol.id, symbol)
+    }
+
+    /// Removes a symbol. Instance keys that still place it are left alone
+    /// (they show nothing); check [`Self::symbol_in_use`] first.
+    pub fn remove_symbol(&mut self, id: SymbolId) -> Option<Symbol> {
+        self.symbols.remove(&id)
+    }
+
+    /// Whether an instance key places symbol `id`, on a document track or
+    /// inside another symbol.
+    pub fn symbol_in_use(&self, id: SymbolId) -> bool {
+        let placed = |track: &Track| track.keys().any(|(_, k)| k.symbol() == Some(id));
+        self.tracks.values().any(placed)
+            || self
+                .symbols
+                .values()
+                .filter(|s| s.id != id)
+                .any(|s| s.tracks.values().any(placed))
+    }
+
+    /// A name for a new symbol that no other symbol has: "Object 1",
+    /// "Object 2", …
+    pub fn next_symbol_name(&self) -> String {
+        (1..)
+            .map(|n| format!("Object {n}"))
+            .find(|name| self.symbols.values().all(|s| &s.name != name))
+            .unwrap_or_else(|| "Object".to_owned())
     }
 
     /// The last frame of the animation, if it has any frames.
@@ -369,6 +479,86 @@ mod tests {
         assert!(d.drawing(id).is_some());
         assert!(d.remove_drawing(id).is_some());
         assert!(d.drawing(id).is_none());
+    }
+
+    #[test]
+    fn assets_insert_remove_and_usage() {
+        use crate::assets::AssetKind;
+        use drawing::{Image, ImageData, VectorDrawing};
+        let mut d = doc();
+        let l = d.add_layer("L");
+        let data = ImageData::new(2, 2, vec![1, 2]);
+        let asset = Asset::new("pic.png", AssetKind::Image(data.clone()));
+        let id = asset.id;
+        assert!(d.insert_asset(asset.clone()).is_none());
+        assert_eq!(d.asset(id), Some(&asset));
+        assert!(!d.asset_in_use(id));
+
+        let mut v = VectorDrawing::new();
+        v.push_image(Image::new(data, glam_zero(), glam_zero()).with_asset(id));
+        let drawing = d.add_drawing(DrawingContent::Vector(v));
+        // Only drawings a keyframe shows count.
+        assert!(!d.asset_in_use(id));
+        d.track_mut(l)
+            .unwrap()
+            .set_key(FrameIndex(0), Keyframe::Drawing(drawing));
+        assert!(d.asset_in_use(id));
+        assert_eq!(d.used_assets().into_iter().collect::<Vec<_>>(), [id]);
+
+        // An audio layer uses its sound.
+        let sound = AssetId::new();
+        let audio = d.add_layer("A");
+        *d.layer_mut(audio).unwrap() = scene::Layer {
+            id: audio,
+            ..scene::Layer::audio("A", scene::AudioClip::new(sound, FrameIndex(0)))
+        };
+        assert!(d.asset_in_use(sound));
+        d.remove_layer(audio);
+        assert!(!d.asset_in_use(sound));
+
+        d.asset_mut(id).unwrap().name = "renamed".into();
+        assert_eq!(d.remove_asset(id).unwrap().name, "renamed");
+        assert!(d.assets().is_empty());
+    }
+
+    fn glam_zero() -> animation_core::Vec2 {
+        animation_core::Vec2::ZERO
+    }
+
+    #[test]
+    fn symbols_keep_their_drawings_and_track_usage() {
+        use crate::symbol::Symbol;
+        use scene::Layer;
+        use timeline::InstanceKey;
+        let mut d = doc();
+        let l = d.add_layer("L");
+        let inner = d.add_drawing(DrawingContent::default());
+        let mut symbol = Symbol::new(d.next_symbol_name(), 12);
+        let mut track = Track::new();
+        track.set_key(FrameIndex(0), Keyframe::Drawing(inner));
+        symbol.push_layer(Layer::new("in"), track);
+        let id = symbol.id;
+        assert_eq!(symbol.name, "Object 1");
+        d.insert_symbol(symbol);
+        assert_eq!(d.next_symbol_name(), "Object 2");
+
+        // A symbol's drawings survive garbage collection while it is in the
+        // library, placed or not.
+        assert!(!d.symbol_in_use(id));
+        assert!(d.garbage_collect_drawings().is_empty());
+        assert!(d.drawing(inner).is_some());
+
+        d.track_mut(l)
+            .unwrap()
+            .set_key(FrameIndex(3), Keyframe::Instance(InstanceKey::new(id)));
+        assert!(d.symbol_in_use(id));
+        assert_eq!(d.drawing_at(l, FrameIndex(3)), None);
+
+        d.symbol_mut(id).unwrap().name = "Ball".into();
+        assert_eq!(d.symbol(id).unwrap().name, "Ball");
+        assert!(d.remove_symbol(id).is_some());
+        assert!(d.symbols().is_empty());
+        assert_eq!(d.garbage_collect_drawings(), [inner]);
     }
 
     #[test]

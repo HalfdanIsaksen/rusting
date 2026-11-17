@@ -9,7 +9,7 @@
 //! never resamples the pixels.
 
 use crate::stroke::Placement;
-use animation_core::{ImageId, Vec2};
+use animation_core::{AssetId, ImageId, Vec2};
 use glam::Affine2;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::sync::Arc;
@@ -18,7 +18,10 @@ use std::sync::Arc;
 ///
 /// Cloning is cheap: the bytes are shared, so undo history and duplicated
 /// frames don't copy them.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// The default is the empty picture (no pixels, no bytes); project files use
+/// it for an image item whose bytes live in the asset library (ADR-017).
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageData {
     /// Width in pixels.
     pub width: u32,
@@ -37,6 +40,11 @@ impl ImageData {
             height,
             bytes: bytes.into(),
         }
+    }
+
+    /// Whether there are no pixels or no bytes.
+    pub fn is_empty(&self) -> bool {
+        self.width == 0 || self.height == 0 || self.bytes.is_empty()
     }
 
     /// Width over height (1 for a degenerate size).
@@ -64,7 +72,9 @@ impl std::fmt::Debug for ImageData {
 pub struct Image {
     /// Stable identifier.
     pub id: ImageId,
-    /// The picture.
+    /// The picture. Project files leave it out when [`Self::asset`] is set
+    /// and fill it back in from the library on load (ADR-017).
+    #[serde(default, skip_serializing_if = "ImageData::is_empty")]
     pub data: ImageData,
     /// Maps the unit square (picture top-left at the origin, y down) to
     /// document coordinates.
@@ -75,6 +85,10 @@ pub struct Image {
     /// tier, images paint under fills and strokes.
     #[serde(default, skip_serializing_if = "Placement::is_normal")]
     pub placement: Placement,
+    /// The library asset this picture was placed from, if any (ADR-017).
+    /// Its [`Self::data`] is a shared copy of the asset's picture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset: Option<AssetId>,
 }
 
 impl Image {
@@ -87,7 +101,14 @@ impl Image {
             transform: Affine2::from_scale_angle_translation(size, 0.0, min),
             opacity: 1.0,
             placement: Placement::Normal,
+            asset: None,
         }
+    }
+
+    /// The same image, marked as placed from library asset `asset`.
+    pub fn with_asset(mut self, asset: AssetId) -> Self {
+        self.asset = Some(asset);
+        self
     }
 
     /// The four corners in document coordinates: top-left, top-right,
@@ -206,15 +227,18 @@ fn decode_base64(text: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn to_base64<S: Serializer>(bytes: &Arc<[u8]>, serializer: S) -> Result<S::Ok, S::Error> {
+/// Serializes file bytes as standard base64 text (for `#[serde(serialize_with)]`).
+/// Also used for audio files in the asset library.
+pub fn to_base64<S: Serializer>(bytes: &Arc<[u8]>, serializer: S) -> Result<S::Ok, S::Error> {
     serializer.serialize_str(&encode_base64(bytes))
 }
 
-fn from_base64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Arc<[u8]>, D::Error> {
+/// Reads file bytes written by [`to_base64`] (for `#[serde(deserialize_with)]`).
+pub fn from_base64<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Arc<[u8]>, D::Error> {
     let text = String::deserialize(deserializer)?;
     decode_base64(&text)
         .map(Arc::from)
-        .ok_or_else(|| serde::de::Error::custom("image bytes are not valid base64"))
+        .ok_or_else(|| serde::de::Error::custom("file bytes are not valid base64"))
 }
 
 #[cfg(test)]
@@ -279,6 +303,24 @@ mod tests {
         let back: Image = serde_json::from_str(&json).unwrap();
         assert_eq!(back, img);
         assert_eq!(img.data.aspect(), 2.0);
+    }
+
+    #[test]
+    fn asset_reference_roundtrips_and_is_omitted_when_absent() {
+        let plain = serde_json_like(&picture());
+        assert!(!plain.contains("asset"), "{plain}");
+        let asset = AssetId::new();
+        let img = picture().with_asset(asset);
+        let json = serde_json_like(&img);
+        let back: Image = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.asset, Some(asset));
+        // Without bytes the data is left out and parses back as empty.
+        let mut bare = img.clone();
+        bare.data = ImageData::default();
+        let json = serde_json_like(&bare);
+        assert!(!json.contains("\"data\""), "{json}");
+        let back: Image = serde_json::from_str(&json).unwrap();
+        assert!(back.data.is_empty());
     }
 
     fn serde_json_like(img: &Image) -> String {

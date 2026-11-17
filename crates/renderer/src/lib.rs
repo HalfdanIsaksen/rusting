@@ -16,7 +16,9 @@ pub mod offscreen;
 pub mod stroke_cache;
 pub mod viewport;
 
-pub use canvas::{CanvasFrame, CanvasRenderer, CanvasStyle, StrokeDraw, transform_matrix};
+pub use canvas::{
+    CanvasFrame, CanvasRenderer, CanvasStyle, StrokeDraw, affine_matrix, transform_matrix,
+};
 pub use canvas_target::{
     CANVAS_DEPTH_FORMAT, CANVAS_DISPLAY_FORMAT, CANVAS_RENDER_FORMAT, CANVAS_SAMPLE_COUNT,
     CanvasTarget,

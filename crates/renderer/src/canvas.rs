@@ -13,7 +13,7 @@ use crate::stroke_cache::{
     DEFAULT_MAX_UNUSED_RENDERS, ImageTexture, MeshId, StrokeCache, StrokeKey,
 };
 use crate::viewport::Viewport;
-use animation_core::glam::{Mat4, Quat, Vec2};
+use animation_core::glam::{Affine2, Mat4, Quat, Vec2};
 use animation_core::{LayerId, Rgba};
 use document::RenderList;
 use document::scene::{BlendMode, Transform2D};
@@ -107,6 +107,19 @@ pub fn transform_matrix(transform: &Transform2D) -> Mat4 {
         transform.scale.extend(1.0),
         Quat::from_rotation_z(transform.rotation),
         transform.translation.extend(0.0),
+    )
+}
+
+/// A 2D affine transform (e.g. [`document::RenderLayer::transform`]) as a
+/// matrix.
+pub fn affine_matrix(transform: &Affine2) -> Mat4 {
+    let m = transform.matrix2;
+    let t = transform.translation;
+    Mat4::from_cols(
+        m.x_axis.extend(0.0).extend(0.0),
+        m.y_axis.extend(0.0).extend(0.0),
+        animation_core::glam::Vec4::Z,
+        t.extend(0.0).extend(1.0),
     )
 }
 
@@ -350,7 +363,7 @@ impl CanvasRenderer {
     ) -> Vec<StrokeDraw> {
         let mut draws = Vec::new();
         for layer in &list.layers {
-            let transform = transform_matrix(&layer.transform);
+            let transform = affine_matrix(&layer.transform);
             for item in layer.drawing.paint_order() {
                 let draw = match item {
                     PaintItem::Image(image) => {
@@ -1037,6 +1050,22 @@ mod tests {
             scissor(Vec2::new(150.0, 0.0), Vec2::new(160.0, 10.0), (100, 200)),
             None
         );
+    }
+
+    #[test]
+    fn affine_matrix_matches_affine2() {
+        let a =
+            Affine2::from_scale_angle_translation(Vec2::new(2.0, 0.5), 0.7, Vec2::new(3.0, 1.0));
+        let p = Vec2::new(3.0, 8.0);
+        let m = affine_matrix(&a).transform_point3(p.extend(0.0));
+        assert!((Vec2::new(m.x, m.y) - a.transform_point2(p)).length() < 1e-4);
+        let t = Transform2D {
+            translation: Vec2::new(10.0, -4.0),
+            rotation: 0.7,
+            scale: Vec2::new(2.0, 0.5),
+        };
+        let both = affine_matrix(&t.to_affine()) - transform_matrix(&t);
+        assert!(both.abs_diff_eq(Mat4::ZERO, 1e-5));
     }
 
     #[test]

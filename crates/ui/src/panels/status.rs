@@ -20,8 +20,9 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
                 ui.weak("Ready");
             }
         }
-        // The tool settings panel shows this warning; keep it visible when that panel is hidden.
-        if !session.view.tool_settings
+        // The tool settings panel shows this warning; keep it visible when that
+        // panel is hidden or behind another tab.
+        if !session.panels.is_on_screen(super::dock::Pane::ToolSettings)
             && let Some(reason) = session.draw_block_reason()
         {
             ui.separator();

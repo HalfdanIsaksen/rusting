@@ -7,11 +7,13 @@
 //! (see ADR-005).
 
 pub mod edit;
+pub mod instance;
 pub mod onion;
 pub mod playback;
 pub mod track;
 
 pub use edit::{FrameEditError, MovedKey, RemovedFrames};
+pub use instance::{InstanceKey, InstanceMode, InstanceTransform};
 pub use onion::onion_skin_frames;
 pub use playback::{ManualTimeSource, PlaybackClock, SystemTimeSource, Tick, TimeSource};
-pub use track::{Keyframe, Track};
+pub use track::{Keyframe, Track, TweenSpan};

@@ -2,21 +2,23 @@
 //!
 //! winit drives the window, egui (via egui-winit and egui-wgpu) draws the
 //! panels, and the renderer draws the canvas into its own texture, which egui
-//! shows in the central panel (ADR-002). Frames are drawn only on demand.
+//! shows in the canvas pane (ADR-002, ADR-021). Frames are drawn only on demand.
 
+mod audio;
 mod export;
 mod icon;
 mod import;
+mod layout_file;
 mod shell;
 
 use document::animation_core::Rgba;
 use document::animation_core::Vec2;
 use document::animation_core::glam::Mat4;
-use document::drawing::{Fill, ItemId, PaintItem, Stroke};
+use document::drawing::{Fill, ItemId, PaintItem, Stroke, VectorDrawing};
 use document::scene::BlendMode;
 use renderer::{
     CanvasFrame, CanvasRenderer, DrawListBuilder, Gpu, Mesh, OffscreenRenderer, StrokeDraw,
-    StrokeKey, Viewport, fill_color, fill_gradient, stroke_color, transform_matrix,
+    StrokeKey, Viewport, affine_matrix, fill_color, fill_gradient, stroke_color, transform_matrix,
 };
 use shell::Shell;
 use std::path::{Path, PathBuf};
@@ -94,12 +96,16 @@ struct App {
     egui_ctx: egui::Context,
     egui_state: Option<egui_winit::State>,
     shell: Shell,
+    /// Plays audio layers along with playback and scrubbing.
+    audio: audio::AudioPlayer,
     /// When egui asked to be repainted next (for animations, tooltips, ...).
     next_repaint: Option<Instant>,
     /// The window title last set, to avoid redundant updates.
     title: String,
     /// Set when startup fails, so `main` can report it after the loop exits.
     fatal: Option<String>,
+    /// Where the panel layout is saved between launches (ADR-021).
+    layout_path: Option<PathBuf>,
 }
 
 impl App {
@@ -107,6 +113,10 @@ impl App {
     /// the start menu for a new document.
     fn new(open: Option<&Path>) -> Self {
         let mut session = ui::Session::new();
+        let layout_path = layout_file::path();
+        if let Some(path) = &layout_path {
+            layout_file::load(&mut session, path);
+        }
         if !open.is_some_and(|path| session.open_path(path)) {
             session.show_start_menu(ui::StartMenu::new(Default::default(), false));
         }
@@ -120,9 +130,11 @@ impl App {
             },
             egui_state: None,
             shell: Shell::new(session),
+            audio: audio::AudioPlayer::new(),
             next_repaint: None,
             title: String::new(),
             fatal: None,
+            layout_path,
         }
     }
 
@@ -324,6 +336,9 @@ impl App {
             window.request_redraw();
         }
 
+        // Sound follows playback and scrubbing (ADR-020).
+        self.audio.update(&mut self.shell.session);
+
         // 5. Export: ask where to save confirmed options, then render a few
         // frames of the running export (the worker thread encodes them).
         let shell = &mut self.shell;
@@ -445,7 +460,19 @@ fn collect_draws(
     let selected = session.tools.selection();
     for layer in &doc.evaluate(frame).layers {
         draws.set_layer(Some(layer.layer_id), layer.blend);
-        let transform = transform_matrix(&layer.transform);
+        let transform = affine_matrix(&layer.transform);
+        if layer.in_object {
+            // Objects are not edited in place: draw their contents as they
+            // are, carried along while the selected object is dragged.
+            let transform =
+                if session.tools.selected_instance().map(|(l, _)| l) == Some(layer.layer_id) {
+                    affine_matrix(&(session.tools.selection_transform() * layer.transform))
+                } else {
+                    transform
+                };
+            draw_items(&mut draws, layer.drawing, layer.opacity, transform);
+            continue;
+        }
         let moved = transform * Mat4::from_translation(offset.extend(0.0));
         let is_selection_layer = selection_layer == Some(layer.layer_id);
         let is_moving = is_selection_layer && offset != Vec2::ZERO;
@@ -558,6 +585,29 @@ fn collect_draws(
     draws.finish()
 }
 
+/// Adds every item of `drawing` in paint order, unchanged.
+fn draw_items(
+    draws: &mut DrawListBuilder<'_>,
+    drawing: &VectorDrawing,
+    opacity: f32,
+    transform: Mat4,
+) {
+    for item in drawing.paint_order() {
+        match item {
+            PaintItem::Image(image) => draws.image(image, opacity, transform),
+            PaintItem::Fill(fill) => draws.fill(
+                fill,
+                fill_color(fill, opacity),
+                fill_gradient(fill, opacity),
+                transform,
+            ),
+            PaintItem::Stroke(stroke) => {
+                draws.stroke(stroke, stroke_color(stroke, opacity), transform);
+            }
+        }
+    }
+}
+
 /// Adds the stroke or shape being drawn: its fill, then its stroke.
 fn draw_preview(
     draws: &mut DrawListBuilder<'_>,
@@ -626,24 +676,14 @@ fn handle_request(shell: &mut Shell, request: ui::Request, event_loop: &ActiveEv
         ui::Request::Quit => event_loop.exit(),
         ui::Request::ImportDialog => {
             let picked = rfd::FileDialog::new()
-                .set_title("Import Image")
+                .set_title("Import")
+                .add_filter("Pictures and sounds", import::ALL_EXTENSIONS)
                 .add_filter("Images (PNG, JPEG)", import::EXTENSIONS)
+                .add_filter("Audio (MP3, WAV)", import::AUDIO_EXTENSIONS)
                 .pick_files();
             for path in picked.unwrap_or_default() {
-                let name = path.file_name().map_or_else(
-                    || path.display().to_string(),
-                    |n| n.to_string_lossy().into_owned(),
-                );
-                match import::read_image(&path) {
-                    Ok(data) => {
-                        if !session.import_image(&name, data) {
-                            break;
-                        }
-                    }
-                    Err(err) => {
-                        session.show_error("Could not import image", format!("{name}\n\n{err}"));
-                        break;
-                    }
+                if !import_file(session, &path) {
+                    break;
                 }
             }
         }
@@ -651,7 +691,49 @@ fn handle_request(shell: &mut Shell, request: ui::Request, event_loop: &ActiveEv
     }
 }
 
+/// Imports one picked file into the session: a picture onto the canvas, a
+/// sound onto a new audio layer. Returns false (after showing why) if it
+/// could not, so the rest of a multi-file pick is skipped.
+fn import_file(session: &mut ui::Session, path: &Path) -> bool {
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    match import::file_kind(path) {
+        Some(import::FileKind::Picture) => match import::read_image(path) {
+            Ok(data) => session.import_image(&name, data),
+            Err(err) => {
+                session.show_error("Could not import image", format!("{name}\n\n{err}"));
+                false
+            }
+        },
+        Some(import::FileKind::Audio(format)) => match import::read_audio(path, format) {
+            Ok(data) => session.import_audio(&name, data).is_some(),
+            Err(err) => {
+                session.show_error("Could not import audio", format!("{name}\n\n{err}"));
+                false
+            }
+        },
+        None => {
+            session.show_error(
+                "Could not import file",
+                format!(
+                    "{name}\n\nOnly PNG and JPEG pictures and MP3 and WAV sounds can be imported."
+                ),
+            );
+            false
+        }
+    }
+}
+
 impl ApplicationHandler for App {
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // Only a window that opened has a layout worth keeping.
+        if let (Some(path), Some(_)) = (&self.layout_path, &self.window) {
+            layout_file::save(&mut self.shell.session, path);
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;

@@ -4,4 +4,7 @@
 
 pub mod layer;
 
-pub use layer::{Arrangement, BlendMode, GroupError, Layer, LayerGroup, LayerStack, Transform2D};
+pub use layer::{
+    Arrangement, AudioClip, BlendMode, GroupError, Layer, LayerGroup, LayerKind, LayerStack,
+    Transform2D,
+};

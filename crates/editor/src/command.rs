@@ -44,6 +44,45 @@ pub enum CommandError {
     /// The animation cannot grow past the largest frame index.
     #[error("the animation cannot have more frames")]
     FrameLimit,
+    /// The command referred to a library asset that does not exist.
+    #[error("asset not found in the library")]
+    AssetNotFound,
+    /// The library already has an asset with this ID.
+    #[error("the library already has this asset")]
+    AssetExists,
+    /// The asset is placed somewhere in the animation, so it can't be removed.
+    #[error("\"{0}\" is used in the animation; delete its placed copies first")]
+    AssetInUse(String),
+    /// The frame shows an object, which can't be drawn into.
+    #[error("this frame shows an object; objects can't be edited in place")]
+    ObjectFrame,
+    /// The command referred to a symbol (object) that does not exist.
+    #[error("object not found in the library")]
+    SymbolNotFound,
+    /// The object is placed somewhere, so it can't be removed.
+    #[error("\"{0}\" is used in the animation; remove its placed copies first")]
+    SymbolInUse(String),
+    /// There is no object (instance key) at the frame.
+    #[error("there is no object at frame {0}")]
+    NoInstance(FrameIndex),
+    /// A motion tween needs two keys of the same object (ADR-019).
+    #[error("a motion tween needs a key of an object followed by another key of the same object")]
+    NotTweenable,
+    /// Nothing was selected to turn into an object.
+    #[error("select layers and frames, or items on the canvas, to make an object")]
+    NothingToConvert,
+    /// A value is outside its allowed range.
+    #[error("{0}")]
+    InvalidValue(&'static str),
+    /// The layer is an audio layer, which holds no drawings, keys or objects.
+    #[error("it is an audio layer, which only holds a sound; use a drawing layer")]
+    AudioLayer,
+    /// The layer is not an audio layer.
+    #[error("the layer is not an audio layer")]
+    NotAnAudioLayer,
+    /// The library asset is not a sound.
+    #[error("\"{0}\" is not a sound")]
+    NotAudio(String),
     /// The canvas must be at least one pixel wide and high.
     #[error("the canvas must be at least 1×1 pixels")]
     EmptyCanvas,

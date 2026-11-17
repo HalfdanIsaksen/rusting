@@ -157,7 +157,68 @@ fn canvas(
         egui::Color32::WHITE,
     );
     paint_overlays(ui, &response, rect, viewport, session, panning);
+    handle_asset_drop(ui, &response, rect, viewport, session);
     view_controls(ui, rect, viewport);
+}
+
+/// A picture or object dragged from the library (ADR-017, ADR-018): while it
+/// is held over the canvas, outline where it will land; on release, place it
+/// centred on the pointer (one undo step, then selected). A picture goes on
+/// the active layer like File → Import, an object on a new layer.
+fn handle_asset_drop(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    rect: egui::Rect,
+    viewport: &Viewport,
+    session: &mut Session,
+) {
+    let Some(pointer) = ui.input(|i| i.pointer.latest_pos()) else {
+        return;
+    };
+    let at = viewport.screen_to_canvas(Vec2::new(pointer.x - rect.min.x, pointer.y - rect.min.y));
+    // Only pictures go on the canvas; sounds are dropped on the timeline.
+    if let Some(drag) = response.dnd_release_payload::<ui::AssetDrag>() {
+        if session.placed_size(drag.0).is_some() {
+            session.place_asset(drag.0, Some(at));
+        }
+        return;
+    }
+    // An object goes on a new layer, so the active layer's lock doesn't matter.
+    if let Some(drag) = response.dnd_release_payload::<ui::ObjectDrag>() {
+        session.place_symbol_on_canvas(drag.0, Some(at));
+        return;
+    }
+    let size = if let Some(drag) = response.dnd_hover_payload::<ui::AssetDrag>() {
+        let size = session.placed_size(drag.0);
+        // A sound has no size and goes on the timeline instead.
+        if session.draw_block_reason().is_some() || size.is_none() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::NoDrop);
+            return;
+        }
+        size
+    } else if let Some(drag) = response.dnd_hover_payload::<ui::ObjectDrag>() {
+        session.symbol_size(drag.0)
+    } else {
+        return;
+    };
+    ui.ctx().set_cursor_icon(egui::CursorIcon::Copy);
+    let Some(size) = size else {
+        return;
+    };
+    let corner = |p: Vec2| {
+        let s = viewport.canvas_to_screen(p);
+        egui::pos2(s.x + rect.min.x, s.y + rect.min.y)
+    };
+    let outline = egui::Rect::from_two_pos(corner(at - size * 0.5), corner(at + size * 0.5));
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(outline, 0.0, SELECTION_COLOR.gamma_multiply(0.12));
+    painter.rect_stroke(
+        outline,
+        0.0,
+        egui::Stroke::new(1.0, SELECTION_COLOR),
+        egui::StrokeKind::Inside,
+    );
+    ui.ctx().request_repaint();
 }
 
 /// Brush and eraser: press starts a gesture, every pointer move extends it,
@@ -302,9 +363,16 @@ fn paint_overlays(
     }
     if matches!(session.state.tool, Tool::Select | Tool::Lasso) {
         let pos = viewport.screen_to_canvas(Vec2::new(hover.x - rect.min.x, hover.y - rect.min.y));
-        let over_selection = session
-            .item_under(pos, zoom)
-            .is_some_and(|item| session.tools.selection().contains(&item));
+        let over_object = session.tools.selected_instance().is_some_and(|(l, f)| {
+            session
+                .document
+                .instance_bounds(l, f)
+                .is_some_and(|(min, max)| pos.cmpge(min).all() && pos.cmple(max).all())
+        });
+        let over_selection = over_object
+            || session
+                .item_under(pos, zoom)
+                .is_some_and(|item| session.tools.selection().contains(&item));
         let icon = if session.tools.move_offset() != Vec2::ZERO {
             egui::CursorIcon::Grabbing
         } else if over_selection {
@@ -414,6 +482,22 @@ fn paint_selection(
     let screen_rect =
         |(min, max): (Vec2, Vec2)| egui::Rect::from_two_pos(to_screen(min), to_screen(max));
 
+    // A selected object: its box, or the transform tool's box, moved by the
+    // drag in progress.
+    if let Some((layer, frame)) = session.tools.selected_instance() {
+        let drag = session.tools.selection_transform();
+        if let Some(tbox) = session.transform_box(viewport.zoom as f32) {
+            paint_transform_box(painter, &tbox, drag, &to_screen);
+        } else if let Some((min, max)) = session.document.instance_bounds(layer, frame) {
+            let corners = [min, Vec2::new(max.x, min.y), max, Vec2::new(min.x, max.y)]
+                .map(|p| to_screen(drag.transform_point2(p)))
+                .to_vec();
+            painter.add(egui::Shape::closed_line(
+                corners,
+                egui::Stroke::new(1.5, SELECTION_COLOR),
+            ));
+        }
+    }
     if let Some(drawing) = session.active_drawing()
         && session.tools.selection_at().is_some()
     {
@@ -818,5 +902,120 @@ mod tests {
         assert_eq!(strokes.len(), 1);
         assert_eq!(strokes[0].points.len(), 1);
         assert!(!h.shell.session.tools.is_active());
+    }
+
+    /// The canvas pane's rect last frame, snapped to whole pixels as
+    /// [`canvas`] does (the harness runs at one pixel per point).
+    fn canvas_rect(h: &Harness) -> egui::Rect {
+        let rect = h
+            .shell
+            .session
+            .panels
+            .rect(ui::panels::dock::Pane::Canvas)
+            .expect("canvas drawn");
+        egui::Rect::from_min_size(rect.min.round(), rect.size().round())
+    }
+
+    /// A layout with the library on the left and the canvas on the right.
+    const CANVAS_ON_THE_RIGHT: &str = r#"{"version": 1, "root": {"kind": "row", "children": [
+        {"share": 1, "node": {"kind": "tabs", "active": 0, "children": [
+            {"kind": "pane", "pane": "Library", "visible": true}]}},
+        {"share": 1, "node": {"kind": "tabs", "active": 0, "children": [
+            {"kind": "pane", "pane": "Canvas", "visible": true}]}},
+        {"share": 0.2, "node": {"kind": "tabs", "active": 0, "children": [
+            {"kind": "pane", "pane": "Toolbar", "visible": false},
+            {"kind": "pane", "pane": "ToolSettings", "visible": false},
+            {"kind": "pane", "pane": "Timeline", "visible": false}]}}]}}"#;
+
+    /// The canvas follows its pane: the viewport takes the pane's size, and
+    /// pointer input is mapped from the pane's corner.
+    #[test]
+    fn canvas_input_follows_the_canvas_pane() {
+        let mut h = Harness::new();
+        let before = canvas_rect(&h);
+        assert!(h.shell.session.restore_panel_layout(CANVAS_ON_THE_RIGHT));
+        h.frame(vec![]);
+        h.frame(vec![]);
+        let rect = canvas_rect(&h);
+        assert!(rect.left() > 500.0, "{rect:?}");
+        assert_ne!(rect, before);
+        let viewport = h.shell.viewport.expect("viewport");
+        assert_eq!(viewport.screen_size, Vec2::new(rect.width(), rect.height()));
+
+        let at = rect.center();
+        h.frame(vec![
+            egui::Event::PointerMoved(at),
+            press(at, true),
+            press(at, false),
+        ]);
+        let strokes = h.strokes();
+        assert_eq!(strokes.len(), 1);
+        let expected = viewport.screen_to_canvas(Vec2::new(at.x - rect.min.x, at.y - rect.min.y));
+        assert!((strokes[0].points[0].pos - expected).length() < 1e-3);
+
+        // Outside the canvas pane (over the library) nothing is drawn.
+        let library = h
+            .shell
+            .session
+            .panels
+            .rect(ui::panels::dock::Pane::Library)
+            .expect("library drawn");
+        let at = library.center();
+        h.frame(vec![
+            egui::Event::PointerMoved(at),
+            press(at, true),
+            press(at, false),
+        ]);
+        assert_eq!(h.strokes().len(), 1);
+    }
+
+    /// A library picture dropped on the canvas pane lands under the pointer,
+    /// wherever the pane is.
+    #[test]
+    fn library_drop_lands_under_the_pointer_in_a_moved_canvas() {
+        let mut h = Harness::new();
+        assert!(h.shell.session.restore_panel_layout(CANVAS_ON_THE_RIGHT));
+        assert!(
+            h.shell
+                .session
+                .import_image("pic.png", document::drawing::ImageData::new(4, 4, vec![1]))
+        );
+        let asset = *h
+            .shell
+            .session
+            .document
+            .assets()
+            .keys()
+            .next()
+            .expect("an asset");
+        h.frame(vec![]);
+        h.frame(vec![]);
+        let rect = canvas_rect(&h);
+        let viewport = h.shell.viewport.expect("viewport");
+        let at = rect.center() + egui::vec2(40.0, 30.0);
+        let images = |h: &Harness| {
+            let s = &h.shell.session;
+            let layer = s.state.active_layer.expect("a layer");
+            s.document
+                .drawing_at(layer, s.current_frame())
+                .and_then(|id| s.document.drawing(id))
+                .and_then(|d| d.as_vector())
+                .map(|d| d.images().to_vec())
+                .unwrap_or_default()
+        };
+        let before = images(&h).len();
+        egui::DragAndDrop::set_payload(&h.ctx, ui::AssetDrag(asset));
+        h.frame(vec![egui::Event::PointerMoved(at)]);
+        egui::DragAndDrop::set_payload(&h.ctx, ui::AssetDrag(asset));
+        h.frame(vec![egui::Event::PointerMoved(at), press(at, false)]);
+        let placed = images(&h);
+        assert_eq!(placed.len(), before + 1);
+        let corners = placed[before].corners();
+        let centre = (corners[0] + corners[2]) * 0.5;
+        let expected = viewport.screen_to_canvas(Vec2::new(at.x - rect.min.x, at.y - rect.min.y));
+        assert!(
+            (centre - expected).length() < 1e-2,
+            "{centre} vs {expected}"
+        );
     }
 }

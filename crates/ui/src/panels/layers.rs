@@ -117,6 +117,8 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
     let drag_id = ui.scope_id().with("layer_drag");
     let mut select = None;
     let mut fold = None;
+    // "Convert to Object" from a layer's context menu, and the layer.
+    let mut convert = None;
     let rows_top = header.bottom();
     for (i, row) in rows.iter().enumerate() {
         let top = rows_top + i as f32 * ROW_HEIGHT;
@@ -200,10 +202,19 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
             RowKind::Layer(_) => "layer",
             RowKind::Group(_) => "group",
         };
-        let (eye, eye_tip, eye_strong) = if row.visible {
-            (icons::eye as IconFn, format!("Hide {what}"), true)
-        } else {
-            (icons::eye_closed as IconFn, format!("Show {what}"), false)
+        let (eye, eye_tip, eye_strong) = match (row.visible, row.audio) {
+            (true, true) => (
+                icons::eye as IconFn,
+                "Mute the audio layer".to_owned(),
+                true,
+            ),
+            (false, true) => (
+                icons::eye_closed as IconFn,
+                "Unmute the audio layer".to_owned(),
+                false,
+            ),
+            (true, false) => (icons::eye as IconFn, format!("Hide {what}"), true),
+            (false, false) => (icons::eye_closed as IconFn, format!("Show {what}"), false),
         };
         if icon_button(
             ui,
@@ -260,6 +271,20 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
             };
             icons::folder(&painter, folder_rect, color);
             name_rect.min.x = folder_rect.right() + 2.0;
+        }
+
+        if row.audio {
+            let speaker_rect = Rect::from_center_size(
+                Pos2::new(name_rect.left() + 9.0, name_rect.center().y),
+                vec2(ICON_SIZE, ICON_SIZE),
+            );
+            let color = if row.shown {
+                visuals.text_color()
+            } else {
+                visuals.text_color().gamma_multiply(0.4)
+            };
+            icons::speaker(&painter, speaker_rect, color);
+            name_rect.min.x = speaker_rect.right() + 2.0;
         }
 
         if renaming.target == Some(row.kind) {
@@ -331,6 +356,23 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
             }
             if response.double_clicked() {
                 renaming = Renaming::start(row);
+            }
+            if let RowKind::Layer(id) = row.kind {
+                response.context_menu(|ui| {
+                    // Objects hold no sound (ADR-020).
+                    if ui
+                        .add_enabled(!row.audio, egui::Button::new("Convert to Object"))
+                        .on_hover_text(
+                            "Turn the selected layers (and the selected frames, or all \
+                             frames) into an object in the Library",
+                        )
+                        .on_disabled_hover_text("Audio layers can't go inside an object")
+                        .clicked()
+                    {
+                        convert = Some(id);
+                        ui.close();
+                    }
+                });
             }
             if let RowKind::Group(g) = row.kind {
                 response.context_menu(|ui| {
@@ -423,6 +465,12 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
         Some(Select::Layer(id, _)) => session.select_layer(id),
         Some(Select::Group(g, m)) => session.select_group(g, m.command || m.shift),
         None => {}
+    }
+    if let Some(id) = convert {
+        if !session.is_layer_selected(id) {
+            session.select_layer(id);
+        }
+        session.convert_layers_to_object();
     }
     for command in commands {
         if session.execute(command).is_err() {

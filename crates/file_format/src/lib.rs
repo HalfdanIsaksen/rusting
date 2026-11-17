@@ -10,6 +10,23 @@
 //! the same directory and renames it over the target, so a crash or full disk
 //! never leaves a half-written project behind.
 //!
+//! # Library assets
+//! Assets in the document's library are saved once (ADR-017). An image item
+//! placed from an asset is saved without its bytes and gets them back from
+//! the asset on load. Assets nothing uses are saved too: the library owns
+//! them.
+//!
+//! # Objects
+//! Symbols (objects, ADR-018) are saved in the document's `symbols` map,
+//! with their own layers and tracks. Their drawings are saved in the shared
+//! drawing pool and are never dropped as unreferenced while the symbol is in
+//! the library.
+//!
+//! # Audio
+//! A library sound (ADR-020) is saved once, with its file bytes as base64
+//! and its peak table. An audio layer saves its `kind` (the clip) and an
+//! empty track.
+//!
 //! # Unknown fields
 //! Within a supported version, fields this build does not know are **ignored**
 //! by [`from_str`] and [`load`]; the document still loads. A writer that adds
@@ -19,7 +36,9 @@
 //! them silently, [`from_str_with_report`] and [`load_with_report`] list them
 //! in a [`LoadReport`] so the app can warn before overwriting the file.
 
-use animation_core::{DrawingId, FillId, FrameIndex, GroupId, ImageId, LayerId, StrokeId};
+use animation_core::{
+    AssetId, DrawingId, FillId, FrameIndex, GroupId, ImageId, LayerId, StrokeId, SymbolId,
+};
 use document::Document;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -52,7 +71,26 @@ use std::path::{Path, PathBuf};
 ///   their file bytes as base64 (absent means none, so v8 needs no
 ///   migration; ADR-015). Older builds must reject these files: they would
 ///   drop the pictures.
-pub const FORMAT_VERSION: u32 = 9;
+/// - 10: the document may have a library of `assets` (absent means none), and
+///   images an `asset` reference. An image with an asset is saved without
+///   its `data`, which is filled back in from the asset on load (ADR-017).
+///   v9 files need no migration. Older builds must reject these files: they
+///   would load the pictures as empty.
+/// - 11: the document may have `symbols` (objects: layers, tracks and a
+///   length; absent means none), and keys may be `Instance` keys placing a
+///   symbol (ADR-018). v10 files need no migration. Older builds must reject
+///   these files: they cannot read instance keys.
+/// - 12: instance keys may have a `tween` (`"Linear"`, `"EaseIn"`,
+///   `"EaseOut"` or `"EaseInOut"`; absent means none), a motion tween to the
+///   next key (ADR-019). v11 files need no migration. Older builds must
+///   reject these files: they would drop the tweens and change the motion.
+/// - 13: the library may hold `Audio` assets (MP3/WAV bytes as base64, plus
+///   format, sample rate, channels, duration and peaks), and layers may have
+///   a `kind` of `{"Audio": clip}` (absent means a drawing layer; ADR-020).
+///   v12 files need no migration. Older builds must reject these files: they
+///   would fail on the unknown asset kind, or load audio layers as drawing
+///   layers.
+pub const FORMAT_VERSION: u32 = 13;
 
 /// File extension for project files (without the dot).
 pub const FILE_EXTENSION: &str = "rusting";
@@ -164,6 +202,151 @@ pub enum ValidationError {
     /// An image has no pixels or no file bytes.
     #[error("image {0} is empty")]
     EmptyImage(ImageId),
+    /// An image refers to a library asset that is not in the file.
+    #[error("image {image} was placed from library asset {asset}, which is not in the file")]
+    MissingAsset {
+        /// The image.
+        image: ImageId,
+        /// The missing asset.
+        asset: AssetId,
+    },
+    /// An image refers to a library asset that is not a picture.
+    #[error("image {image} was placed from library asset {asset}, which is not a picture")]
+    NotAnImageAsset {
+        /// The image.
+        image: ImageId,
+        /// The asset.
+        asset: AssetId,
+    },
+    /// Two library assets share an ID.
+    #[error("asset ID {0} is used by more than one library asset")]
+    DuplicateAsset(AssetId),
+    /// A library asset is stored under another asset's ID.
+    #[error("library asset {id} is stored under the ID {key}")]
+    AssetKeyMismatch {
+        /// The key in the library.
+        key: AssetId,
+        /// The asset's own ID.
+        id: AssetId,
+    },
+    /// An audio layer plays a library asset that is not in the file.
+    #[error(
+        "audio layer \"{name}\" ({layer}) plays library asset {asset}, which is not in the file"
+    )]
+    MissingAudioAsset {
+        /// The layer.
+        layer: LayerId,
+        /// Its name.
+        name: String,
+        /// The missing asset.
+        asset: AssetId,
+    },
+    /// An audio layer plays a library asset that is not a sound.
+    #[error("audio layer \"{name}\" ({layer}) plays library asset {asset}, which is not a sound")]
+    NotAnAudioAsset {
+        /// The layer.
+        layer: LayerId,
+        /// Its name.
+        name: String,
+        /// The asset.
+        asset: AssetId,
+    },
+    /// An audio layer has keyframes; its track must be empty.
+    #[error("audio layer \"{name}\" ({layer}) has keyframes")]
+    AudioLayerHasKeys {
+        /// The layer.
+        layer: LayerId,
+        /// Its name.
+        name: String,
+    },
+    /// An object (symbol) holds an audio layer. Objects only hold drawing
+    /// layers; sound stays on the document's own audio layers.
+    #[error("object \"{symbol_name}\" ({symbol}) holds audio layer \"{name}\" ({layer})")]
+    AudioLayerInObject {
+        /// The object.
+        symbol: SymbolId,
+        /// Its name.
+        symbol_name: String,
+        /// The audio layer.
+        layer: LayerId,
+        /// Its name.
+        name: String,
+    },
+    /// A library picture or sound has no content.
+    #[error("library asset \"{name}\" ({id}) is empty")]
+    EmptyAsset {
+        /// The asset.
+        id: AssetId,
+        /// Its name.
+        name: String,
+    },
+    /// A key places an object (symbol) that is not in the file.
+    #[error(
+        "layer \"{layer_name}\" ({layer}) places object {symbol} at frame {frame}, which is not \
+         in the file"
+    )]
+    MissingSymbol {
+        /// Layer holding the key.
+        layer: LayerId,
+        /// Name of that layer.
+        layer_name: String,
+        /// Frame of the key.
+        frame: FrameIndex,
+        /// The missing symbol.
+        symbol: SymbolId,
+    },
+    /// An object key starts past the end of its object.
+    #[error(
+        "layer \"{layer_name}\" ({layer}) starts an object at its frame {first_frame}, but the \
+         object has only {frame_count} frames"
+    )]
+    FirstFrameOutOfRange {
+        /// Layer holding the key.
+        layer: LayerId,
+        /// Name of that layer.
+        layer_name: String,
+        /// The key's first frame.
+        first_frame: FrameIndex,
+        /// The object's length.
+        frame_count: u32,
+    },
+    /// An object key has a motion tween that does not move (`Step`).
+    #[error(
+        "layer \"{layer_name}\" ({layer}) has an object at frame {frame} with a \"Step\" tween; \
+         a tween must be Linear, EaseIn, EaseOut or EaseInOut"
+    )]
+    StepTween {
+        /// Layer holding the key.
+        layer: LayerId,
+        /// Name of that layer.
+        layer_name: String,
+        /// The key's frame.
+        frame: FrameIndex,
+    },
+    /// Objects place each other in a loop.
+    #[error("object \"{name}\" ({id}) contains itself")]
+    SymbolCycle {
+        /// An object on the loop.
+        id: SymbolId,
+        /// Its name.
+        name: String,
+    },
+    /// An object is stored under another object's ID.
+    #[error("object {id} is stored under the ID {key}")]
+    SymbolKeyMismatch {
+        /// The key in the file.
+        key: SymbolId,
+        /// The object's own ID.
+        id: SymbolId,
+    },
+    /// An object has no frames.
+    #[error("object \"{name}\" ({id}) has no frames")]
+    EmptySymbol {
+        /// The object.
+        id: SymbolId,
+        /// Its name.
+        name: String,
+    },
     /// The frame rate has a zero numerator or denominator.
     #[error("frame rate {numerator}/{denominator} is not valid; both parts must be above zero")]
     InvalidFps {
@@ -234,34 +417,98 @@ struct EnvelopeOld {
 }
 
 /// Serializes a document to a JSON string. Drawings no keyframe refers to,
-/// and groups with no layers, are left out; the document passed in is not
+/// and groups with no layers, are left out, and images placed from a library
+/// asset are written without their bytes; the document passed in is not
 /// changed.
 pub fn to_string(doc: &Document) -> Result<String, FileFormatError> {
-    let doc: Cow<'_, Document> = if doc.has_unreferenced_drawings() || doc.has_empty_groups() {
-        let mut copy = doc.clone();
-        copy.garbage_collect_drawings();
-        copy.remove_empty_groups();
-        Cow::Owned(copy)
-    } else {
-        Cow::Borrowed(doc)
-    };
+    let doc: Cow<'_, Document> =
+        if doc.has_unreferenced_drawings() || doc.has_empty_groups() || has_asset_images(doc) {
+            let mut copy = doc.clone();
+            copy.garbage_collect_drawings();
+            copy.remove_empty_groups();
+            strip_asset_bytes(&mut copy);
+            Cow::Owned(copy)
+        } else {
+            Cow::Borrowed(doc)
+        };
     Ok(serde_json::to_string_pretty(&EnvelopeOut {
         format_version: FORMAT_VERSION,
         document: &doc,
     })?)
 }
 
+/// Whether some image was placed from a library asset.
+fn has_asset_images(doc: &Document) -> bool {
+    doc.drawings()
+        .values()
+        .filter_map(|c| c.as_vector())
+        .any(|v| v.images().iter().any(|i| i.asset.is_some()))
+}
+
+/// Calls `f` on every image of every drawing in `doc`.
+fn for_each_image_mut(doc: &mut Document, mut f: impl FnMut(&mut document::drawing::Image)) {
+    let ids: Vec<DrawingId> = doc.drawings().keys().copied().collect();
+    for id in ids {
+        let Some(vector) = doc.drawing_mut(id).and_then(|c| c.as_vector_mut()) else {
+            continue;
+        };
+        let images: Vec<ImageId> = vector.images().iter().map(|i| i.id).collect();
+        for image in images {
+            if let Some(image) = vector.image_mut(image) {
+                f(image);
+            }
+        }
+    }
+}
+
+/// Drops the bytes of images whose library asset holds the same picture; an
+/// image whose asset is gone (possible only for a drawing kept for undo) keeps
+/// its bytes and loses the reference, so the file always loads.
+fn strip_asset_bytes(doc: &mut Document) {
+    let pictures: BTreeSet<AssetId> = doc
+        .assets()
+        .values()
+        .filter(|a| a.image().is_some())
+        .map(|a| a.id)
+        .collect();
+    for_each_image_mut(doc, |image| {
+        if let Some(asset) = image.asset {
+            if pictures.contains(&asset) {
+                image.data = document::drawing::ImageData::default();
+            } else {
+                image.asset = None;
+            }
+        }
+    });
+}
+
+/// Gives every image placed from a library picture that picture's bytes.
+/// References to missing assets are left for [`validate`] to report.
+fn fill_asset_bytes(doc: &mut Document) {
+    let pictures: std::collections::BTreeMap<AssetId, document::drawing::ImageData> = doc
+        .assets()
+        .values()
+        .filter_map(|a| Some((a.id, a.image()?.clone())))
+        .collect();
+    for_each_image_mut(doc, |image| {
+        if let Some(data) = image.asset.and_then(|a| pictures.get(&a)) {
+            image.data = data.clone();
+        }
+    });
+}
+
 /// Parses, migrates and validates a document from a JSON string. Unknown
 /// fields are ignored; use [`from_str_with_report`] to find out about them.
 pub fn from_str(text: &str) -> Result<Document, FileFormatError> {
     let version = read_version(text)?;
-    let doc = if version == FORMAT_VERSION {
+    let mut doc = if version == FORMAT_VERSION {
         // Parsing straight from text keeps line/column info in error messages.
         serde_json::from_str::<EnvelopeCurrent>(text)?.document
     } else {
         let envelope: EnvelopeOld = serde_json::from_str(text)?;
         serde_json::from_value(migrate(version, envelope.document))?
     };
+    fill_asset_bytes(&mut doc);
     validate(&doc)?;
     Ok(doc)
 }
@@ -497,21 +744,66 @@ pub fn validate(doc: &Document) -> Result<(), ValidationError> {
         document::scene::GroupError::Duplicate(g) => ValidationError::DuplicateGroup(g),
     })?;
 
+    validate_symbols(doc, &mut seen_layers)?;
     for (&layer, track) in doc.tracks() {
         let Some(layer_info) = doc.layers().get(layer) else {
             return Err(ValidationError::OrphanTrack(layer));
         };
-        for (frame, key) in track.keys() {
-            if let Some(drawing) = key.drawing()
-                && doc.drawing(drawing).is_none()
-            {
-                return Err(ValidationError::MissingDrawing {
-                    layer,
-                    layer_name: layer_info.name.clone(),
-                    frame,
-                    drawing,
+        check_keys(doc, layer_info, track)?;
+    }
+
+    for (layer, clip) in doc.audio_layers() {
+        let name = || layer.name.clone();
+        match doc.asset(clip.asset) {
+            None => {
+                return Err(ValidationError::MissingAudioAsset {
+                    layer: layer.id,
+                    name: name(),
+                    asset: clip.asset,
                 });
             }
+            Some(a) if a.audio().is_none() => {
+                return Err(ValidationError::NotAnAudioAsset {
+                    layer: layer.id,
+                    name: name(),
+                    asset: clip.asset,
+                });
+            }
+            Some(_) => {}
+        }
+        if doc.track(layer.id).is_some_and(|t| !t.is_empty()) {
+            return Err(ValidationError::AudioLayerHasKeys {
+                layer: layer.id,
+                name: name(),
+            });
+        }
+        check_range(
+            || format!("audio layer \"{}\" volume", layer.name),
+            clip.volume,
+            unit(clip.volume),
+            "0..=1",
+        )?;
+    }
+
+    let mut seen_assets = BTreeSet::new();
+    for asset in doc.assets().values() {
+        if !seen_assets.insert(asset.id) {
+            return Err(ValidationError::DuplicateAsset(asset.id));
+        }
+    }
+    for (&key, asset) in doc.assets() {
+        if key != asset.id {
+            return Err(ValidationError::AssetKeyMismatch { key, id: asset.id });
+        }
+        if asset
+            .image()
+            .is_some_and(document::drawing::ImageData::is_empty)
+            || asset.audio().is_some_and(document::AudioData::is_empty)
+        {
+            return Err(ValidationError::EmptyAsset {
+                id: asset.id,
+                name: asset.name.clone(),
+            });
         }
     }
 
@@ -529,7 +821,24 @@ pub fn validate(doc: &Document) -> Result<(), ValidationError> {
                     drawing,
                 });
             }
-            if image.data.width == 0 || image.data.height == 0 || image.data.bytes.is_empty() {
+            if let Some(asset) = image.asset {
+                match doc.asset(asset) {
+                    None => {
+                        return Err(ValidationError::MissingAsset {
+                            image: image.id,
+                            asset,
+                        });
+                    }
+                    Some(a) if a.image().is_none() => {
+                        return Err(ValidationError::NotAnImageAsset {
+                            image: image.id,
+                            asset,
+                        });
+                    }
+                    Some(_) => {}
+                }
+            }
+            if image.data.is_empty() {
                 return Err(ValidationError::EmptyImage(image.id));
             }
             let what = |field: &str| format!("image {} {field}", image.id);
@@ -625,6 +934,169 @@ pub fn validate(doc: &Document) -> Result<(), ValidationError> {
                 )?;
             }
         }
+    }
+    Ok(())
+}
+
+/// Checks the keys of one track: drawings and objects exist, and object
+/// placements are usable.
+fn check_keys(
+    doc: &Document,
+    layer: &document::scene::Layer,
+    track: &document::timeline::Track,
+) -> Result<(), ValidationError> {
+    for (frame, key) in track.keys() {
+        if let Some(drawing) = key.drawing()
+            && doc.drawing(drawing).is_none()
+        {
+            return Err(ValidationError::MissingDrawing {
+                layer: layer.id,
+                layer_name: layer.name.clone(),
+                frame,
+                drawing,
+            });
+        }
+        let Some(instance) = key.instance() else {
+            continue;
+        };
+        let Some(symbol) = doc.symbol(instance.symbol) else {
+            return Err(ValidationError::MissingSymbol {
+                layer: layer.id,
+                layer_name: layer.name.clone(),
+                frame,
+                symbol: instance.symbol,
+            });
+        };
+        if instance.first_frame.0 >= symbol.frame_count {
+            return Err(ValidationError::FirstFrameOutOfRange {
+                layer: layer.id,
+                layer_name: layer.name.clone(),
+                first_frame: instance.first_frame,
+                frame_count: symbol.frame_count,
+            });
+        }
+        if instance.tween == Some(animation_core::Interpolation::Step) {
+            return Err(ValidationError::StepTween {
+                layer: layer.id,
+                layer_name: layer.name.clone(),
+                frame,
+            });
+        }
+        let what = |part: &str| {
+            format!(
+                "layer \"{}\" object at frame {} {part}",
+                layer.name,
+                frame.display_number()
+            )
+        };
+        check_range(
+            || what("opacity"),
+            instance.opacity,
+            unit(instance.opacity),
+            "0..=1",
+        )?;
+        let t = &instance.transform;
+        for (part, v) in [
+            ("x position", t.translation.x),
+            ("y position", t.translation.y),
+            ("rotation", t.rotation),
+            ("x scale", t.scale.x),
+            ("y scale", t.scale.y),
+        ] {
+            check_range(|| what(part), v, v.is_finite(), "finite numbers")?;
+        }
+    }
+    Ok(())
+}
+
+/// Checks every symbol: its key, length, layers and tracks, the keys on
+/// those tracks, and that no symbol contains itself. Layer IDs must be
+/// unique across the document and all symbols.
+fn validate_symbols(
+    doc: &Document,
+    seen_layers: &mut BTreeSet<LayerId>,
+) -> Result<(), ValidationError> {
+    for (&key, symbol) in doc.symbols() {
+        if key != symbol.id {
+            return Err(ValidationError::SymbolKeyMismatch { key, id: symbol.id });
+        }
+        if symbol.frame_count == 0 {
+            return Err(ValidationError::EmptySymbol {
+                id: symbol.id,
+                name: symbol.name.clone(),
+            });
+        }
+    }
+    for symbol in doc.symbols().values() {
+        for layer in symbol.layers.iter() {
+            if !seen_layers.insert(layer.id) {
+                return Err(ValidationError::DuplicateLayer(layer.id));
+            }
+            if layer.is_audio() {
+                return Err(ValidationError::AudioLayerInObject {
+                    symbol: symbol.id,
+                    symbol_name: symbol.name.clone(),
+                    layer: layer.id,
+                    name: layer.name.clone(),
+                });
+            }
+            if !symbol.tracks.contains_key(&layer.id) {
+                return Err(ValidationError::MissingTrack {
+                    id: layer.id,
+                    name: layer.name.clone(),
+                });
+            }
+            check_range(
+                || {
+                    format!(
+                        "object \"{}\" layer \"{}\" opacity",
+                        symbol.name, layer.name
+                    )
+                },
+                layer.opacity,
+                unit(layer.opacity),
+                "0..=1",
+            )?;
+        }
+        for (&layer, track) in &symbol.tracks {
+            let Some(info) = symbol.layers.get(layer) else {
+                return Err(ValidationError::OrphanTrack(layer));
+            };
+            check_keys(doc, info, track)?;
+        }
+    }
+
+    // Depth-first search for a symbol that reaches itself.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Mark {
+        Visiting,
+        Done,
+    }
+    fn visit(
+        doc: &Document,
+        id: SymbolId,
+        marks: &mut std::collections::BTreeMap<SymbolId, Mark>,
+    ) -> Result<(), SymbolId> {
+        match marks.get(&id) {
+            Some(Mark::Done) => return Ok(()),
+            Some(Mark::Visiting) => return Err(id),
+            None => {}
+        }
+        marks.insert(id, Mark::Visiting);
+        if let Some(symbol) = doc.symbol(id) {
+            for nested in symbol.nested_symbols() {
+                visit(doc, nested, marks)?;
+            }
+        }
+        marks.insert(id, Mark::Done);
+        Ok(())
+    }
+    let mut marks = std::collections::BTreeMap::new();
+    for &id in doc.symbols().keys() {
+        visit(doc, id, &mut marks).map_err(|id| ValidationError::SymbolCycle {
+            id,
+            name: doc.symbol(id).map(|s| s.name.clone()).unwrap_or_default(),
+        })?;
     }
     Ok(())
 }
@@ -822,6 +1294,242 @@ mod tests {
         assert!(from_str(&bad).is_err());
     }
 
+    /// `sample()` plus a library picture placed twice (frames 0 and 6 of
+    /// the "Color" layer) and an unused library picture.
+    fn library_sample() -> (Document, document::Asset, document::Asset) {
+        use document::drawing::{Image, ImageData};
+        use document::{Asset, AssetKind};
+        let mut doc = sample();
+        let data = ImageData::new(3, 2, vec![0x89, b'P', b'N', b'G', 7, 7, 7]);
+        let used = Asset::new("photo.png", AssetKind::Image(data.clone()));
+        let unused = Asset::new(
+            "spare.jpg",
+            AssetKind::Image(ImageData::new(1, 1, vec![0xFF, 0xD8, 1])),
+        );
+        doc.insert_asset(used.clone());
+        doc.insert_asset(unused.clone());
+        let layer = doc.layers().iter().nth(1).unwrap().id;
+        for frame in [0, 6] {
+            let mut v = VectorDrawing::new();
+            v.push_image(
+                Image::new(data.clone(), Vec2::ZERO, Vec2::new(30.0, 20.0)).with_asset(used.id),
+            );
+            let drawing = doc.add_drawing(DrawingContent::Vector(v));
+            doc.track_mut(layer)
+                .unwrap()
+                .set_key(FrameIndex(frame), Keyframe::Drawing(drawing));
+        }
+        (doc, used, unused)
+    }
+
+    #[test]
+    fn library_roundtrips_and_placed_images_are_saved_without_bytes() {
+        let (doc, used, unused) = library_sample();
+        let text = to_string(&doc).unwrap();
+        assert!(text.contains("\"assets\""));
+        // The picture's bytes ("iVBORwcHBw==") are saved once, in the library.
+        assert_eq!(text.matches("iVBORwcHBw==").count(), 1, "{text}");
+        let loaded = from_str(&text).unwrap();
+        assert_eq!(loaded, doc);
+        // The library owns its assets: an unused one is kept.
+        assert_eq!(loaded.asset(unused.id), Some(&unused));
+        assert_eq!(loaded.asset(used.id), Some(&used));
+        let (_, report) = from_str_with_report(&text).unwrap();
+        assert!(report.is_clean(), "{report:?}");
+    }
+
+    #[test]
+    fn version_9_files_with_images_load_unchanged() {
+        use document::drawing::{Image, ImageData};
+        let mut doc = sample();
+        let drawing = *doc.drawings().keys().next().unwrap();
+        doc.drawing_mut(drawing)
+            .and_then(|c| c.as_vector_mut())
+            .unwrap()
+            .push_image(Image::new(
+                ImageData::new(2, 2, vec![1, 2, 3]),
+                Vec2::ZERO,
+                Vec2::ONE,
+            ));
+        let v9 = edit_json(&doc, |j| j["format_version"] = 9.into());
+        assert!(!v9.contains("assets"));
+        assert_eq!(from_str(&v9).unwrap(), doc);
+    }
+
+    #[test]
+    fn image_of_a_deleted_asset_keeps_its_bytes() {
+        let (mut doc, used, _) = library_sample();
+        // Only possible in memory (undo keeps such drawings), but saving
+        // must still write a file that loads.
+        doc.remove_asset(used.id);
+        let loaded = from_str(&to_string(&doc).unwrap()).unwrap();
+        let images: Vec<_> = loaded
+            .drawings()
+            .values()
+            .filter_map(|c| c.as_vector())
+            .flat_map(|v| v.images().to_vec())
+            .collect();
+        assert_eq!(images.len(), 2);
+        assert!(
+            images
+                .iter()
+                .all(|i| i.asset.is_none() && !i.data.is_empty())
+        );
+    }
+
+    #[test]
+    fn broken_library_references_are_rejected() {
+        let (doc, used, unused) = library_sample();
+
+        let missing = edit_json(&doc, |j| {
+            j["document"]["assets"]
+                .as_object_mut()
+                .unwrap()
+                .remove(&used.id.to_string());
+        });
+        assert!(matches!(
+            invalid(&missing),
+            ValidationError::MissingAsset { asset, .. } if asset == used.id
+        ));
+
+        // The unused asset stored a second time, under another key.
+        let duplicate = edit_json(&doc, |j| {
+            let copy = j["document"]["assets"][unused.id.to_string()].clone();
+            j["document"]["assets"][AssetId::new().to_string()] = copy;
+        });
+        assert_eq!(
+            invalid(&duplicate),
+            ValidationError::DuplicateAsset(unused.id)
+        );
+
+        let other = AssetId::new();
+        let moved = edit_json(&doc, |j| {
+            let assets = j["document"]["assets"].as_object_mut().unwrap();
+            let copy = assets.remove(&unused.id.to_string()).unwrap();
+            assets.insert(other.to_string(), copy);
+        });
+        assert_eq!(
+            invalid(&moved),
+            ValidationError::AssetKeyMismatch {
+                key: other,
+                id: unused.id
+            }
+        );
+
+        let empty = edit_json(&doc, |j| {
+            j["document"]["assets"][unused.id.to_string()]["kind"]["Image"]["width"] = 0.into();
+        });
+        assert!(matches!(
+            invalid(&empty),
+            ValidationError::EmptyAsset { id, .. } if id == unused.id
+        ));
+    }
+
+    /// `sample()` plus a library sound played by an audio layer from frame
+    /// 3, and the sound's asset.
+    fn audio_sample() -> (Document, document::Asset, LayerId) {
+        use document::scene::{AudioClip, Layer};
+        use document::{Asset, AssetKind, AudioData, AudioFormat};
+        let mut doc = sample();
+        let sound = Asset::new(
+            "song.mp3",
+            AssetKind::Audio(AudioData {
+                format: AudioFormat::Mp3,
+                sample_rate: 44_100,
+                channels: 2,
+                duration: 1.5,
+                peaks: vec![0, 128, 255],
+                bytes: std::sync::Arc::from(vec![0xFF, 0xFB, 9, 9]),
+            }),
+        );
+        doc.insert_asset(sound.clone());
+        let mut clip = AudioClip::new(sound.id, FrameIndex(3));
+        clip.volume = 0.5;
+        let layer = doc.insert_layer(0, Layer::audio("Song", clip));
+        (doc, sound, layer)
+    }
+
+    #[test]
+    fn audio_layers_and_sounds_roundtrip() {
+        let (doc, sound, layer) = audio_sample();
+        let text = to_string(&doc).unwrap();
+        assert!(text.contains("\"Audio\""), "{text}");
+        let loaded = from_str(&text).unwrap();
+        assert_eq!(loaded, doc);
+        assert_eq!(loaded.asset(sound.id), Some(&sound));
+        let clip = loaded.layers().get(layer).unwrap().audio_clip().unwrap();
+        assert_eq!((clip.start, clip.volume), (FrameIndex(3), 0.5));
+        let (_, report) = from_str_with_report(&text).unwrap();
+        assert!(report.is_clean(), "{report:?}");
+        // Drawing layers still leave `kind` out.
+        assert_eq!(text.matches("\"kind\": {").count(), 2, "{text}");
+    }
+
+    #[test]
+    fn version_10_library_files_load_unchanged() {
+        let (doc, _, _) = library_sample();
+        let v10 = edit_json(&doc, |j| j["format_version"] = 10.into());
+        assert_eq!(from_str(&v10).unwrap(), doc);
+    }
+
+    #[test]
+    fn broken_audio_layers_are_rejected() {
+        let (doc, sound, layer) = audio_sample();
+        let layer_index = 0;
+
+        let missing = edit_json(&doc, |j| {
+            j["document"]["assets"]
+                .as_object_mut()
+                .unwrap()
+                .remove(&sound.id.to_string());
+        });
+        assert!(matches!(
+            invalid(&missing),
+            ValidationError::MissingAudioAsset { asset, .. } if asset == sound.id
+        ));
+
+        let (_, picture, _) = library_sample();
+        let mut not_audio = doc.clone();
+        not_audio.insert_asset(picture.clone());
+        let not_audio = edit_json(&not_audio, |j| {
+            j["document"]["layers"]["layers"][layer_index]["kind"]["Audio"]["asset"] =
+                picture.id.to_string().into();
+        });
+        assert!(matches!(
+            invalid(&not_audio),
+            ValidationError::NotAnAudioAsset { asset, .. } if asset == picture.id
+        ));
+
+        let keys = edit_json(&doc, |j| {
+            let drawing = j["document"]["drawings"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .next()
+                .unwrap()
+                .clone();
+            j["document"]["tracks"][layer.to_string()]["keys"]["0"] =
+                serde_json::json!({ "Drawing": drawing });
+        });
+        assert!(matches!(
+            invalid(&keys),
+            ValidationError::AudioLayerHasKeys { layer: l, .. } if l == layer
+        ));
+
+        let loud = edit_json(&doc, |j| {
+            j["document"]["layers"]["layers"][layer_index]["kind"]["Audio"]["volume"] = 2.0.into();
+        });
+        assert!(matches!(invalid(&loud), ValidationError::OutOfRange { .. }));
+
+        let silent = edit_json(&doc, |j| {
+            j["document"]["assets"][sound.id.to_string()]["kind"]["Audio"]["bytes"] = "".into();
+        });
+        assert!(matches!(
+            invalid(&silent),
+            ValidationError::EmptyAsset { id, .. } if id == sound.id
+        ));
+    }
+
     /// A version 1 file as written by the first release (no `fills`).
     const V1_FILE: &str = r#"{
   "format_version": 1,
@@ -847,6 +1555,271 @@ mod tests {
     } ] } } }
   }
 }"#;
+
+    /// `sample()` plus a 12-frame object (with a nested one-frame object)
+    /// placed on its first layer at frame 2.
+    fn symbol_sample() -> (Document, SymbolId, SymbolId) {
+        use document::Symbol;
+        use document::scene::Layer;
+        use timeline::{InstanceKey, InstanceMode, InstanceTransform, Track};
+        let mut doc = sample();
+        let mut v = VectorDrawing::new();
+        v.push_stroke(Stroke::new(
+            vec![StrokePoint::new(Vec2::ZERO), StrokePoint::new(Vec2::ONE)],
+            BrushStyle::default(),
+        ));
+        let drawing = doc.add_drawing(DrawingContent::Vector(v));
+        let mut inner = Symbol::new("Dot", 1);
+        let mut track = Track::new();
+        track.set_key(FrameIndex(0), Keyframe::Drawing(drawing));
+        inner.push_layer(Layer::new("dot"), track);
+        let inner_id = inner.id;
+        let mut outer = Symbol::new("Ball", 12);
+        let mut track = Track::new();
+        track.set_key(
+            FrameIndex(3),
+            Keyframe::Instance(
+                InstanceKey::new(inner_id).with_transform(InstanceTransform {
+                    translation: Vec2::new(1.5, -2.0),
+                    scale: Vec2::new(2.0, 0.5),
+                    rotation: 0.25,
+                }),
+            ),
+        );
+        track.set_key(FrameIndex(9), Keyframe::Empty);
+        outer.push_layer(Layer::new("ball"), track);
+        let outer_id = outer.id;
+        doc.insert_symbol(inner);
+        doc.insert_symbol(outer);
+        let layer = doc.layers().iter().next().unwrap().id;
+        doc.track_mut(layer).unwrap().set_key(
+            FrameIndex(2),
+            Keyframe::Instance(InstanceKey {
+                opacity: 0.5,
+                mode: InstanceMode::Once,
+                first_frame: FrameIndex(4),
+                ..InstanceKey::new(outer_id)
+            }),
+        );
+        (doc, outer_id, inner_id)
+    }
+
+    #[test]
+    fn symbols_roundtrip_and_keep_their_drawings() {
+        let (doc, _, _) = symbol_sample();
+        let text = to_string(&doc).unwrap();
+        assert!(text.contains("\"symbols\"") && text.contains("\"Instance\""));
+        let loaded = from_str(&text).unwrap();
+        assert_eq!(loaded, doc);
+        for f in 0..doc.frame_count {
+            assert_eq!(loaded.evaluate(FrameIndex(f)), doc.evaluate(FrameIndex(f)));
+        }
+        // An unplaced object keeps its drawings through a save too.
+        let mut unplaced = doc.clone();
+        let layer = unplaced.layers().iter().next().unwrap().id;
+        unplaced.track_mut(layer).unwrap().remove_key(FrameIndex(2));
+        assert_eq!(from_str(&to_string(&unplaced).unwrap()).unwrap(), unplaced);
+    }
+
+    /// `symbol_sample()` with a second key of the outer object on frame
+    /// 10, tweened from the key on frame 2 with `ease`.
+    fn tween_sample(ease: animation_core::Interpolation) -> Document {
+        use timeline::InstanceTransform;
+        let (mut doc, _, _) = symbol_sample();
+        let layer = doc.layers().iter().next().unwrap().id;
+        let track = doc.track_mut(layer).unwrap();
+        let Some(Keyframe::Instance(start)) = track.key_at(FrameIndex(2)).copied() else {
+            panic!("instance key expected");
+        };
+        track.set_key(
+            FrameIndex(2),
+            Keyframe::Instance(timeline::InstanceKey {
+                tween: Some(ease),
+                ..start
+            }),
+        );
+        track.set_key(
+            FrameIndex(10),
+            Keyframe::Instance(
+                start.with_transform(InstanceTransform::from_translation(Vec2::new(40.0, 20.0))),
+            ),
+        );
+        doc
+    }
+
+    #[test]
+    fn tweens_roundtrip_for_every_ease() {
+        for ease in animation_core::Interpolation::TWEENS {
+            let doc = tween_sample(ease);
+            let text = to_string(&doc).unwrap();
+            assert!(text.contains(&format!("\"tween\": \"{ease:?}\"")));
+            let loaded = from_str(&text).unwrap();
+            assert_eq!(loaded, doc);
+            for f in 0..doc.frame_count {
+                assert_eq!(loaded.evaluate(FrameIndex(f)), doc.evaluate(FrameIndex(f)));
+            }
+        }
+        // Keys without a tween don't write the field.
+        let (plain, _, _) = symbol_sample();
+        assert!(!to_string(&plain).unwrap().contains("tween"));
+    }
+
+    #[test]
+    fn version_11_files_load_unchanged() {
+        let (doc, _, _) = symbol_sample();
+        let v11 = edit_json(&doc, |j| j["format_version"] = 11.into());
+        assert!(!v11.contains("tween"));
+        assert_eq!(from_str(&v11).unwrap(), doc);
+    }
+
+    #[test]
+    fn version_12_files_load_unchanged() {
+        let doc = tween_sample(animation_core::Interpolation::EaseInOut);
+        let v12 = edit_json(&doc, |j| j["format_version"] = 12.into());
+        assert!(v12.contains("EaseInOut"));
+        assert_eq!(from_str(&v12).unwrap(), doc);
+    }
+
+    #[test]
+    fn bad_tweens_are_rejected() {
+        let doc = tween_sample(animation_core::Interpolation::Linear);
+        let set_tween = |value: serde_json::Value| {
+            edit_json(&doc, |j| {
+                for track in j["document"]["tracks"]
+                    .as_object_mut()
+                    .unwrap()
+                    .values_mut()
+                {
+                    if let Some(key) = track["keys"].get_mut("2") {
+                        key["Instance"]["tween"] = value.clone();
+                    }
+                }
+            })
+        };
+        assert!(matches!(
+            invalid(&set_tween("Step".into())),
+            ValidationError::StepTween {
+                frame: FrameIndex(2),
+                ..
+            }
+        ));
+        assert!(matches!(
+            from_str(&set_tween("Bounce".into())),
+            Err(FileFormatError::Malformed(_))
+        ));
+        // A tween can only sit on an object key: other keys have no fields.
+        let on_empty = edit_json(&doc, |j| {
+            let tracks = j["document"]["tracks"].as_object_mut().unwrap();
+            let track = tracks.values_mut().next().unwrap();
+            track["keys"]["15"] = serde_json::json!({ "Empty": { "tween": "Linear" } });
+        });
+        assert!(from_str(&on_empty).is_err());
+        // A broken pair still loads; the tween is inactive until it is whole.
+        let mut broken = doc.clone();
+        let layer = broken.layers().iter().next().unwrap().id;
+        broken.track_mut(layer).unwrap().remove_key(FrameIndex(10));
+        assert_eq!(from_str(&to_string(&broken).unwrap()).unwrap(), broken);
+    }
+
+    #[test]
+    fn version_10_files_load_unchanged() {
+        let doc = sample();
+        let v10 = edit_json(&doc, |j| j["format_version"] = 10.into());
+        assert!(!v10.contains("symbols"));
+        assert_eq!(from_str(&v10).unwrap(), doc);
+    }
+
+    #[test]
+    fn broken_symbols_are_rejected() {
+        let (doc, outer, inner) = symbol_sample();
+        let (outer_s, inner_s) = (outer.to_string(), inner.to_string());
+
+        let mut missing = doc.clone();
+        missing.remove_symbol(inner);
+        assert!(matches!(
+            invalid(&to_string(&missing).unwrap()),
+            ValidationError::MissingSymbol { .. }
+        ));
+
+        let past_end = edit_json(&doc, |j| {
+            for track in j["document"]["tracks"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+            {
+                if let Some(key) = track["keys"].get_mut("2") {
+                    key["Instance"]["first_frame"] = 12.into();
+                }
+            }
+        });
+        assert!(matches!(
+            invalid(&past_end),
+            ValidationError::FirstFrameOutOfRange {
+                frame_count: 12,
+                ..
+            }
+        ));
+
+        let cycle = edit_json(&doc, |j| {
+            let tracks = j["document"]["symbols"][&inner_s]["tracks"]
+                .as_object_mut()
+                .unwrap();
+            let track = tracks.values_mut().next().unwrap();
+            track["keys"]["0"] = serde_json::json!({ "Instance": {
+                "symbol": outer_s,
+                "transform": { "translation": [0.0, 0.0], "scale": [1.0, 1.0], "rotation": 0.0 },
+                "opacity": 1.0, "mode": "Loop", "first_frame": 0
+            }});
+        });
+        assert!(matches!(
+            invalid(&cycle),
+            ValidationError::SymbolCycle { .. }
+        ));
+
+        let no_track = edit_json(&doc, |j| {
+            j["document"]["symbols"][&outer_s]["tracks"] = serde_json::json!({});
+        });
+        assert!(matches!(
+            invalid(&no_track),
+            ValidationError::MissingTrack { .. }
+        ));
+
+        let empty = edit_json(&doc, |j| {
+            j["document"]["symbols"][&outer_s]["frame_count"] = 0.into();
+        });
+        assert!(matches!(
+            invalid(&empty),
+            ValidationError::EmptySymbol { .. }
+        ));
+
+        let mismatch = edit_json(&doc, |j| {
+            j["document"]["symbols"][&outer_s]["id"] = inner_s.clone().into();
+        });
+        assert!(matches!(
+            invalid(&mismatch),
+            ValidationError::SymbolKeyMismatch { .. }
+        ));
+
+        let bad_opacity = edit_json(&doc, |j| {
+            for track in j["document"]["tracks"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+            {
+                if let Some(key) = track["keys"].get_mut("2") {
+                    key["Instance"]["opacity"] = 2.0.into();
+                }
+            }
+        });
+        assert!(matches!(
+            invalid(&bad_opacity),
+            ValidationError::OutOfRange { .. }
+        ));
+
+        let older = edit_json(&doc, |j| j["format_version"] = 10.into());
+        // A v10 file can't hold objects, but if one does it is still checked.
+        assert!(from_str(&older).is_ok());
+    }
 
     #[test]
     fn version_1_file_loads_without_fills() {
@@ -1028,6 +2001,83 @@ mod tests {
         assert!(matches!(
             from_str(&to_string(&doc).unwrap()),
             Err(FileFormatError::Invalid(_))
+        ));
+    }
+
+    /// Every feature of the combined format: a library picture placed inside
+    /// an object, a tweened object on the timeline, and an audio layer.
+    fn combined_sample() -> (Document, SymbolId, document::Asset) {
+        use document::drawing::{Image, ImageData};
+        use document::scene::{AudioClip, Layer};
+        use document::{Asset, AssetKind, AudioData, AudioFormat};
+        let mut doc = tween_sample(animation_core::Interpolation::EaseOut);
+        let data = ImageData::new(3, 2, vec![0x89, b'P', b'N', b'G', 1, 2, 3]);
+        let picture = Asset::new("photo.png", AssetKind::Image(data.clone()));
+        doc.insert_asset(picture.clone());
+        let mut v = VectorDrawing::new();
+        v.push_image(Image::new(data, Vec2::ZERO, Vec2::new(3.0, 2.0)).with_asset(picture.id));
+        let drawing = doc.add_drawing(DrawingContent::Vector(v));
+        let inner = *doc
+            .symbols()
+            .iter()
+            .find(|(_, s)| s.name == "Dot")
+            .unwrap()
+            .0;
+        let mut track = timeline::Track::new();
+        track.set_key(FrameIndex(0), Keyframe::Drawing(drawing));
+        doc.symbol_mut(inner)
+            .unwrap()
+            .push_layer(Layer::new("photo"), track);
+        let sound = Asset::new(
+            "song.wav",
+            AssetKind::Audio(AudioData {
+                format: AudioFormat::Wav,
+                sample_rate: 8000,
+                channels: 1,
+                duration: 0.5,
+                peaks: vec![3, 200],
+                bytes: std::sync::Arc::from(vec![b'R', b'I', b'F', b'F']),
+            }),
+        );
+        doc.insert_asset(sound.clone());
+        doc.insert_layer(
+            0,
+            Layer::audio("Song", AudioClip::new(sound.id, FrameIndex(1))),
+        );
+        (doc, inner, picture)
+    }
+
+    #[test]
+    fn objects_tweens_pictures_and_sounds_roundtrip_together() {
+        let (doc, _, picture) = combined_sample();
+        let text = to_string(&doc).unwrap();
+        assert!(text.contains(&format!("\"format_version\": {FORMAT_VERSION}")));
+        // The picture inside the object is stored once, in its asset.
+        assert_eq!(text.matches("iVBORwECAw==").count(), 1, "{text}");
+        let loaded = from_str(&text).unwrap();
+        assert_eq!(loaded, doc);
+        assert!(loaded.asset_in_use(picture.id));
+        for f in 0..doc.frame_count {
+            assert_eq!(loaded.evaluate(FrameIndex(f)), doc.evaluate(FrameIndex(f)));
+        }
+    }
+
+    #[test]
+    fn audio_layers_inside_objects_are_rejected() {
+        use document::scene::{AudioClip, Layer};
+        let (mut doc, inner, _) = combined_sample();
+        let sound = doc.audio_layers().next().unwrap().1.asset;
+        doc.symbol_mut(inner).unwrap().push_layer(
+            Layer::audio("Inside", AudioClip::new(sound, FrameIndex(0))),
+            timeline::Track::new(),
+        );
+        assert!(matches!(
+            validate(&doc),
+            Err(ValidationError::AudioLayerInObject { symbol, .. }) if symbol == inner
+        ));
+        assert!(matches!(
+            invalid(&to_string(&doc).unwrap()),
+            ValidationError::AudioLayerInObject { .. }
         ));
     }
 

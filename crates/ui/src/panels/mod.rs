@@ -1,7 +1,9 @@
 //! The egui panels around the canvas.
 
 mod dialogs;
+pub mod dock;
 mod layers;
+pub mod library;
 mod menu;
 mod preview;
 mod resize_canvas;
@@ -16,8 +18,9 @@ use crate::session::Session;
 
 pub use preview::window as preview_window;
 
-/// Draws the whole editor for one frame, or the start menu while it is up. `canvas` fills the central area;
-/// the host draws the canvas and forwards pointer input to the session.
+/// Draws the whole editor for one frame, or the start menu while it is up.
+/// `canvas` fills the canvas pane, wherever the user docked it; the host draws
+/// the canvas there and forwards pointer input to the session.
 pub fn show(
     ui: &mut egui::Ui,
     session: &mut Session,
@@ -39,33 +42,43 @@ pub fn show(
 
     egui::Panel::top("menu_bar").show(ui, |ui| menu::bar(ui, session));
     egui::Panel::bottom("status_bar").show(ui, |ui| status::bar(ui, session));
-    // Hidden panels are simply not added, so the canvas takes their space.
-    if session.view.timeline {
-        egui::Panel::bottom("timeline")
-            .resizable(true)
-            .default_size(210.0)
-            .min_size(140.0)
-            .show(ui, |ui| timeline::panel(ui, session));
-    }
-    if session.view.toolbar {
-        egui::Panel::left("toolbar")
-            .resizable(false)
-            .exact_size(toolbar::WIDTH)
-            .frame(
-                egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::symmetric(4, 0)),
-            )
-            .show(ui, |ui| toolbar::panel(ui, session));
-    }
-    if session.view.tool_settings {
-        egui::Panel::right("tool_settings")
-            .resizable(true)
-            .default_size(220.0)
-            .min_size(180.0)
-            .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(egui::Margin::same(8)))
-            .show(ui, |ui| tool_options::panel(ui, session));
-    }
-    egui::CentralPanel::no_frame().show(ui, |ui| canvas(ui, session));
+    // Everything else is a dockable pane (ADR-021). The layout is taken out
+    // of the session while it is shown, so the panes can borrow the session.
+    let mut layout = std::mem::take(&mut session.panels);
+    egui::CentralPanel::no_frame().show(ui, |ui| layout.show(ui, session, canvas));
+    session.panels = layout;
 
     dialogs::show(ui.ctx(), session);
     resize_canvas::show(ui.ctx(), session);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use document::{AudioData, AudioFormat};
+
+    #[test]
+    fn editor_draws_audio_layers_without_changing_the_document() {
+        let mut s = Session::new();
+        let sound = AudioData {
+            format: AudioFormat::Wav,
+            sample_rate: 8000,
+            channels: 1,
+            duration: 0.5,
+            peaks: (0..50).map(|i| i * 5).collect(),
+            bytes: std::sync::Arc::from(vec![1u8]),
+        };
+        let layer = s.import_audio("song.wav", sound).unwrap();
+        let ctx = egui::Context::default();
+        for active in [false, true] {
+            if active {
+                s.set_active_layer(layer);
+            }
+            let before = s.document.clone();
+            let mut output =
+                ctx.run_ui(egui::RawInput::default(), |ui| show(ui, &mut s, |_, _| {}));
+            output.textures_delta.clear();
+            assert_eq!(s.document, before);
+        }
+    }
 }

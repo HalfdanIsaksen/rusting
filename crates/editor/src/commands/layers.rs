@@ -72,7 +72,8 @@ impl DuplicateLayer {
                     };
                     Keyframe::Drawing(copy)
                 }
-                Keyframe::Empty => Keyframe::Empty,
+                // Symbols are shared library entries: the copy places the same one.
+                Keyframe::Empty | Keyframe::Instance(_) => *key,
             };
             track.set_key(frame, key);
         }

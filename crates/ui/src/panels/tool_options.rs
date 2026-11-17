@@ -1,16 +1,19 @@
 //! The tool settings panel on the right of the canvas: settings for the
-//! active tool (size, opacity, colour, draw order, eraser mode, gap closing)
-//! and the
-//! "drawing is blocked" warning.
+//! active tool (size, opacity, colour, draw order, eraser mode, gap closing),
+//! the settings and motion tween of the object under the playhead, the
+//! "drawing is blocked" warning, or the clip of the active audio layer.
 
 use super::toolbar::TOOLS;
 use crate::paint_order::PaintOrder;
 use crate::session::Session;
 use crate::shapes::GradientDirection;
 use crate::tools::{EraserMode, FillStyle};
-use document::animation_core::Rgba;
+use document::animation_core::{FrameIndex, Interpolation, LayerId, Rgba};
 use document::drawing::GapClosing;
+use document::scene::AudioClip;
+use document::timeline::InstanceMode;
 use editor::Tool;
+use editor::commands::{InstanceProps, SetAudioClip};
 
 /// Quick colour swatches (linear RGB).
 const SWATCHES: [[f32; 3]; 8] = [
@@ -101,10 +104,90 @@ fn merge_same_colour(ui: &mut egui::Ui, session: &mut Session) {
         .on_hover_text(MERGE_HINT);
 }
 
+/// The active audio layer's clip (ADR-020): its sound, volume and start
+/// frame. Each drag or typed edit is one undo step.
+fn audio_clip(ui: &mut egui::Ui, session: &mut Session, layer: LayerId) {
+    let doc = &session.document;
+    let Some(clip) = doc
+        .layers()
+        .get(layer)
+        .and_then(|l| l.audio_clip())
+        .copied()
+    else {
+        return;
+    };
+    let editable = doc.layers().is_editable(layer);
+    ui.strong("Audio clip");
+    match doc.clip_sound(&clip) {
+        Some(sound) => {
+            let name = doc.asset(clip.asset).map_or("", |a| a.name.as_str());
+            ui.label(format!(
+                "{name} ({}, {})",
+                sound.format.label(),
+                super::library::format_duration(sound.duration)
+            ));
+        }
+        None => {
+            ui.colored_label(ui.visuals().warn_fg_color, "The sound is missing");
+        }
+    }
+    let last = doc.frame_count.max(1);
+    let mut volume = (clip.volume * 100.0).round();
+    let mut start = clip.start.display_number();
+    let (volume_changed, start_changed, active) = ui
+        .add_enabled_ui(editable, |ui| {
+            let v = ui
+                .add(egui::Slider::new(&mut volume, 0.0..=100.0).suffix("%").text("Volume"))
+                .on_hover_text("How loud the clip plays");
+            let s = ui
+                .add(egui::DragValue::new(&mut start).range(1..=last).prefix("Starts at frame "))
+                .on_hover_text("The frame the sound starts on. You can also drag the clip in its timeline row.");
+            let active = v.dragged() || v.has_focus() || s.dragged() || s.has_focus();
+            (v.changed(), s.changed(), active)
+        })
+        .inner;
+    let gesture_id = ui.scope_id().with(("audio_clip_gesture", layer));
+    let mut gesture: Option<u64> = ui.data(|d| d.get_temp(gesture_id));
+    if (volume_changed || start_changed) && gesture.is_none() {
+        gesture = Some(ui.ctx().cumulative_pass_nr());
+    }
+    if active {
+        if let Some(g) = gesture {
+            ui.data_mut(|d| d.insert_temp(gesture_id, g));
+        }
+    } else {
+        ui.data_mut(|d| d.remove::<u64>(gesture_id));
+    }
+    if (volume_changed || start_changed)
+        && let Some(g) = gesture
+    {
+        let changed = AudioClip {
+            volume: volume / 100.0,
+            start: FrameIndex(start.saturating_sub(1)),
+            ..clip
+        };
+        let _ = session.execute(Box::new(SetAudioClip::new(layer, changed).in_gesture(g)));
+    }
+    if !editable {
+        ui.weak("Unlock the layer to change its clip.");
+    }
+    ui.weak("Hide the layer (eye icon) to mute it.");
+}
+
 /// Draws the tool settings panel.
 pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
     // Leave room for the value box beside each slider.
     ui.spacing_mut().slider_width = (ui.available_width() - 60.0).max(60.0);
+    if let Some(layer) = session.state.active_layer.filter(|&l| {
+        session
+            .document
+            .layers()
+            .get(l)
+            .is_some_and(|l| l.is_audio())
+    }) {
+        audio_clip(ui, session, layer);
+        return;
+    }
     ui.horizontal(|ui| active_tool_label(ui, session));
     // The eyedropper only reads the canvas, so a locked layer is no problem.
     if let Some(reason) = session
@@ -190,6 +273,103 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
             ui.separator();
             eraser_mode_choices(ui, session);
         }
+    }
+    object_settings(ui, session);
+}
+
+/// Loop / Play once, first frame and opacity of the object the active layer
+/// shows at the playhead (ADR-018). Hidden when it shows none.
+fn object_settings(ui: &mut egui::Ui, session: &mut Session) {
+    let Some(at) = session.instance_at_playhead() else {
+        return;
+    };
+    let Some((name, length)) = session
+        .document
+        .symbol(at.key.symbol)
+        .map(|s| (s.name.clone(), s.frame_count))
+    else {
+        return;
+    };
+    ui.separator();
+    ui.strong(format!("Object: {name}"));
+    ui.weak(format!(
+        "{length} frame{} long, placed at frame {}",
+        if length == 1 { "" } else { "s" },
+        at.key_frame.display_number()
+    ));
+    let mut props = InstanceProps::of(&at.key);
+    let before = props;
+    ui.horizontal(|ui| {
+        for mode in [InstanceMode::Loop, InstanceMode::Once] {
+            ui.selectable_value(&mut props.mode, mode, mode.label());
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("First frame")
+            .on_hover_text("The object's own frame shown where it is placed");
+        let mut first = props.first_frame.0 + 1;
+        ui.add(egui::DragValue::new(&mut first).range(1..=length.max(1)));
+        props.first_frame = FrameIndex(first.saturating_sub(1));
+    });
+    ui.label("Opacity");
+    let mut percent = (props.opacity * 100.0).round();
+    let slider = ui.add(egui::Slider::new(&mut percent, 0.0..=100.0).suffix("%"));
+    props.opacity = percent / 100.0;
+    // One slider drag is one undo step.
+    let gesture_id = ui.scope_id().with("object_opacity_gesture");
+    let mut gesture: Option<u64> = ui.data(|d| d.get_temp::<u64>(gesture_id));
+    if slider.dragged() && gesture.is_none() {
+        let pass = ui.ctx().cumulative_pass_nr();
+        gesture = Some(pass);
+        ui.data_mut(|d| d.insert_temp(gesture_id, pass));
+    }
+    if !slider.dragged() {
+        ui.data_mut(|d| d.remove::<u64>(gesture_id));
+    }
+    if props != before {
+        session.set_instance_props(props, gesture);
+    }
+    tween_settings(ui, session);
+}
+
+/// The motion tween (ADR-019) from the object key under the playhead to
+/// the next key: pick None or an ease. Hidden when the next key is not the
+/// same object and there is no tween to remove.
+fn tween_settings(ui: &mut egui::Ui, session: &mut Session) {
+    let Some(at) = session.tween_at_playhead() else {
+        return;
+    };
+    match at.end {
+        Some(end) => {
+            ui.label("Motion tween").on_hover_text(
+                "Move, scale, rotate and fade the object smoothly from this key to the next",
+            );
+            let mut tween = at.tween;
+            let label = |t: Option<Interpolation>| t.map_or("None", Interpolation::label);
+            egui::ComboBox::from_id_salt("object_tween")
+                .selected_text(label(tween))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut tween, None, label(None));
+                    for ease in Interpolation::TWEENS {
+                        ui.selectable_value(&mut tween, Some(ease), ease.label());
+                    }
+                });
+            ui.weak(format!(
+                "Frames {}–{}",
+                at.key_frame.display_number(),
+                end.display_number()
+            ));
+            if tween != at.tween {
+                session.set_tween_at_playhead(tween);
+            }
+        }
+        None if at.tween.is_some() => {
+            ui.weak("Motion tween off: the next key is not this object");
+            if ui.button("Remove Tween").clicked() {
+                session.set_tween_at_playhead(None);
+            }
+        }
+        None => {}
     }
 }
 

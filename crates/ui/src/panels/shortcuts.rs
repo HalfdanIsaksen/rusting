@@ -28,6 +28,9 @@ pub const DUPLICATE_FRAME: KeyboardShortcut = KeyboardShortcut::new(Modifiers::C
 pub const INSERT_FRAME: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F5);
 /// Remove the selected frames, or the frame under the playhead.
 pub const DELETE_FRAMES: KeyboardShortcut = KeyboardShortcut::new(Modifiers::SHIFT, Key::F5);
+/// Turn the canvas selection (or the selected layers and frames) into an
+/// object (F8, as in Flash and Animate).
+pub const CONVERT_TO_OBJECT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F8);
 /// Quit.
 pub const QUIT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Q);
 
@@ -38,6 +41,8 @@ pub const TOGGLE_TIMELINE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::C
 /// Show or hide the tool settings panel.
 pub const TOGGLE_TOOL_SETTINGS: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND, Key::Num3);
+/// Show or hide the library panel.
+pub const TOGGLE_LIBRARY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Num4);
 
 /// Handles global shortcuts. Plain-key shortcuts are skipped while a text
 /// field has keyboard focus. While the text tool takes typing
@@ -49,18 +54,20 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
     let modal_open = session.dialog().is_some() || session.resize_canvas.is_some();
 
     // Most specific first: Shift+Cmd+S before Cmd+S (egui ignores extra Shift).
-    let (save_as, save, new, open, quit, toolbar, timeline, tool_settings) = ctx.input_mut(|i| {
-        (
-            i.consume_shortcut(&SAVE_AS),
-            i.consume_shortcut(&SAVE),
-            i.consume_shortcut(&NEW),
-            i.consume_shortcut(&OPEN),
-            i.consume_shortcut(&QUIT),
-            i.consume_shortcut(&TOGGLE_TOOLBAR),
-            i.consume_shortcut(&TOGGLE_TIMELINE),
-            i.consume_shortcut(&TOGGLE_TOOL_SETTINGS),
-        )
-    });
+    let (save_as, save, new, open, quit, toolbar, timeline, tool_settings, library) = ctx
+        .input_mut(|i| {
+            (
+                i.consume_shortcut(&SAVE_AS),
+                i.consume_shortcut(&SAVE),
+                i.consume_shortcut(&NEW),
+                i.consume_shortcut(&OPEN),
+                i.consume_shortcut(&QUIT),
+                i.consume_shortcut(&TOGGLE_TOOLBAR),
+                i.consume_shortcut(&TOGGLE_TIMELINE),
+                i.consume_shortcut(&TOGGLE_TOOL_SETTINGS),
+                i.consume_shortcut(&TOGGLE_LIBRARY),
+            )
+        });
     if !modal_open {
         if save_as || save || new || open || quit {
             session.commit_text();
@@ -68,6 +75,7 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
         session.view.toolbar ^= toolbar;
         session.view.timeline ^= timeline;
         session.view.tool_settings ^= tool_settings;
+        session.view.library ^= library;
         if save_as {
             session.save_as();
         } else if save {
@@ -123,8 +131,22 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
         }
         session.select_all();
     }
-    // With a selection, arrows nudge it instead of moving the playhead.
-    let selecting = session.state.tool.uses_selection() && !session.tools.selection().is_empty();
+    if ctx.input_mut(|i| i.consume_shortcut(&CONVERT_TO_OBJECT)) && !gesture {
+        if session.tools.selection_at().is_some() {
+            session.convert_selection_to_object();
+        } else if session.frame_selection().is_some() {
+            session.convert_layers_to_object();
+        } else {
+            session.set_error(
+                "Convert to Object: select items on the canvas, or layers and frames in the \
+                 timeline",
+            );
+        }
+    }
+    // With a selection (items or an object), arrows nudge it instead of
+    // moving the playhead.
+    let selecting = session.state.tool.uses_selection()
+        && (!session.tools.selection().is_empty() || session.tools.selected_instance().is_some());
     let (select, lasso, transform, escape, delete, shift) = ctx.input(|i| {
         (
             i.modifiers.is_none() && i.key_pressed(Key::V),
@@ -325,9 +347,12 @@ mod tests {
         assert!(!s.view.timeline);
         press(&mut s, TOGGLE_TOOL_SETTINGS);
         assert!(!s.view.tool_settings);
+        press(&mut s, TOGGLE_LIBRARY);
+        assert!(!s.view.library);
         press(&mut s, TOGGLE_TOOLBAR);
         press(&mut s, TOGGLE_TIMELINE);
         press(&mut s, TOGGLE_TOOL_SETTINGS);
+        press(&mut s, TOGGLE_LIBRARY);
         assert_eq!(s.view, crate::session::ViewSettings::default());
     }
 
@@ -441,7 +466,13 @@ mod tests {
         let all = [
             NEW, OPEN, SAVE, SAVE_AS, UNDO, REDO, REDO_ALT, SELECT_ALL, QUIT,
         ];
-        for view in [TOGGLE_TOOLBAR, TOGGLE_TIMELINE, DUPLICATE_FRAME] {
+        for view in [
+            TOGGLE_TOOLBAR,
+            TOGGLE_TIMELINE,
+            TOGGLE_TOOL_SETTINGS,
+            TOGGLE_LIBRARY,
+            DUPLICATE_FRAME,
+        ] {
             assert!(all.iter().all(|s| s.logical_key != view.logical_key));
         }
     }

@@ -56,7 +56,7 @@ Set `RUST_LOG=debug` for more log output.
 | Document | What it covers |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Crate dependency graph, data model, coordinate spaces, frame flow |
-| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-016) |
+| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-021) |
 | [docs/roadmap.md](docs/roadmap.md) | Development phases and their acceptance criteria |
 | [docs/smoke-test.md](docs/smoke-test.md) | Manual end-to-end test checklist |
 | [docs/releasing.md](docs/releasing.md) | How to tag a release and update the Homebrew tap |
@@ -104,14 +104,31 @@ The tool strip runs down the side of the canvas:
 - **Layer opacity**: each layer row has an opacity field (0–100%). Drag it sideways or click it to type a value; one drag is one undo step.
 - **Layer groups**: select layers and press the folder button to put them in a group (a folder). The group gets a header row with its own show/hide, lock and opacity, which apply to all its layers, and an arrow to fold it. Click the header to select the group's layers, double-click to rename it, drag it to move the whole group, and right-click it (or use the ungroup button) to ungroup. Drag a layer between a group's rows to put it in the group, or out of them to take it out.
 - Select several layers with `Cmd/Ctrl`+click (toggle) or `Shift`+click (range); duplicate and remove act on the whole selection.
+- **Audio layers**: File → Import… also takes MP3 and WAV sounds. Each goes onto a new audio layer on top (speaker icon), starting at frame 1, and into the Library. Its row shows the clip with its waveform; drag the clip along the row to change where the sound starts. The sound plays in sync with playback, and scrubbing or stepping while paused plays a short snippet of the frame. The eye button mutes the layer. With an audio layer selected, Tool Settings sets the clip's volume and start frame. Inserting, deleting and moving frames move clips with them. Exported videos have no sound yet.
 - Onion skin (View → Onion skin).
+
+### Objects
+- **Convert to Object**: select layers in the timeline and drag across frames, then right-click the frames or a layer and choose Convert to Object (or press `F8`). Those frames become an object that holds their animation. It is listed in the Library under Objects, and a new layer above plays it where the frames were. Without a frame selection, all frames are used. Items selected on the canvas become a one-frame object with `F8` (or Edit → Convert to Object), placed where they were.
+- An object plays its own animation wherever it is placed, until the next key on its layer. A 12-frame object placed on 18 frames plays one and a half times. In Tool Settings, set it to **Loop** or **Play once** (holds its last frame), pick the object frame it starts on, and set its opacity.
+- Drag an object from the Library onto a frame cell in the timeline to place it on that layer and frame, or onto the canvas to place it on a new layer where you drop it.
+- With the Selection or Transform tool, click an object to select it as one unit, then drag, nudge, scale or rotate it. Moving it on a later frame of its exposure adds a new key there, so the object keeps playing from the new place.
+- The timeline shows object exposures in blue, with a diamond on the key and a tick where each loop starts. Rename or delete objects in the Library (Delete works once the object is not placed anywhere). Objects can contain other objects.
+- **Motion tweens**: place an object on one key, go to a later frame and move, scale, rotate or fade it there (that adds a second key of the same object). Select the frames from the first key to the second, right-click → Create Motion Tween → Linear, Ease In, Ease Out or Ease In-Out. The object then glides between the two keys, blending position, scale, rotation and opacity, while it keeps playing its own animation. The timeline shows the tween as a purple band with an arrow. Change the ease in Tool Settings (Motion tween) or remove it with right-click → Remove Tween. Moving the object on a frame inside a tween adds a key there, starting from where it is drawn, and the tween runs through it. Only objects can be tweened, and only between two keys of the same object. Rotation turns the direct way between the two angles, not the shortest one.
+- Editing an object's contents in place is not supported yet. Drawing tools refuse a frame where the layer shows an object.
+- Objects hold drawing layers only. Convert to Object leaves selected audio layers out (the status bar says so), and an object can't be placed on an audio layer.
 
 ### Look
 - Uses the colours of the Rusting website (warm dark browns with an orange accent). The light or dark palette follows the operating system setting.
 - The app icon (window, taskbar and Dock) and the start menu show the website's logo: an orange brush stroke with an amber dot. Its source is `assets/logo.svg`.
 
+### Panels
+- The tool strip, Tool Settings, Library, timeline and canvas are dockable panels. Drag a panel by its tab onto another panel to put it beside, above or below it, or behind it as another tab, for example the Library under Tool Settings in one column. Drag the line between two panels to resize them.
+- Resizing the window, or hiding a panel, resizes the canvas and leaves the other panels as they are.
+- The layout, and which panels are shown, are kept between launches.
+
 ### View menu
-- Toggle the **Toolbar** (`Cmd/Ctrl+1`), **Timeline** (`Cmd/Ctrl+2`) and **Tool Settings** (`Cmd/Ctrl+3`) to free up space for the canvas.
+- Toggle the **Toolbar** (`Cmd/Ctrl+1`), **Timeline** (`Cmd/Ctrl+2`), **Tool Settings** (`Cmd/Ctrl+3`) and **Library** (`Cmd/Ctrl+4`) to free up space for the canvas. A panel you show again comes back where it was.
+- **Reset Panel Layout** puts every panel back in its original place and size, and shows them all.
 - **Preview**: a smaller floating window that shows only the canvas at the current frame. It has a close button and a Play button that loops the animation without moving the editor's playhead.
 
 ### Help menu
@@ -123,7 +140,8 @@ The tool strip runs down the side of the canvas:
 - Export the current frame as PNG/JPG, an image sequence, or an H.264 video as MP4 or MOV (QuickTime).
 - **Export GIF**: the frame range as a looping animated GIF at the document frame rate, for animations up to 15 seconds. A longer range is refused with a message to export it as a video or image sequence instead.
 - **Export Sprite Sheet**: every frame tag becomes its own row of frames in one PNG/JPG image. Without tags, the chosen frame range goes on one row.
-- **Import** (File → Import…, below Export): pick one or more PNG or JPEG pictures. Each goes onto the current layer and frame, centred on the canvas and shrunk to fit if it is larger, and is selected so you can move it right away. Pictures move, scale, rotate and delete with the selection tools like any other item, paint under the strokes and fills you draw on top of them (handy for tracing), show in the preview and in every export, and are saved inside the project file.
+- **Import** (File → Import…, below Export): pick one or more PNG or JPEG pictures, or MP3 or WAV sounds (see Audio layers). Each picture goes onto the current layer and frame, centred on the canvas and shrunk to fit if it is larger, and is selected so you can move it right away. Pictures move, scale, rotate and delete with the selection tools like any other item, paint under the strokes and fills you draw on top of them (handy for tracing), show in the preview and in every export, and are saved inside the project file. Each imported picture is also added to the Library.
+- **Library** (a panel, by default on the right of the canvas): lists every imported file, under Images and Audio, by file name, and every object under Objects. Drag a picture onto the canvas to place another copy where you drop it, or right-click it → Place on Canvas to put one in the centre. Drag a sound onto the timeline's frames to start a new audio layer at that frame, or right-click it → Add to Timeline to start one at the current frame. Double-click a row to rename it. Right-click → Delete removes it from the library, but only once nothing uses it (a frame, an object or an audio layer). The project file stores each library picture and sound once, however many times it is placed, and keeps unused library pictures and sounds.
 
 ## Contributing workflow
 

@@ -108,9 +108,51 @@ pub fn visuals(dark: bool) -> Visuals {
     v
 }
 
-/// Uses the website colours for both egui themes. egui picks dark or light
-/// to follow the operating system.
+/// Uses the website colours for both egui themes, and the font fallback
+/// below. egui picks dark or light to follow the operating system.
 pub fn apply(ctx: &egui::Context) {
     ctx.set_visuals_of(egui::Theme::Dark, visuals(true));
     ctx.set_visuals_of(egui::Theme::Light, visuals(false));
+    add_symbol_fallback(ctx);
+}
+
+/// Name of the extra fallback font [`add_symbol_fallback`] installs.
+const SYMBOL_FALLBACK: &str = "Hack (symbol fallback)";
+
+/// Lets proportional text show arrows (`→ ← ↑ ↓`) and `⇧`.
+///
+/// egui's proportional font (Ubuntu-Light) and its emoji fallbacks have no
+/// arrow glyphs, so "File → Import…" drew a missing-glyph box. egui's bundled
+/// monospace font, Hack, has them: it is added again under its own name
+/// (egui skips a font whose name it already has) as the last proportional
+/// fallback, so it only fills in glyphs no other font has.
+pub fn add_symbol_fallback(ctx: &egui::Context) {
+    ctx.add_font(egui::epaint::text::FontInsert::new(
+        SYMBOL_FALLBACK,
+        egui::FontData::from_static(epaint_default_fonts::HACK_REGULAR),
+        vec![egui::epaint::text::InsertFontFamily {
+            family: egui::FontFamily::Proportional,
+            priority: egui::epaint::text::FontPriority::Lowest,
+        }],
+    ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proportional_text_has_arrow_glyphs() {
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+        output.textures_delta.clear();
+        let font = egui::FontId::proportional(14.0);
+        for c in ['→', '←', '↑', '↓', '…', '×', '⌘'] {
+            assert!(
+                ctx.fonts_mut(|f| f.has_glyph(&font, c)),
+                "missing glyph {c:?}"
+            );
+        }
+    }
 }

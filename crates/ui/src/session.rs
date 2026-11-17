@@ -5,7 +5,8 @@
 //! [`Session::execute`], so it is undoable.
 
 use crate::onion::OnionSkin;
-use crate::playback::Playback;
+use crate::panels::dock::PanelLayout;
+use crate::playback::{Playback, PlaybackEvent, PlaybackWatch};
 use crate::preview::Preview;
 use crate::tools::ToolController;
 use document::animation_core::{FrameIndex, FrameRange, GroupId, LayerId};
@@ -35,8 +36,9 @@ pub enum Request {
     Quit,
     /// Show the export options for `ExportKind`, then a save dialog.
     Export(ExportKind),
-    /// Show an open-file dialog for PNG/JPEG pictures, then call
-    /// [`Session::import_image`] for each picked file.
+    /// Show an open-file dialog for PNG/JPEG pictures and MP3/WAV sounds,
+    /// then call [`Session::import_image`] or [`Session::import_audio`] for
+    /// each picked file.
     ImportDialog,
 }
 
@@ -154,6 +156,8 @@ pub struct ViewSettings {
     pub timeline: bool,
     /// The tool settings panel on the right.
     pub tool_settings: bool,
+    /// The library panel on the right (imported pictures; ADR-017).
+    pub library: bool,
 }
 
 impl Default for ViewSettings {
@@ -162,6 +166,7 @@ impl Default for ViewSettings {
             toolbar: true,
             timeline: true,
             tool_settings: true,
+            library: true,
         }
     }
 }
@@ -219,6 +224,8 @@ pub struct Session {
     pub timeline: TimelineView,
     /// Which panels are shown. Kept when the document changes.
     pub view: ViewSettings,
+    /// Where the panels are docked (ADR-021). Kept when the document changes.
+    pub panels: PanelLayout,
     /// Set by the canvas when Space was used to pan, so releasing Space does
     /// not also toggle playback.
     pub space_panned: bool,
@@ -232,6 +239,7 @@ pub struct Session {
     dialog: Option<Dialog>,
     pub(crate) requests: Vec<Request>,
     start_menu: Option<StartMenu>,
+    playback_watch: PlaybackWatch,
 }
 
 impl Default for Session {
@@ -262,6 +270,7 @@ impl Session {
             tools: ToolController::default(),
             timeline: TimelineView::default(),
             view: ViewSettings::default(),
+            panels: PanelLayout::default(),
             space_panned: false,
             resize_canvas: None,
             layer_selection: BTreeSet::new(),
@@ -270,6 +279,7 @@ impl Session {
             dialog: None,
             requests: Vec::new(),
             start_menu: None,
+            playback_watch: PlaybackWatch::default(),
         }
     }
 
@@ -284,6 +294,7 @@ impl Session {
         self.state.tool = tool;
         self.state.brush = brush;
         self.playback = Playback::new(&document);
+        self.playback_watch.reset();
         self.preview.reset(&document);
         self.document = document;
         self.history.clear();
@@ -691,6 +702,17 @@ impl Session {
         self.playback.is_playing()
     }
 
+    /// What sound has to do since the last call: playback started,
+    /// stopped or jumped, or the playhead moved while paused (ADR-020). The
+    /// host calls this once per drawn frame, after the UI ran.
+    pub fn playback_event(&mut self) -> Option<PlaybackEvent> {
+        self.playback_watch.update(
+            self.playback.is_playing(),
+            self.current_frame(),
+            self.document.fps,
+        )
+    }
+
     /// The frame the preview window shows: its own while it plays, else
     /// the editor's current frame.
     pub fn preview_frame(&self) -> FrameIndex {
@@ -792,6 +814,33 @@ impl Session {
                 false
             }
         }
+    }
+
+    // ----- Panel layout (ADR-021) ---------------------------------------
+
+    /// View → Reset Panel Layout: the default layout with every panel shown.
+    pub fn reset_panel_layout(&mut self) {
+        self.panels = PanelLayout::default();
+        self.view = ViewSettings::default();
+    }
+
+    /// Restores a layout saved with [`Self::panel_layout_json`], including
+    /// which panels are shown. Returns `false` and keeps the current layout
+    /// if `json` is not a valid layout.
+    pub fn restore_panel_layout(&mut self, json: &str) -> bool {
+        let Some(layout) = PanelLayout::from_json(json) else {
+            return false;
+        };
+        layout.apply_to_view(&mut self.view);
+        self.panels = layout;
+        true
+    }
+
+    /// The panel layout and which panels are shown, as JSON to save between
+    /// launches.
+    pub fn panel_layout_json(&mut self) -> String {
+        self.panels.sync(&self.view);
+        self.panels.to_json()
     }
 
     /// Shows the start menu instead of the editor.
@@ -973,6 +1022,25 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rusting-ui-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir.join(name)
+    }
+
+    #[test]
+    fn playback_events_follow_the_transport_and_the_playhead() {
+        let mut s = Session::new();
+        assert_eq!(s.playback_event(), None);
+        s.toggle_playback();
+        assert_eq!(
+            s.playback_event(),
+            Some(PlaybackEvent::Started(FrameIndex(0)))
+        );
+        s.toggle_playback();
+        assert_eq!(s.playback_event(), Some(PlaybackEvent::Stopped));
+        s.set_frame(FrameIndex(3));
+        assert_eq!(
+            s.playback_event(),
+            Some(PlaybackEvent::Scrubbed(FrameIndex(3)))
+        );
+        assert_eq!(s.playback_event(), None);
     }
 
     #[test]
