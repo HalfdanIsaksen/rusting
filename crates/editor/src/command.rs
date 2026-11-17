@@ -44,6 +44,15 @@ pub enum CommandError {
     /// The animation cannot grow past the largest frame index.
     #[error("the animation cannot have more frames")]
     FrameLimit,
+    /// The command referred to a library asset that does not exist.
+    #[error("asset not found in the library")]
+    AssetNotFound,
+    /// The library already has an asset with this ID.
+    #[error("the library already has this asset")]
+    AssetExists,
+    /// The asset is placed somewhere in the animation, so it can't be removed.
+    #[error("\"{0}\" is used in the animation; delete its placed copies first")]
+    AssetInUse(String),
     /// The canvas must be at least one pixel wide and high.
     #[error("the canvas must be at least 1×1 pixels")]
     EmptyCanvas,

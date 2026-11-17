@@ -1,6 +1,9 @@
 //! The [`Document`] type.
 
-use animation_core::{DocumentId, DrawingId, Fps, FrameIndex, FrameRange, GroupId, LayerId, Rgba};
+use crate::assets::Asset;
+use animation_core::{
+    AssetId, DocumentId, DrawingId, Fps, FrameIndex, FrameRange, GroupId, LayerId, Rgba,
+};
 use drawing::DrawingContent;
 use scene::{Arrangement, Layer, LayerGroup, LayerStack};
 use serde::{Deserialize, Serialize};
@@ -58,6 +61,9 @@ pub struct Document {
     layers: LayerStack,
     tracks: BTreeMap<LayerId, Track>,
     drawings: BTreeMap<DrawingId, DrawingContent>,
+    /// The asset library (ADR-017); absent in files means empty.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    assets: BTreeMap<AssetId, Asset>,
 }
 
 impl Document {
@@ -74,6 +80,7 @@ impl Document {
             layers: LayerStack::new(),
             tracks: BTreeMap::new(),
             drawings: BTreeMap::new(),
+            assets: BTreeMap::new(),
         }
     }
 
@@ -280,6 +287,50 @@ impl Document {
         unused
     }
 
+    /// The asset library, keyed by ID (ADR-017).
+    pub fn assets(&self) -> &BTreeMap<AssetId, Asset> {
+        &self.assets
+    }
+
+    /// Looks up an asset.
+    pub fn asset(&self, id: AssetId) -> Option<&Asset> {
+        self.assets.get(&id)
+    }
+
+    /// Mutable lookup of an asset.
+    pub fn asset_mut(&mut self, id: AssetId) -> Option<&mut Asset> {
+        self.assets.get_mut(&id)
+    }
+
+    /// Adds an asset under its own ID, replacing and returning any previous
+    /// asset with that ID.
+    pub fn insert_asset(&mut self, asset: Asset) -> Option<Asset> {
+        self.assets.insert(asset.id, asset)
+    }
+
+    /// Removes an asset from the library. Items that still refer to it are
+    /// left alone; check [`Self::asset_in_use`] first.
+    pub fn remove_asset(&mut self, id: AssetId) -> Option<Asset> {
+        self.assets.remove(&id)
+    }
+
+    /// Whether something the animation shows refers to asset `id`: an image
+    /// in a drawing that some keyframe refers to. Drawings kept only for
+    /// undo don't count.
+    pub fn asset_in_use(&self, id: AssetId) -> bool {
+        self.used_assets().contains(&id)
+    }
+
+    /// Every asset that something the animation shows refers to (see
+    /// [`Self::asset_in_use`]).
+    pub fn used_assets(&self) -> BTreeSet<AssetId> {
+        self.referenced_drawings()
+            .into_iter()
+            .filter_map(|id| self.drawings.get(&id)?.as_vector())
+            .flat_map(|v| v.images().iter().filter_map(|i| i.asset))
+            .collect()
+    }
+
     /// The last frame of the animation, if it has any frames.
     pub fn last_frame(&self) -> Option<FrameIndex> {
         self.frame_count.checked_sub(1).map(FrameIndex)
@@ -369,6 +420,39 @@ mod tests {
         assert!(d.drawing(id).is_some());
         assert!(d.remove_drawing(id).is_some());
         assert!(d.drawing(id).is_none());
+    }
+
+    #[test]
+    fn assets_insert_remove_and_usage() {
+        use crate::assets::AssetKind;
+        use drawing::{Image, ImageData, VectorDrawing};
+        let mut d = doc();
+        let l = d.add_layer("L");
+        let data = ImageData::new(2, 2, vec![1, 2]);
+        let asset = Asset::new("pic.png", AssetKind::Image(data.clone()));
+        let id = asset.id;
+        assert!(d.insert_asset(asset.clone()).is_none());
+        assert_eq!(d.asset(id), Some(&asset));
+        assert!(!d.asset_in_use(id));
+
+        let mut v = VectorDrawing::new();
+        v.push_image(Image::new(data, glam_zero(), glam_zero()).with_asset(id));
+        let drawing = d.add_drawing(DrawingContent::Vector(v));
+        // Only drawings a keyframe shows count.
+        assert!(!d.asset_in_use(id));
+        d.track_mut(l)
+            .unwrap()
+            .set_key(FrameIndex(0), Keyframe::Drawing(drawing));
+        assert!(d.asset_in_use(id));
+        assert_eq!(d.used_assets().into_iter().collect::<Vec<_>>(), [id]);
+
+        d.asset_mut(id).unwrap().name = "renamed".into();
+        assert_eq!(d.remove_asset(id).unwrap().name, "renamed");
+        assert!(d.assets().is_empty());
+    }
+
+    fn glam_zero() -> animation_core::Vec2 {
+        animation_core::Vec2::ZERO
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! Concrete document commands.
 
+mod assets;
 mod canvas;
 mod fill;
 mod frames;
@@ -9,6 +10,7 @@ mod layers;
 mod merge;
 mod opacity;
 mod select;
+pub use assets::{AddAsset, RemoveAsset, RenameAsset};
 pub use canvas::ResizeCanvas;
 pub use fill::{AddFill, RemoveFill, ReplaceFill};
 pub use frames::{DuplicateFrame, InsertFrames, MoveFrames, RemoveFrames};

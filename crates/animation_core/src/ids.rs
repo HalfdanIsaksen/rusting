@@ -79,6 +79,11 @@ define_id!(
     /// Identifies a single placed image (an imported picture) inside a drawing.
     ImageId
 );
+define_id!(
+    /// Identifies an asset in the document's library (an imported file that
+    /// placed items refer to; ADR-017).
+    AssetId
+);
 
 #[cfg(test)]
 mod tests {
