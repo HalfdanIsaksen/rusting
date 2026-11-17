@@ -16,7 +16,7 @@ use editor::commands::{
     AddKeyframe, ClearFrame, KeyframeKind, MoveFrames, MoveKeyframe, RemoveKeyframe, SetFps,
     SetFrameCount,
 };
-use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, vec2};
+use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, vec2};
 use std::collections::BTreeSet;
 
 /// Height of one layer row.
@@ -28,6 +28,8 @@ pub(super) const NUMBERS_HEIGHT: f32 = 20.0;
 /// Height of the ruler: tags plus frame numbers (and the layer column's header).
 pub(super) const RULER_HEIGHT: f32 = TAG_HEIGHT + NUMBERS_HEIGHT;
 const MAX_FPS: u32 = 120;
+/// Colour of object (instance) exposures in the frame grid.
+const INSTANCE_TINT: Color32 = Color32::from_rgb(70, 150, 190);
 const MAX_FRAMES: u32 = 100_000;
 
 /// Draws the timeline panel.
@@ -852,6 +854,40 @@ fn paint_frames(ui: &egui::Ui, session: &Session, rows: &[Row], rect: Rect, cell
                 Keyframe::Empty => {
                     let color = visuals.text_color().gamma_multiply(alpha);
                     painter.circle_stroke(center, radius, Stroke::new(1.2, color));
+                }
+                Keyframe::Instance(instance) => {
+                    let tint = INSTANCE_TINT.gamma_multiply(alpha);
+                    if let Some(range) = track.exposure_range(frame, count) {
+                        let bar = Rect::from_x_y_ranges(
+                            col_x(range.start.0) + 1.0..=col_x(range.end.0) - 1.0,
+                            top + 4.0..=top + ROW_HEIGHT - 4.0,
+                        );
+                        painter.rect_filled(bar, 3.0, tint.gamma_multiply(0.45));
+                        // A tick where each loop of the object starts over.
+                        let length = doc.symbol(instance.symbol).map_or(0, |s| s.frame_count);
+                        let tick = visuals.strong_text_color().gamma_multiply(0.6 * alpha);
+                        for f in range.start.0 + 1..range.end.0.min(last + 1) {
+                            if instance.inner_frame(f - range.start.0, length)
+                                == Some(FrameIndex(0))
+                            {
+                                let x = col_x(f);
+                                painter.vline(x, top + 5.0..=top + ROW_HEIGHT - 5.0, (1.5, tick));
+                            }
+                        }
+                    }
+                    // A diamond marks an object key.
+                    let r = radius + 1.0;
+                    let diamond = vec![
+                        center + Vec2::new(0.0, -r),
+                        center + Vec2::new(r, 0.0),
+                        center + Vec2::new(0.0, r),
+                        center + Vec2::new(-r, 0.0),
+                    ];
+                    painter.add(egui::Shape::convex_polygon(
+                        diamond,
+                        visuals.strong_text_color().gamma_multiply(alpha),
+                        Stroke::new(1.0, tint),
+                    ));
                 }
             }
         }

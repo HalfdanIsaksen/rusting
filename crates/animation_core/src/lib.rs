@@ -11,7 +11,9 @@ pub mod interpolation;
 
 pub use color::Rgba;
 pub use frame::{Fps, FrameIndex, FrameRange};
-pub use ids::{AssetId, DocumentId, DrawingId, FillId, GroupId, ImageId, LayerId, StrokeId};
+pub use ids::{
+    AssetId, DocumentId, DrawingId, FillId, GroupId, ImageId, LayerId, StrokeId, SymbolId,
+};
 pub use interpolation::Interpolation;
 
 /// Re-export of the math library so every crate uses the same version.

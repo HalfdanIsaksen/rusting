@@ -23,7 +23,7 @@ pub enum FrameEditError {
 }
 
 /// The undo record for [`Track::remove_frames`].
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RemovedFrames {
     /// The frames that were removed.
     pub range: FrameRange,
@@ -32,7 +32,7 @@ pub struct RemovedFrames {
 }
 
 /// The undo record for [`Track::move_key`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MovedKey {
     /// Where the key was.
     pub from: FrameIndex,

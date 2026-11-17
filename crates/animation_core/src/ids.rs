@@ -84,6 +84,11 @@ define_id!(
     /// placed items refer to; ADR-017).
     AssetId
 );
+define_id!(
+    /// Identifies a symbol: a reusable animated object in the document's
+    /// library, placed on tracks through instance keys (ADR-018).
+    SymbolId
+);
 
 #[cfg(test)]
 mod tests {

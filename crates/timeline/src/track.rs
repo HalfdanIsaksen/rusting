@@ -1,26 +1,45 @@
 //! Per-layer drawing tracks.
 
-use animation_core::{DrawingId, FrameIndex, FrameRange};
+use crate::instance::InstanceKey;
+use animation_core::{DrawingId, FrameIndex, FrameRange, SymbolId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::ops::Bound;
 
 /// A keyframe on a drawing track.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Eq`: instance keys hold float placements.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Keyframe {
     /// Show the given drawing from this frame on.
     Drawing(DrawingId),
     /// Show nothing from this frame on (an empty drawing keyframe).
     Empty,
+    /// Play a symbol's animation from this frame on (ADR-018).
+    Instance(InstanceKey),
 }
 
 impl Keyframe {
-    /// The drawing this keyframe shows, if any.
+    /// The drawing this keyframe shows, if any. Instance keys show no
+    /// drawing of their own.
     pub fn drawing(&self) -> Option<DrawingId> {
         match self {
             Self::Drawing(id) => Some(*id),
-            Self::Empty => None,
+            Self::Empty | Self::Instance(_) => None,
         }
+    }
+
+    /// The instance this keyframe places, if it is an instance key.
+    pub fn instance(&self) -> Option<&InstanceKey> {
+        match self {
+            Self::Instance(key) => Some(key),
+            Self::Drawing(_) | Self::Empty => None,
+        }
+    }
+
+    /// The symbol this keyframe places, if it is an instance key.
+    pub fn symbol(&self) -> Option<SymbolId> {
+        self.instance().map(|key| key.symbol)
     }
 }
 
@@ -85,6 +104,19 @@ impl Track {
             .next_key_after(start)
             .map_or(frame_count, |(f, _)| f.0.min(frame_count));
         Some(FrameRange::new(start, FrameIndex(end)))
+    }
+
+    /// The instance key exposed at `frame` and the frame it sits on, if the
+    /// exposed key is an instance.
+    pub fn instance_at(&self, frame: FrameIndex) -> Option<(FrameIndex, &InstanceKey)> {
+        self.exposed_key(frame)
+            .and_then(|(f, k)| k.instance().map(|i| (f, i)))
+    }
+
+    /// Every key with its frame, mutably (to edit instance placements in
+    /// place, e.g. when the canvas is resized).
+    pub fn keys_mut(&mut self) -> impl Iterator<Item = (FrameIndex, &mut Keyframe)> {
+        self.keys.iter_mut().map(|(f, k)| (*f, k))
     }
 
     /// The drawing visible at `frame`, if any.

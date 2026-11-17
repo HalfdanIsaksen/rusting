@@ -604,6 +604,7 @@ impl Command for AddKeyframe {
         match self.key {
             Keyframe::Drawing(_) => "Add Keyframe",
             Keyframe::Empty => "Add Empty Keyframe",
+            Keyframe::Instance(_) => "Place Object",
         }
     }
 

@@ -1,5 +1,5 @@
-//! The project document: canvas settings, layers, tracks, drawings and the
-//! asset library.
+//! The project document: canvas settings, layers, tracks, drawings, the
+//! asset library and symbols (objects).
 //!
 //! [`Document::evaluate`] turns the document into a [`RenderList`] for a
 //! given frame. That is the only thing the renderer needs to know about
@@ -10,12 +10,14 @@ pub mod canvas;
 pub mod document;
 pub mod evaluate;
 pub mod new_document;
+pub mod symbol;
 
 pub use assets::{Asset, AssetKind};
 pub use canvas::CanvasAnchor;
 pub use document::{CanvasSize, Document, FrameTag, RemovedLayer};
 pub use evaluate::{RenderLayer, RenderList};
 pub use new_document::{NewDocumentSettings, SettingsError, Template};
+pub use symbol::Symbol;
 
 // Re-exported so downstream crates use exactly the same types.
 pub use animation_core;
