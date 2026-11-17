@@ -1,13 +1,17 @@
 //! The library panel: every file imported into the project, in sections by
 //! kind (ADR-017), and the objects made in it (ADR-018).
 //!
-//! Double-click a row to rename it. Right-click it to place it on the canvas
-//! or delete it (only while nothing in the animation uses it). Drag a row
-//! onto the canvas to place it where it is dropped: a picture row sets an
-//! [`AssetDrag`] payload, an object row an [`ObjectDrag`]. The host's canvas
-//! takes them with `Response::dnd_release_payload` and calls
-//! [`Session::place_asset`] or [`Session::place_symbol_on_canvas`] with the
-//! drop point. The timeline takes an [`ObjectDrag`] on a frame cell too.
+//! Double-click a row to rename it. Right-click it to place it (a picture on
+//! the canvas, a sound on a new audio layer at the current frame, an object
+//! on a new layer on the canvas) or delete it (only while nothing in the
+//! animation uses it). Drag a row to place it where it is dropped: a picture
+//! or sound row sets an [`AssetDrag`] payload, an object row an
+//! [`ObjectDrag`]. The host's canvas takes pictures and objects with
+//! `Response::dnd_release_payload` and calls [`Session::place_asset`] or
+//! [`Session::place_symbol_on_canvas`] with the drop point. The timeline
+//! takes an [`ObjectDrag`] on a frame cell, and a sound on its frames to
+//! start a new audio layer at the frame it is dropped on
+//! ([`Session::place_audio`]).
 
 use crate::icons::{self, IconFn};
 use crate::session::Session;
@@ -58,6 +62,12 @@ const SECTIONS: &[Section] = &[
         source: Source::Assets(|kind| matches!(kind, AssetKind::Image(_))),
     },
     Section {
+        title: "Audio",
+        empty: "File → Import… adds MP3 and WAV sounds here.",
+        icon: icons::speaker,
+        source: Source::Assets(|kind| matches!(kind, AssetKind::Audio(_))),
+    },
+    Section {
         title: "Objects",
         empty: "Select layers and frames (or items on the canvas) and choose Convert to \
                 Object (F8) to make one.",
@@ -73,6 +83,8 @@ struct Row {
     /// Tooltip description, e.g. "Image, 640×480".
     description: String,
     in_use: bool,
+    /// A library sound: placed on the timeline, not on the canvas.
+    is_sound: bool,
 }
 
 impl Section {
@@ -89,6 +101,7 @@ impl Section {
                         name: a.name.clone(),
                         description: describe(a),
                         in_use: used.contains(&a.id),
+                        is_sound: a.audio().is_some(),
                     })
                     .collect()
             }
@@ -102,6 +115,7 @@ impl Section {
                         name: s.name.clone(),
                         description: describe_object(s),
                         in_use: doc.symbol_in_use(s.id),
+                        is_sound: false,
                     })
                     .collect()
             }
@@ -141,7 +155,7 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .button("Import…")
-                .on_hover_text("Add PNG or JPEG pictures to the library and the canvas")
+                .on_hover_text("Add PNG or JPEG pictures or MP3 or WAV sounds to the library")
                 .clicked()
             {
                 session.import();
@@ -184,7 +198,16 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
 
     match action {
         Some(Action::Place(Entry::Asset(id))) => {
-            session.place_asset(id, None);
+            if session
+                .document
+                .asset(id)
+                .is_some_and(|a| a.audio().is_some())
+            {
+                let frame = session.current_frame();
+                session.place_audio(id, frame);
+            } else {
+                session.place_asset(id, None);
+            }
         }
         Some(Action::Place(Entry::Object(id))) => {
             session.place_symbol_on_canvas(id, None);
@@ -238,6 +261,7 @@ fn row(ui: &mut egui::Ui, section: &Section, r: &Row, renaming: &mut Renaming) -
     }
 
     let drop_hint = match r.entry {
+        Entry::Asset(_) if r.is_sound => "Drag onto the timeline to place it there",
         Entry::Asset(_) => "Drag onto the canvas to place it there",
         Entry::Object(_) => "Drag onto the canvas or onto a timeline cell to place it there",
     };
@@ -281,15 +305,21 @@ fn row(ui: &mut egui::Ui, section: &Section, r: &Row, renaming: &mut Renaming) -
         };
     }
     response.context_menu(|ui| {
-        let place_hint = match r.entry {
-            Entry::Asset(_) => "Place it centred on the canvas, on the current layer and frame",
-            Entry::Object(_) => "Place it centred on the canvas, on a new layer at this frame",
+        let (place, place_hint) = match r.entry {
+            Entry::Asset(_) if r.is_sound => (
+                "Add to Timeline",
+                "Put it on a new audio layer, starting at the current frame",
+            ),
+            Entry::Asset(_) => (
+                "Place on Canvas",
+                "Place it centred on the canvas, on the current layer and frame",
+            ),
+            Entry::Object(_) => (
+                "Place on Canvas",
+                "Place it centred on the canvas, on a new layer at this frame",
+            ),
         };
-        if ui
-            .button("Place on Canvas")
-            .on_hover_text(place_hint)
-            .clicked()
-        {
+        if ui.button(place).on_hover_text(place_hint).clicked() {
             action = Some(Action::Place(r.entry));
             ui.close();
         }
@@ -304,7 +334,11 @@ fn row(ui: &mut egui::Ui, section: &Section, r: &Row, renaming: &mut Renaming) -
         ui.separator();
         let delete = ui
             .add_enabled(!r.in_use, egui::Button::new("Delete"))
-            .on_disabled_hover_text("It is used in the animation: delete its placed copies first");
+            .on_disabled_hover_text(if r.is_sound {
+                "It is used in the animation: delete its audio layers first"
+            } else {
+                "It is used in the animation: delete its placed copies first"
+            });
         if delete.clicked() {
             action = Some(Action::Delete(r.entry));
             ui.close();
@@ -317,6 +351,11 @@ fn row(ui: &mut egui::Ui, section: &Section, r: &Row, renaming: &mut Renaming) -
 fn describe(asset: &Asset) -> String {
     match &asset.kind {
         AssetKind::Image(data) => format!("Image, {}×{}", data.width, data.height),
+        AssetKind::Audio(data) => format!(
+            "Audio, {}, {}",
+            data.format.label(),
+            format_duration(data.duration)
+        ),
     }
 }
 
@@ -331,15 +370,53 @@ fn describe_object(symbol: &Symbol) -> String {
     )
 }
 
+/// A length in seconds as `m:ss.s`, e.g. "1:05.3".
+pub fn format_duration(secs: f64) -> String {
+    let tenths = (secs.max(0.0) * 10.0).round() as u64;
+    format!("{}:{:02}.{}", tenths / 600, tenths / 10 % 60, tenths % 10)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use document::drawing::ImageData;
 
+    #[test]
+    fn durations_read_as_minutes_and_seconds() {
+        assert_eq!(format_duration(0.0), "0:00.0");
+        assert_eq!(format_duration(65.34), "1:05.3");
+        assert_eq!(format_duration(599.96), "10:00.0");
+    }
+
     fn draw(session: &mut Session) {
         let ctx = egui::Context::default();
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| panel(ui, session));
         output.textures_delta.clear();
+    }
+
+    #[test]
+    fn sounds_get_their_own_section() {
+        let mut s = Session::new();
+        let sound = document::AudioData {
+            format: document::AudioFormat::Mp3,
+            sample_rate: 44_100,
+            channels: 2,
+            duration: 65.3,
+            peaks: Vec::new(),
+            bytes: std::sync::Arc::from(vec![1u8]),
+        };
+        s.import_audio("song.mp3", sound).unwrap();
+        let asset = s.document.assets().values().next().unwrap();
+        let sections: Vec<&str> = SECTIONS
+            .iter()
+            .filter(|sec| !sec.rows(&s.document).is_empty())
+            .map(|sec| sec.title)
+            .collect();
+        assert_eq!(sections, ["Audio"]);
+        assert_eq!(describe(asset), "Audio, MP3, 1:05.3");
+        let before = s.document.clone();
+        draw(&mut s);
+        assert_eq!(s.document, before);
     }
 
     #[test]

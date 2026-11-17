@@ -22,6 +22,7 @@ Arrows point from a dependency to its dependents. Rules:
 - `ui` also depends on `file_format` (its `Session` opens and saves projects). Native file dialogs (`rfd`) live in `apps/desktop`.
 - `export` (PNG/JPEG/MP4 encoding, ADR-008) depends on no workspace crate and no GPU. Only `apps/desktop` uses it: it renders frames with `renderer::OffscreenRenderer` and hands them to `export::ExportWorker`.
 - `renderer` takes anything wgpu can turn into a surface. It does not know about winit.
+- Audio decoding and output (`rodio`, ADR-020) live in `apps/desktop` only. Core crates store sound files and their peaks but never decode them.
 
 ## Shared types (owned by `animation_core`)
 | Type | Meaning |
@@ -39,6 +40,9 @@ Arrows point from a dependency to its dependents. Rules:
 Document
 ├─ canvas: CanvasSize, background: Option<Rgba>, fps, frame_count
 ├─ layers: LayerStack            (bottom-to-top Vec<Layer>; scene crate)
+│     Layer.kind: Drawing | Audio(AudioClip { asset, start, volume })  (ADR-020)
+│     an audio layer has an empty track; Document::audio_at(frame) lists the
+│     clips sounding at a frame
 │     + groups: Vec<LayerGroup>; Layer.group: Option<GroupId>, members adjacent
 │     (one level, no nesting; group visibility/lock/opacity apply to members; ADR-013)
 ├─ tracks: BTreeMap<LayerId, Track>    (timeline crate)
@@ -60,10 +64,11 @@ Document
 │     (VectorDrawing::paint_order; ADR-007, ADR-010, ADR-011, ADR-015)
 │     Image.asset: Option<AssetId> = the library entry it was placed from (ADR-017)
 ├─ assets: BTreeMap<AssetId, Asset>    (the library; document crate, ADR-017)
-│     Asset { id, name, kind: AssetKind };  AssetKind = Image(ImageData)
+│     Asset { id, name, kind: AssetKind };  AssetKind = Image(ImageData) | Audio(AudioData)
+│     AudioData = MP3/WAV bytes, format, sample rate, channels, duration, peaks
 │     An asset stays until the user deletes it (RemoveAsset is refused while a
-│     drawing a keyframe shows uses it). Files store a placed image's bytes
-│     only in its asset.
+│     drawing a keyframe shows, of the document or of an object, or an audio
+│     layer uses it). Files store a placed image's bytes only in its asset.
 └─ symbols: BTreeMap<SymbolId, Symbol>   (objects; document crate, ADR-018)
       Symbol { id, name, layers: LayerStack, tracks, frame_count }
       Its drawings live in the shared pool, in the symbol's own coordinates,
@@ -86,7 +91,7 @@ input → ui/desktop → editor::Command → History → Document
                                                │
                      EditorState.current_frame ┘→ Document::evaluate(frame) → RenderList → renderer
 ```
-`evaluate` is cheap and allocates only one `Vec`. Instance keys are expanded recursively (at most `MAX_SYMBOL_DEPTH` levels): each visible symbol layer becomes a `RenderLayer` of the document layer holding the instance, with `transform: Affine2` = layer × instance × symbol layer, opacities multiplied, and `in_object` set so editing tools leave it alone. Inside an active motion tween, `Track::displayed_instance` blends the key's transform and opacity toward the next key by the eased factor, and the inner frame keeps counting from the first key (ADR-019). The renderer caches stroke, fill and image meshes by `MeshId` (a `StrokeId`, `FillId` or `ImageId`) and rebuilds a mesh only when its item changes. Image textures are decoded once per image and uploaded on the next render.
+`evaluate` is cheap and allocates only one `Vec`. Audio layers are skipped there; sound follows `Session::playback_event` (started, seeked, stopped, scrubbed), which `apps/desktop/src/audio.rs` turns into rodio players for `Document::audio_at(frame)`. Instance keys are expanded recursively (at most `MAX_SYMBOL_DEPTH` levels): each visible symbol layer becomes a `RenderLayer` of the document layer holding the instance, with `transform: Affine2` = layer × instance × symbol layer, opacities multiplied, and `in_object` set so editing tools leave it alone. Inside an active motion tween, `Track::displayed_instance` blends the key's transform and opacity toward the next key by the eased factor, and the inner frame keeps counting from the first key (ADR-019). The renderer caches stroke, fill and image meshes by `MeshId` (a `StrokeId`, `FillId` or `ImageId`) and rebuilds a mesh only when its item changes. Image textures are decoded once per image and uploaded on the next render.
 
 ## Error handling
 - Library crates return typed `thiserror` errors (`FileFormatError`, `CommandError`, `RendererError`).

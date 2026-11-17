@@ -44,7 +44,8 @@ pub struct RenderLayer<'a> {
 }
 
 /// What to draw for one frame, bottom-to-top. Hidden layers (or layers in a
-/// hidden group) and layers with no exposed drawing are left out.
+/// hidden group), audio layers and layers with no exposed drawing are left
+/// out.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RenderList<'a> {
     /// Layers in back-to-front order.
@@ -94,7 +95,11 @@ impl Document {
     pub fn evaluate(&self, frame: FrameIndex) -> RenderList<'_> {
         let stack = self.layers();
         let mut layers = Vec::new();
-        for layer in stack.iter().filter(|layer| stack.is_visible(layer.id)) {
+        // Audio layers make no picture (ADR-020).
+        for layer in stack
+            .iter()
+            .filter(|layer| layer.kind.is_drawing() && stack.is_visible(layer.id))
+        {
             let Some(track) = self.track(layer.id) else {
                 continue;
             };
@@ -210,7 +215,11 @@ impl Document {
         let placed = context.transform * key.transform.to_affine();
         let opacity = context.opacity * key.opacity;
         let stack = &symbol.layers;
-        for layer in stack.iter().filter(|l| stack.is_visible(l.id)) {
+        // Objects never hold audio layers; skip one a damaged file might.
+        for layer in stack
+            .iter()
+            .filter(|l| l.kind.is_drawing() && stack.is_visible(l.id))
+        {
             let Some(track) = symbol.tracks.get(&layer.id) else {
                 continue;
             };

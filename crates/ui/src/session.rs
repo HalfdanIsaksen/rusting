@@ -6,7 +6,7 @@
 
 use crate::onion::OnionSkin;
 use crate::panels::dock::PanelLayout;
-use crate::playback::Playback;
+use crate::playback::{Playback, PlaybackEvent, PlaybackWatch};
 use crate::preview::Preview;
 use crate::tools::ToolController;
 use document::animation_core::{FrameIndex, FrameRange, GroupId, LayerId};
@@ -36,8 +36,9 @@ pub enum Request {
     Quit,
     /// Show the export options for `ExportKind`, then a save dialog.
     Export(ExportKind),
-    /// Show an open-file dialog for PNG/JPEG pictures, then call
-    /// [`Session::import_image`] for each picked file.
+    /// Show an open-file dialog for PNG/JPEG pictures and MP3/WAV sounds,
+    /// then call [`Session::import_image`] or [`Session::import_audio`] for
+    /// each picked file.
     ImportDialog,
 }
 
@@ -238,6 +239,7 @@ pub struct Session {
     dialog: Option<Dialog>,
     pub(crate) requests: Vec<Request>,
     start_menu: Option<StartMenu>,
+    playback_watch: PlaybackWatch,
 }
 
 impl Default for Session {
@@ -277,6 +279,7 @@ impl Session {
             dialog: None,
             requests: Vec::new(),
             start_menu: None,
+            playback_watch: PlaybackWatch::default(),
         }
     }
 
@@ -291,6 +294,7 @@ impl Session {
         self.state.tool = tool;
         self.state.brush = brush;
         self.playback = Playback::new(&document);
+        self.playback_watch.reset();
         self.preview.reset(&document);
         self.document = document;
         self.history.clear();
@@ -698,6 +702,17 @@ impl Session {
         self.playback.is_playing()
     }
 
+    /// What sound has to do since the last call: playback started,
+    /// stopped or jumped, or the playhead moved while paused (ADR-020). The
+    /// host calls this once per drawn frame, after the UI ran.
+    pub fn playback_event(&mut self) -> Option<PlaybackEvent> {
+        self.playback_watch.update(
+            self.playback.is_playing(),
+            self.current_frame(),
+            self.document.fps,
+        )
+    }
+
     /// The frame the preview window shows: its own while it plays, else
     /// the editor's current frame.
     pub fn preview_frame(&self) -> FrameIndex {
@@ -1007,6 +1022,25 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rusting-ui-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir.join(name)
+    }
+
+    #[test]
+    fn playback_events_follow_the_transport_and_the_playhead() {
+        let mut s = Session::new();
+        assert_eq!(s.playback_event(), None);
+        s.toggle_playback();
+        assert_eq!(
+            s.playback_event(),
+            Some(PlaybackEvent::Started(FrameIndex(0)))
+        );
+        s.toggle_playback();
+        assert_eq!(s.playback_event(), Some(PlaybackEvent::Stopped));
+        s.set_frame(FrameIndex(3));
+        assert_eq!(
+            s.playback_event(),
+            Some(PlaybackEvent::Scrubbed(FrameIndex(3)))
+        );
+        assert_eq!(s.playback_event(), None);
     }
 
     #[test]

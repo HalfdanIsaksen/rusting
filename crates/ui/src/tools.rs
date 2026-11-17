@@ -783,7 +783,12 @@ impl Session {
             return Some("No layer selected — add a layer first".into());
         };
         let group = self.document.layers().group_of(layer.id);
-        if layer.locked {
+        if layer.is_audio() {
+            Some(format!(
+                "“{}” is an audio layer — pick a drawing layer",
+                layer.name
+            ))
+        } else if layer.locked {
             Some(format!("Layer “{}” is locked", layer.name))
         } else if let Some(g) = group.filter(|g| g.locked) {
             Some(format!("Group “{}” is locked", g.name))

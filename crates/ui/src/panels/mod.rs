@@ -51,3 +51,34 @@ pub fn show(
     dialogs::show(ui.ctx(), session);
     resize_canvas::show(ui.ctx(), session);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use document::{AudioData, AudioFormat};
+
+    #[test]
+    fn editor_draws_audio_layers_without_changing_the_document() {
+        let mut s = Session::new();
+        let sound = AudioData {
+            format: AudioFormat::Wav,
+            sample_rate: 8000,
+            channels: 1,
+            duration: 0.5,
+            peaks: (0..50).map(|i| i * 5).collect(),
+            bytes: std::sync::Arc::from(vec![1u8]),
+        };
+        let layer = s.import_audio("song.wav", sound).unwrap();
+        let ctx = egui::Context::default();
+        for active in [false, true] {
+            if active {
+                s.set_active_layer(layer);
+            }
+            let before = s.document.clone();
+            let mut output =
+                ctx.run_ui(egui::RawInput::default(), |ui| show(ui, &mut s, |_, _| {}));
+            output.textures_delta.clear();
+            assert_eq!(s.document, before);
+        }
+    }
+}

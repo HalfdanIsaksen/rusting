@@ -325,7 +325,8 @@ impl Document {
 
     /// Whether something the animation shows refers to asset `id`: an image
     /// in a drawing that some keyframe refers to (of the document or of a
-    /// symbol in the library). Drawings kept only for undo don't count.
+    /// symbol in the library), or an audio layer's sound. Drawings and
+    /// layers kept only for undo don't count.
     pub fn asset_in_use(&self, id: AssetId) -> bool {
         self.used_assets().contains(&id)
     }
@@ -337,6 +338,7 @@ impl Document {
             .into_iter()
             .filter_map(|id| self.drawings.get(&id)?.as_vector())
             .flat_map(|v| v.images().iter().filter_map(|i| i.asset))
+            .chain(self.audio_layers().map(|(_, clip)| clip.asset))
             .collect()
     }
 
@@ -502,6 +504,17 @@ mod tests {
             .set_key(FrameIndex(0), Keyframe::Drawing(drawing));
         assert!(d.asset_in_use(id));
         assert_eq!(d.used_assets().into_iter().collect::<Vec<_>>(), [id]);
+
+        // An audio layer uses its sound.
+        let sound = AssetId::new();
+        let audio = d.add_layer("A");
+        *d.layer_mut(audio).unwrap() = scene::Layer {
+            id: audio,
+            ..scene::Layer::audio("A", scene::AudioClip::new(sound, FrameIndex(0)))
+        };
+        assert!(d.asset_in_use(sound));
+        d.remove_layer(audio);
+        assert!(!d.asset_in_use(sound));
 
         d.asset_mut(id).unwrap().name = "renamed".into();
         assert_eq!(d.remove_asset(id).unwrap().name, "renamed");

@@ -504,6 +504,30 @@ pub fn object(painter: &Painter, rect: Rect, color: Color32) {
     );
 }
 
+/// A speaker with two sound waves (an audio layer or library sound).
+pub fn speaker(painter: &Painter, rect: Rect, color: Color32) {
+    filled(
+        painter,
+        rect,
+        color,
+        &[
+            (0.12, 0.38),
+            (0.28, 0.38),
+            (0.5, 0.18),
+            (0.5, 0.82),
+            (0.28, 0.62),
+            (0.12, 0.62),
+        ],
+    );
+    let stroke = PathStroke::new(line_width(rect), color);
+    for radius in [0.14, 0.28] {
+        painter.add(PathShape::line(
+            arc(rect, (0.52, 0.5), (radius, radius), -0.9, 0.9),
+            stroke.clone(),
+        ));
+    }
+}
+
 /// A folder (a layer group).
 pub fn folder(painter: &Painter, rect: Rect, color: Color32) {
     outline(

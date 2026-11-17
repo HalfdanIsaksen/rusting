@@ -31,7 +31,7 @@ pub use onion::{OnionDrawing, OnionSkin};
 pub use paint_order::PaintOrder;
 pub use panels::library::{AssetDrag, ObjectDrag};
 pub use panels::{preview_window, show};
-pub use playback::Playback;
+pub use playback::{Playback, PlaybackEvent};
 pub use preview::Preview;
 pub use session::{DiscardAction, ExportKind, Request, Session, StartMenu, ViewSettings};
 pub use tools::{EraserMode, FillStyle, ToolController};

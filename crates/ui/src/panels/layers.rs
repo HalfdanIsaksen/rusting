@@ -202,10 +202,19 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
             RowKind::Layer(_) => "layer",
             RowKind::Group(_) => "group",
         };
-        let (eye, eye_tip, eye_strong) = if row.visible {
-            (icons::eye as IconFn, format!("Hide {what}"), true)
-        } else {
-            (icons::eye_closed as IconFn, format!("Show {what}"), false)
+        let (eye, eye_tip, eye_strong) = match (row.visible, row.audio) {
+            (true, true) => (
+                icons::eye as IconFn,
+                "Mute the audio layer".to_owned(),
+                true,
+            ),
+            (false, true) => (
+                icons::eye_closed as IconFn,
+                "Unmute the audio layer".to_owned(),
+                false,
+            ),
+            (true, false) => (icons::eye as IconFn, format!("Hide {what}"), true),
+            (false, false) => (icons::eye_closed as IconFn, format!("Show {what}"), false),
         };
         if icon_button(
             ui,
@@ -262,6 +271,20 @@ pub(super) fn column(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], hei
             };
             icons::folder(&painter, folder_rect, color);
             name_rect.min.x = folder_rect.right() + 2.0;
+        }
+
+        if row.audio {
+            let speaker_rect = Rect::from_center_size(
+                Pos2::new(name_rect.left() + 9.0, name_rect.center().y),
+                vec2(ICON_SIZE, ICON_SIZE),
+            );
+            let color = if row.shown {
+                visuals.text_color()
+            } else {
+                visuals.text_color().gamma_multiply(0.4)
+            };
+            icons::speaker(&painter, speaker_rect, color);
+            name_rect.min.x = speaker_rect.right() + 2.0;
         }
 
         if renaming.target == Some(row.kind) {

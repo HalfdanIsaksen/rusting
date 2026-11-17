@@ -6,13 +6,15 @@
 //! animation, which keeps timeline logic out of the rendering code.
 
 pub mod assets;
+pub mod audio;
 pub mod canvas;
 pub mod document;
 pub mod evaluate;
 pub mod new_document;
 pub mod symbol;
 
-pub use assets::{Asset, AssetKind};
+pub use assets::{Asset, AssetKind, AudioData, AudioFormat};
+pub use audio::SoundingClip;
 pub use canvas::CanvasAnchor;
 pub use document::{CanvasSize, Document, FrameTag, RemovedLayer};
 pub use evaluate::{RenderLayer, RenderList};

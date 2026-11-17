@@ -2,7 +2,7 @@
 //! the frame grid (one row per layer, keys and exposures, scrubbing). The
 //! layer controls on the left of the grid live in [`super::layers`].
 
-use super::library::ObjectDrag;
+use super::library::{AssetDrag, ObjectDrag};
 use super::shortcuts;
 use super::status::fps_text;
 use crate::icons::{self, IconFn};
@@ -14,8 +14,8 @@ use document::drawing::DrawingContent;
 use document::scene::BlendMode;
 use document::timeline::Keyframe;
 use editor::commands::{
-    AddKeyframe, ClearFrame, KeyframeKind, MoveFrames, MoveKeyframe, RemoveKeyframe, SetFps,
-    SetFrameCount,
+    AddKeyframe, ClearFrame, KeyframeKind, MoveFrames, MoveKeyframe, RemoveKeyframe, SetAudioClip,
+    SetFps, SetFrameCount,
 };
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, vec2};
 use std::collections::BTreeSet;
@@ -349,6 +349,8 @@ pub(super) struct Row {
     pub(super) group: Option<GroupId>,
     /// Group headers: whether the group is folded.
     pub(super) collapsed: bool,
+    /// Whether it is an audio layer (ADR-020).
+    pub(super) audio: bool,
 }
 
 impl Row {
@@ -381,6 +383,7 @@ pub(super) fn rows(doc: &Document, collapsed: &BTreeSet<GroupId>) -> Vec<Row> {
                 opacity: g.opacity,
                 group: Some(g.id),
                 collapsed: collapsed.contains(&g.id),
+                audio: false,
             });
         }
         current = l.group;
@@ -397,6 +400,7 @@ pub(super) fn rows(doc: &Document, collapsed: &BTreeSet<GroupId>) -> Vec<Row> {
             opacity: l.opacity,
             group: l.group,
             collapsed: false,
+            audio: l.is_audio(),
         });
     }
     rows
@@ -460,8 +464,19 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
         (unlocked && keyed).then_some((layer, frame))
     };
 
-    // Drag inside the frame selection to move it, or drag a key to move
-    // that key; the drop happens on release.
+    // The audio clip under `pos`, if its layer can be edited: the layer and
+    // the clip's start.
+    let movable_clip = |pos: Pos2| {
+        let layer = row_at(rows, pos.y - rect.top())?;
+        let clip = session.document.layers().get(layer)?.audio_clip()?;
+        let range = session.document.clip_range(clip)?;
+        let unlocked = session.document.layers().is_editable(layer);
+        (unlocked && range.contains(frame_at(pos.x))).then_some((layer, clip.start))
+    };
+
+    // Drag inside the frame selection to move it, drag a key to move that
+    // key (the drop happens on release), or drag an audio clip to move its
+    // start (live, one undo step).
     let selection = session.frame_selection();
     let in_selection = |pos: Pos2| {
         pos.y - rect.top() >= RULER_HEIGHT && selection.is_some_and(|r| r.contains(frame_at(pos.x)))
@@ -469,6 +484,7 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
     let shift = ui.input(|i| i.modifiers.shift);
     let selection_drag_id = ui.scope_id().with("selection_drag");
     let drag_id = ui.scope_id().with("key_drag");
+    let clip_drag_id = ui.scope_id().with("clip_drag");
     if response.drag_started()
         && let Some(origin) = ui.input(|i| i.pointer.press_origin())
     {
@@ -476,8 +492,17 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
             ui.data_mut(|d| d.insert_temp(selection_drag_id, frame_at(origin.x)));
         } else if let Some(key) = movable_key(origin) {
             ui.data_mut(|d| d.insert_temp(drag_id, key));
+        } else if let Some((layer, start)) = movable_clip(origin) {
+            let drag = ClipDrag {
+                layer,
+                grab: frame_at(origin.x),
+                start,
+                gesture: ui.ctx().cumulative_pass_nr(),
+            };
+            ui.data_mut(|d| d.insert_temp(clip_drag_id, drag));
         }
     }
+    let clip_drag: Option<ClipDrag> = ui.data(|d| d.get_temp(clip_drag_id));
     let selection_grab: Option<FrameIndex> = ui.data(|d| d.get_temp(selection_drag_id));
     let dragged_key: Option<(LayerId, FrameIndex)> = ui.data(|d| d.get_temp(drag_id));
     let drop_target = ui
@@ -491,18 +516,24 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
             let start = i64::from(range.start.0) + i64::from(at.0) - i64::from(grab.0);
             FrameIndex(start.clamp(0, i64::from(count - range.len())) as u32)
         });
-    if dragged_key.is_some() || selection_grab.is_some() {
+    if dragged_key.is_some() || selection_grab.is_some() || clip_drag.is_some() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-    } else if response
-        .hover_pos()
-        .is_some_and(|pos| in_selection(pos) || movable_key(pos).is_some())
-    {
+    } else if response.hover_pos().is_some_and(|pos| {
+        in_selection(pos) || movable_key(pos).is_some() || movable_clip(pos).is_some()
+    }) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
     }
     let right_clicked_key = response
         .secondary_clicked()
         .then(|| response.interact_pointer_pos().and_then(movable_key))
         .flatten();
+    if let Some(drag) = clip_drag {
+        if response.drag_stopped() {
+            ui.data_mut(|d| d.remove::<ClipDrag>(clip_drag_id));
+        } else if let Some(at) = drop_target {
+            drag.follow(session, at, count);
+        }
+    }
     if response.drag_stopped() && selection_grab.is_some() {
         ui.data_mut(|d| d.remove::<FrameIndex>(selection_drag_id));
         if let Some(to) = selection_to {
@@ -614,6 +645,7 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
     // of it).
     if dragged_key.is_none()
         && selection_grab.is_none()
+        && clip_drag.is_none()
         && response.is_pointer_button_down_on()
         && let Some(pos) = response.interact_pointer_pos()
     {
@@ -665,6 +697,7 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
     }
 
     paint_frames(ui, session, rows, rect, cell, count);
+    sound_drop(ui, session, &response, rect, cell, frame_at);
     if response.dragged()
         && let Some((layer, from)) = dragged_key
         && let Some(to) = drop_target
@@ -766,6 +799,138 @@ fn tween_menu(ui: &mut egui::Ui, session: &mut Session, cell: Option<(LayerId, F
     }
     if !targets.removable.is_empty() && ui.button("Remove Tween").clicked() {
         session.set_tweens(&targets.removable, None);
+    }
+}
+
+/// An audio clip being dragged along its row.
+#[derive(Clone, Copy, Debug)]
+struct ClipDrag {
+    layer: LayerId,
+    /// The frame the drag started on.
+    grab: FrameIndex,
+    /// The clip's start when the drag began.
+    start: FrameIndex,
+    /// Every move of one drag merges into one undo step.
+    gesture: u64,
+}
+
+impl ClipDrag {
+    /// Moves the clip so it starts as far from `start` as the pointer (at
+    /// frame `at`) is from where it was grabbed, kept inside the animation.
+    fn follow(self, session: &mut Session, at: FrameIndex, count: u32) {
+        let to = i64::from(self.start.0) + i64::from(at.0) - i64::from(self.grab.0);
+        let to = FrameIndex(to.clamp(0, i64::from(count.saturating_sub(1))) as u32);
+        let Some(clip) = session
+            .document
+            .layers()
+            .get(self.layer)
+            .and_then(|l| l.audio_clip())
+            .copied()
+        else {
+            return;
+        };
+        if clip.start != to {
+            let moved = document::scene::AudioClip { start: to, ..clip };
+            let _ = session.execute(Box::new(
+                SetAudioClip::new(self.layer, moved).in_gesture(self.gesture),
+            ));
+        }
+    }
+}
+
+/// A library sound dragged over the frames: marks the frame it would start
+/// on, and on release puts it on a new audio layer starting there.
+fn sound_drop(
+    ui: &egui::Ui,
+    session: &mut Session,
+    response: &egui::Response,
+    rect: Rect,
+    cell: f32,
+    frame_at: impl Fn(f32) -> FrameIndex,
+) {
+    let is_sound = |drag: &AssetDrag| {
+        session
+            .document
+            .asset(drag.0)
+            .is_some_and(|a| a.audio().is_some())
+    };
+    if let Some(drag) = response.dnd_hover_payload::<AssetDrag>()
+        && is_sound(&drag)
+        && let Some(pos) = response.hover_pos()
+    {
+        let x = rect.left() + frame_at(pos.x).0 as f32 * cell;
+        let color = ui.visuals().selection.stroke.color;
+        let painter = ui.painter_at(rect);
+        painter.vline(x, rect.top()..=rect.bottom(), Stroke::new(2.0, color));
+        painter.rect_stroke(
+            Rect::from_x_y_ranges(x..=x + cell, rect.top()..=rect.top() + RULER_HEIGHT),
+            2.0,
+            Stroke::new(2.0, color),
+            StrokeKind::Inside,
+        );
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Copy);
+    }
+    if let Some(drag) = response.dnd_release_payload::<AssetDrag>()
+        && is_sound(&drag)
+        && let Some(pos) = response.hover_pos().or(response.interact_pointer_pos())
+    {
+        session.place_audio(drag.0, frame_at(pos.x));
+    }
+}
+
+/// Draws an audio layer's clip in its row: a bar from its start for its
+/// length, with the sound's waveform, drawn only for frames `first..last`.
+#[allow(clippy::too_many_arguments)]
+fn paint_clip(
+    painter: &egui::Painter,
+    visuals: &egui::Visuals,
+    doc: &Document,
+    layer: LayerId,
+    (rect, top): (Rect, f32),
+    cell: f32,
+    (first, last): (u32, u32),
+    alpha: f32,
+) {
+    let Some(clip) = doc.layers().get(layer).and_then(|l| l.audio_clip()) else {
+        return;
+    };
+    let (Some(range), Some(sound)) = (doc.clip_range(clip), doc.clip_sound(clip)) else {
+        return;
+    };
+    let col_x = |f: u32| rect.left() + f as f32 * cell;
+    let bar = Rect::from_x_y_ranges(
+        col_x(range.start.0) + 1.0..=col_x(range.end.0) - 1.0,
+        top + 3.0..=top + ROW_HEIGHT - 3.0,
+    );
+    let accent = visuals.selection.bg_fill;
+    painter.rect_filled(bar, 3.0, accent.gamma_multiply(0.3 * alpha));
+    painter.rect_stroke(
+        bar,
+        3.0,
+        Stroke::new(1.0, accent.gamma_multiply(alpha)),
+        StrokeKind::Inside,
+    );
+    // One line per two points, as tall as the loudest sample under it.
+    let from = range.start.0.max(first);
+    let to = range.end.0.min(last.saturating_add(1));
+    if from >= to {
+        return;
+    }
+    let secs_per_point = doc.fps.frame_duration_secs() / f64::from(cell);
+    let wave = visuals.strong_text_color().gamma_multiply(0.8 * alpha);
+    let half = (bar.height() * 0.5 - 1.0).max(1.0);
+    let mut x = col_x(from).max(bar.left());
+    let end = col_x(to).min(bar.right());
+    while x < end {
+        let secs = f64::from(x - col_x(range.start.0)) * secs_per_point;
+        let peak = sound.peak_between(secs, secs + secs_per_point * 2.0);
+        let h = (peak * half).max(0.5);
+        painter.vline(
+            x,
+            bar.center().y - h..=bar.center().y + h,
+            Stroke::new(1.0, wave),
+        );
+        x += 2.0;
     }
 }
 
@@ -896,6 +1061,19 @@ fn paint_frames(ui: &egui::Ui, session: &Session, rows: &[Row], rect: Rect, cell
         }
         painter.hline(rect.x_range(), top + ROW_HEIGHT, line);
         let alpha = if row.shown { 1.0 } else { 0.4 };
+        if row.audio {
+            paint_clip(
+                &painter,
+                visuals,
+                doc,
+                id,
+                (rect, top),
+                cell,
+                (first, last),
+                alpha,
+            );
+            continue;
+        }
         let Some(track) = doc.track(id) else {
             continue;
         };
@@ -1045,4 +1223,52 @@ fn paint_frames(ui: &egui::Ui, session: &Session, rows: &[Row], rect: Rect, cell
         egui::FontId::proportional(10.0),
         palette.accent_text,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use document::{AudioData, AudioFormat};
+
+    #[test]
+    fn dragging_a_clip_moves_its_start_in_one_undo_step() {
+        let mut s = Session::new();
+        let sound = AudioData {
+            format: AudioFormat::Wav,
+            sample_rate: 8000,
+            channels: 1,
+            duration: 0.5,
+            peaks: Vec::new(),
+            bytes: std::sync::Arc::from(vec![1u8]),
+        };
+        let layer = s.import_audio("song.wav", sound).unwrap();
+        let steps = s.history.undo_len();
+        let drag = ClipDrag {
+            layer,
+            grab: FrameIndex(2),
+            start: FrameIndex(0),
+            gesture: 9,
+        };
+        let count = s.document.frame_count;
+        let start = |s: &Session| {
+            s.document
+                .layers()
+                .get(layer)
+                .unwrap()
+                .audio_clip()
+                .unwrap()
+                .start
+        };
+        drag.follow(&mut s, FrameIndex(5), count);
+        assert_eq!(start(&s), FrameIndex(3));
+        drag.follow(&mut s, FrameIndex(0), count);
+        assert_eq!(start(&s), FrameIndex(0), "kept inside the animation");
+        drag.follow(&mut s, FrameIndex(999), count);
+        assert_eq!(start(&s), FrameIndex(count - 1));
+        assert_eq!(s.history.undo_len(), steps + 1);
+        s.undo();
+        assert_eq!(start(&s), FrameIndex(0));
+        let rows = rows(&s.document, &BTreeSet::new());
+        assert!(rows.iter().any(|r| r.audio && r.layer() == Some(layer)));
+    }
 }
