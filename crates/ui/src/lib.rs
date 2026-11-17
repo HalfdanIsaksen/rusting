@@ -26,7 +26,7 @@ pub mod theme;
 pub mod tools;
 
 pub use eyedropper::{PickSource, PickedColor};
-pub use objects::InstanceAt;
+pub use objects::{InstanceAt, TweenAt, TweenTargets};
 pub use onion::{OnionDrawing, OnionSkin};
 pub use paint_order::PaintOrder;
 pub use panels::library::{AssetDrag, ObjectDrag};

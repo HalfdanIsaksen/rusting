@@ -9,7 +9,7 @@ use crate::icons::{self, IconFn};
 use crate::onion::MAX_ONION_RANGE;
 use crate::session::{Session, TimelineView};
 use document::Document;
-use document::animation_core::{Fps, FrameIndex, GroupId, LayerId};
+use document::animation_core::{Fps, FrameIndex, GroupId, Interpolation, LayerId};
 use document::drawing::DrawingContent;
 use document::scene::BlendMode;
 use document::timeline::Keyframe;
@@ -31,6 +31,8 @@ pub(super) const RULER_HEIGHT: f32 = TAG_HEIGHT + NUMBERS_HEIGHT;
 const MAX_FPS: u32 = 120;
 /// Colour of object (instance) exposures in the frame grid.
 const INSTANCE_TINT: Color32 = Color32::from_rgb(70, 150, 190);
+/// Colour of motion tween spans in the frame grid (ADR-019).
+const TWEEN_TINT: Color32 = Color32::from_rgb(140, 110, 200);
 const MAX_FRAMES: u32 = 100_000;
 
 /// Draws the timeline panel.
@@ -541,11 +543,15 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
     }
     let menu_tag_id = ui.scope_id().with("menu_tag");
     let menu_key_id = ui.scope_id().with("menu_key");
+    let menu_cell_id = ui.scope_id().with("menu_cell");
     if response.secondary_clicked() {
-        let tag = response.interact_pointer_pos().and_then(tag_under);
+        let pos = response.interact_pointer_pos();
+        let tag = pos.and_then(tag_under);
+        let cell = pos.and_then(|p| Some((row_at(rows, p.y - rect.top())?, frame_at(p.x))));
         ui.data_mut(|d| {
             d.insert_temp(menu_tag_id, tag);
             d.insert_temp(menu_key_id, right_clicked_key);
+            d.insert_temp(menu_cell_id, cell);
         });
     }
     response.context_menu(|ui| {
@@ -593,6 +599,10 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
                 {
                     session.convert_layers_to_object();
                 }
+                let cell = ui
+                    .data(|d| d.get_temp::<Option<(LayerId, FrameIndex)>>(menu_cell_id))
+                    .flatten();
+                tween_menu(ui, session, cell);
             }
         }
     });
@@ -731,6 +741,31 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
             Rect::from_x_y_ranges(x - cell..=x + cell, y..=y + 1.0),
             Some(egui::Align::Center),
         );
+    }
+}
+
+/// "Create Motion Tween ▸" and "Remove Tween" for the object keys the
+/// frame selection (or the right-clicked `cell`) covers (ADR-019). Nothing
+/// is shown where no tween can be made or removed.
+fn tween_menu(ui: &mut egui::Ui, session: &mut Session, cell: Option<(LayerId, FrameIndex)>) {
+    let targets = session.tween_targets(cell);
+    if !targets.creatable.is_empty() {
+        ui.menu_button("Create Motion Tween", |ui| {
+            for ease in Interpolation::TWEENS {
+                if ui
+                    .selectable_label(targets.current == Some(ease), ease.label())
+                    .clicked()
+                {
+                    session.set_tweens(&targets.creatable, Some(ease));
+                    ui.close();
+                }
+            }
+        })
+        .response
+        .on_hover_text("Move the object smoothly from this key to the next one");
+    }
+    if !targets.removable.is_empty() && ui.button("Remove Tween").clicked() {
+        session.set_tweens(&targets.removable, None);
     }
 }
 
@@ -902,12 +937,43 @@ fn paint_frames(ui: &egui::Ui, session: &Session, rows: &[Row], rect: Rect, cell
                 }
                 Keyframe::Instance(instance) => {
                     let tint = INSTANCE_TINT.gamma_multiply(alpha);
+                    let tween = track.tween_from(frame);
                     if let Some(range) = track.exposure_range(frame, count) {
                         let bar = Rect::from_x_y_ranges(
                             col_x(range.start.0) + 1.0..=col_x(range.end.0) - 1.0,
                             top + 4.0..=top + ROW_HEIGHT - 4.0,
                         );
-                        painter.rect_filled(bar, 3.0, tint.gamma_multiply(0.45));
+                        let band = if tween.is_some() {
+                            TWEEN_TINT
+                        } else {
+                            INSTANCE_TINT
+                        };
+                        painter.rect_filled(bar, 3.0, band.gamma_multiply(0.45 * alpha));
+                        // A motion tween: an arrow from this key to the next.
+                        // A tween waiting for a partner key: a dashed line.
+                        let y = top + ROW_HEIGHT * 0.5;
+                        let from = center.x + radius + 3.0;
+                        let to = col_x(range.end.0) - 4.0;
+                        let arrow = visuals.strong_text_color().gamma_multiply(0.8 * alpha);
+                        if tween.is_some() && to - from > 6.0 {
+                            painter.hline(from..=to, y, (1.2, arrow));
+                            let head = 4.0;
+                            painter.line_segment(
+                                [Pos2::new(to - head, y - head * 0.8), Pos2::new(to, y)],
+                                (1.2, arrow),
+                            );
+                            painter.line_segment(
+                                [Pos2::new(to - head, y + head * 0.8), Pos2::new(to, y)],
+                                (1.2, arrow),
+                            );
+                        } else if instance.tween.is_some() && to > from {
+                            painter.extend(egui::Shape::dashed_line(
+                                &[Pos2::new(from, y), Pos2::new(to, y)],
+                                Stroke::new(1.0, arrow.gamma_multiply(0.6)),
+                                3.0,
+                                3.0,
+                            ));
+                        }
                         // A tick where each loop of the object starts over.
                         let length = doc.symbol(instance.symbol).map_or(0, |s| s.frame_count);
                         let tick = visuals.strong_text_color().gamma_multiply(0.6 * alpha);

@@ -1323,6 +1323,8 @@ impl Session {
     /// Commits moving the selected object by `delta`, or transforming it by
     /// `transform` (document space), as a [`SetInstanceTransform`]: the key
     /// changes on its own frame, and a new key is made on later frames.
+    /// Inside a motion tween the change applies to the placement shown on
+    /// `frame` (ADR-019), so the result is what the user dragged.
     fn commit_instance_transform(
         &mut self,
         layer: LayerId,
@@ -1333,7 +1335,7 @@ impl Session {
         let Some((_, key)) = self
             .document
             .track(layer)
-            .and_then(|t| t.instance_at(frame))
+            .and_then(|t| t.displayed_instance(frame))
         else {
             return;
         };
@@ -3086,6 +3088,52 @@ mod tests {
         s.undo();
         s.undo();
         assert_eq!(instance_key(&s, layer, 0).transform.translation.x, 50.0);
+    }
+
+    #[test]
+    fn moving_an_object_inside_a_tween_moves_what_is_shown() {
+        use document::animation_core::Interpolation;
+        use editor::commands::{SetInstanceTransform, SetTween};
+        let (mut s, layer) = object_scene();
+        let start = instance_key(&s, layer, 0).transform;
+        let end = InstanceTransform {
+            translation: start.translation + Vec2::new(40.0, 0.0),
+            ..start
+        };
+        s.execute(Box::new(SetInstanceTransform::new(
+            layer,
+            FrameIndex(8),
+            end,
+        )))
+        .unwrap();
+        s.execute(Box::new(SetTween::new(
+            layer,
+            FrameIndex(0),
+            Some(Interpolation::Linear),
+        )))
+        .unwrap();
+        // Half way the object is drawn 20 units along; drag it 20 down.
+        s.set_frame(FrameIndex(4));
+        s.clear_selection();
+        let shown = start.translation + Vec2::new(20.0, 0.0);
+        drag(&mut s, shown, shown + Vec2::new(0.0, 20.0), false);
+        assert_eq!(s.tools.selected_instance(), Some((layer, FrameIndex(4))));
+        let middle = instance_key(&s, layer, 4);
+        assert!((middle.transform.translation - (shown + Vec2::new(0.0, 20.0))).length() < 1e-3);
+        assert_eq!(middle.tween, Some(Interpolation::Linear));
+        // The keys on either side stay, and the tween runs through the new key.
+        assert_eq!(instance_key(&s, layer, 0).transform, start);
+        assert_eq!(instance_key(&s, layer, 8).transform, end);
+        let spans: Vec<_> = s.document.track(layer).unwrap().tweens().collect();
+        assert_eq!(spans.len(), 2);
+        s.undo();
+        assert!(
+            s.document
+                .track(layer)
+                .unwrap()
+                .key_at(FrameIndex(4))
+                .is_none()
+        );
     }
 
     #[test]

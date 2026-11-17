@@ -1,14 +1,16 @@
 //! Objects (symbols, ADR-018): making them from layers and frames or from
-//! canvas items, placing them from the library, and their settings.
+//! canvas items, placing them from the library, their settings, and motion
+//! tweens between their keys (ADR-019).
 
 use crate::session::Session;
-use document::animation_core::{FrameIndex, FrameRange, LayerId, SymbolId, Vec2};
+use document::Document;
+use document::animation_core::{FrameIndex, FrameRange, Interpolation, LayerId, SymbolId, Vec2};
 use document::timeline::{InstanceKey, InstanceTransform};
-use editor::Tool;
 use editor::commands::{
-    ConvertItemsToSymbol, ConvertToSymbol, InstanceProps, PlaceInstance, RemoveSymbol,
-    RenameSymbol, SetInstanceProps,
+    Batch, ConvertItemsToSymbol, ConvertToSymbol, InstanceProps, PlaceInstance, RemoveSymbol,
+    RenameSymbol, SetInstanceProps, SetTween,
 };
+use editor::{Command, Tool};
 
 /// The object shown on the active layer at the current frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -21,7 +23,189 @@ pub struct InstanceAt {
     pub key: InstanceKey,
 }
 
+/// The motion tweens a timeline menu can create or remove (ADR-019), as
+/// the (layer, frame) of the key each tween starts on.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TweenTargets {
+    /// Keys followed by a key of the same object: a tween can start there.
+    pub creatable: Vec<(LayerId, FrameIndex)>,
+    /// Keys that have a tween, active or not.
+    pub removable: Vec<(LayerId, FrameIndex)>,
+    /// The ease every creatable key already tweens with, if they all share
+    /// one.
+    pub current: Option<Interpolation>,
+}
+
+/// The motion tween setting of the object under the playhead.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TweenAt {
+    /// The layer.
+    pub layer: LayerId,
+    /// The instance key exposed at the playhead (where the tween starts).
+    pub key_frame: FrameIndex,
+    /// Its tween, active or not.
+    pub tween: Option<Interpolation>,
+    /// The next key's frame if it places the same object, so a tween
+    /// from `key_frame` is (or would be) active and ends there.
+    pub end: Option<FrameIndex>,
+}
+
+/// Whether the key on `start` (followed by the next key on `next`, or by
+/// nothing until `frame_count`) is picked by frame selection `range`: a
+/// one-frame range picks the exposure holding it; a longer one picks every
+/// span `start..=next` it overlaps by at least two frames, so selecting
+/// "from one key to the next" picks exactly that pair.
+fn span_picked(
+    start: FrameIndex,
+    next: Option<FrameIndex>,
+    frame_count: u32,
+    range: FrameRange,
+) -> bool {
+    let end = next.map_or(frame_count.max(start.0 + 1), |n| n.0);
+    if range.len() <= 1 {
+        return (start.0..end).contains(&range.start.0);
+    }
+    let last = next.map_or(end - 1, |n| n.0);
+    let lo = start.0.max(range.start.0);
+    let hi = last.min(range.end.0 - 1);
+    hi > lo
+}
+
+/// The instance keys of `layer` that `range` picks, with their tween and
+/// whether they can start one.
+fn picked_keys(
+    doc: &Document,
+    layer: LayerId,
+    range: FrameRange,
+) -> Vec<(FrameIndex, Option<Interpolation>, bool)> {
+    let Some(track) = doc.track(layer) else {
+        return Vec::new();
+    };
+    track
+        .keys()
+        .filter_map(|(frame, key)| {
+            let instance = key.instance()?;
+            let next = track.next_key_after(frame).map(|(f, _)| f);
+            span_picked(frame, next, doc.frame_count, range).then(|| {
+                (
+                    frame,
+                    instance.tween,
+                    SetTween::can_tween(doc, layer, frame),
+                )
+            })
+        })
+        .collect()
+}
+
 impl Session {
+    /// The motion tweens the timeline's context menu acts on. With a frame
+    /// selection: the spans of instance keys the selection covers on the
+    /// selected layers (active layer included). Without one: the exposure
+    /// holding `cell` (the right-clicked layer and frame), or the active
+    /// layer at the playhead. Locked layers are skipped.
+    pub fn tween_targets(&self, cell: Option<(LayerId, FrameIndex)>) -> TweenTargets {
+        let (layers, range) = match (self.frame_selection(), cell) {
+            (Some(range), _) => (self.selected_layers(), range),
+            (None, Some((layer, frame))) => {
+                (vec![layer], FrameRange::new(frame, FrameIndex(frame.0 + 1)))
+            }
+            (None, None) => {
+                let frame = self.current_frame();
+                (
+                    self.state.active_layer.into_iter().collect(),
+                    FrameRange::new(frame, FrameIndex(frame.0 + 1)),
+                )
+            }
+        };
+        let mut targets = TweenTargets::default();
+        let mut eases = Vec::new();
+        for layer in layers {
+            if !self.document.layers().is_editable(layer) {
+                continue;
+            }
+            for (frame, tween, can) in picked_keys(&self.document, layer, range) {
+                if can {
+                    targets.creatable.push((layer, frame));
+                    eases.push(tween);
+                }
+                if tween.is_some() {
+                    targets.removable.push((layer, frame));
+                }
+            }
+        }
+        targets.current = match eases.split_first() {
+            Some((first, rest)) if rest.iter().all(|e| e == first) => *first,
+            _ => None,
+        };
+        targets
+    }
+
+    /// Sets (`Some`) or removes (`None`) the motion tween on each key in
+    /// `keys`; one undo step. Returns whether it changed anything.
+    pub fn set_tweens(
+        &mut self,
+        keys: &[(LayerId, FrameIndex)],
+        ease: Option<Interpolation>,
+    ) -> bool {
+        let commands: Vec<Box<dyn Command>> = keys
+            .iter()
+            .map(|&(layer, frame)| Box::new(SetTween::new(layer, frame, ease)) as Box<dyn Command>)
+            .collect();
+        let label = match ease {
+            Some(_) => "Create Motion Tween",
+            None => "Remove Tween",
+        };
+        let ok = match commands.len() {
+            0 => return false,
+            1 => commands
+                .into_iter()
+                .next()
+                .is_some_and(|c| self.execute(c).is_ok()),
+            _ => self.execute(Box::new(Batch::new(label, commands))).is_ok(),
+        };
+        if ok {
+            let what = match ease {
+                Some(e) => format!("{} motion tween", e.label()),
+                None => "Removed the motion tween".to_owned(),
+            };
+            let plural = if keys.len() > 1 { "s" } else { "" };
+            self.set_status(match ease {
+                Some(_) => format!("{what}{plural} created"),
+                None => format!("{what}{plural}"),
+            });
+        }
+        ok
+    }
+
+    /// The motion tween setting of the object the active layer shows at
+    /// the playhead, if it shows one.
+    pub fn tween_at_playhead(&self) -> Option<TweenAt> {
+        let at = self.instance_at_playhead()?;
+        let track = self.document.track(at.layer)?;
+        let end = track
+            .next_key_after(at.key_frame)
+            .filter(|(_, k)| k.instance().is_some_and(|i| i.symbol == at.key.symbol))
+            .map(|(f, _)| f);
+        Some(TweenAt {
+            layer: at.layer,
+            key_frame: at.key_frame,
+            tween: at.key.tween,
+            end,
+        })
+    }
+
+    /// Sets or removes the motion tween from the object key under the
+    /// playhead (Tool Settings); one undo step.
+    pub fn set_tween_at_playhead(&mut self, ease: Option<Interpolation>) -> bool {
+        let Some(at) = self.tween_at_playhead() else {
+            return false;
+        };
+        if at.tween == ease {
+            return false;
+        }
+        self.set_tweens(&[(at.layer, at.key_frame)], ease)
+    }
+
     /// The frames "Convert to Object" uses: the frame selection, or the
     /// whole animation when nothing is selected.
     pub fn object_range(&self) -> FrameRange {
@@ -307,5 +491,143 @@ mod tests {
         assert_eq!(s.document.symbol(symbol).unwrap().name, "Walk");
         assert!(!s.delete_symbol(symbol));
         assert!(s.status().is_some());
+    }
+
+    /// A session whose active layer places one object on frames 0, 6 and
+    /// 12 of 18 (x = 0, 60, 120).
+    fn three_object_keys() -> (Session, LayerId) {
+        let (mut s, layer) = twelve_frames();
+        s.select_frames_to(FrameIndex(0));
+        assert!(s.convert_layers_to_object());
+        let object = s.state.active_layer.unwrap();
+        let symbol = *s.document.symbols().keys().next().unwrap();
+        s.execute(Box::new(editor::commands::RemoveKeyframe::new(
+            object,
+            FrameIndex(1),
+        )))
+        .unwrap();
+        for f in [0, 6, 12] {
+            let key = InstanceKey::new(symbol).with_transform(InstanceTransform::from_translation(
+                Vec2::new(10.0 * f as f32, 0.0),
+            ));
+            s.execute(Box::new(PlaceInstance::new(object, FrameIndex(f), key)))
+                .unwrap();
+        }
+        let _ = layer;
+        (s, object)
+    }
+
+    #[test]
+    fn selecting_from_key_to_key_creates_one_tween() {
+        let (mut s, layer) = three_object_keys();
+        s.set_frame(FrameIndex(0));
+        s.select_frames_to(FrameIndex(6));
+        let targets = s.tween_targets(None);
+        assert_eq!(targets.creatable, [(layer, FrameIndex(0))]);
+        assert!(targets.removable.is_empty());
+        assert_eq!(targets.current, None);
+        assert!(s.set_tweens(&targets.creatable, Some(Interpolation::EaseInOut)));
+        let x = |s: &Session, f: u32| {
+            s.document
+                .track(layer)
+                .unwrap()
+                .displayed_instance(FrameIndex(f))
+                .unwrap()
+                .1
+                .transform
+                .translation
+                .x
+        };
+        assert_eq!(x(&s, 3), 30.0);
+        assert!(x(&s, 1) < 10.0);
+        assert_eq!(x(&s, 8), 60.0);
+        let targets = s.tween_targets(None);
+        assert_eq!(targets.current, Some(Interpolation::EaseInOut));
+        assert_eq!(targets.removable, [(layer, FrameIndex(0))]);
+
+        // Selecting across all three keys picks both spans: one undo step.
+        s.select_frames_to(FrameIndex(17));
+        let targets = s.tween_targets(None);
+        assert_eq!(
+            targets.creatable,
+            [(layer, FrameIndex(0)), (layer, FrameIndex(6))]
+        );
+        assert_eq!(targets.current, None);
+        let undo = s.history.undo_len();
+        assert!(s.set_tweens(&targets.creatable, Some(Interpolation::Linear)));
+        assert_eq!(s.history.undo_len(), undo + 1);
+        assert_eq!(x(&s, 9), 90.0);
+        // The last key has nothing to tween to.
+        s.clear_frame_selection();
+        assert!(
+            s.tween_targets(Some((layer, FrameIndex(14))))
+                .creatable
+                .is_empty()
+        );
+        // Right-click inside a tweened span, then remove it.
+        let targets = s.tween_targets(Some((layer, FrameIndex(8))));
+        assert_eq!(targets.removable, [(layer, FrameIndex(6))]);
+        assert!(s.set_tweens(&targets.removable, None));
+        assert_eq!(x(&s, 9), 60.0);
+        s.undo();
+        assert_eq!(x(&s, 9), 90.0);
+    }
+
+    #[test]
+    fn drawing_layers_and_locked_layers_offer_no_tween() {
+        let (mut s, layer) = twelve_frames();
+        s.set_frame(FrameIndex(0));
+        s.select_frames_to(FrameIndex(6));
+        assert_eq!(s.tween_targets(None), TweenTargets::default());
+        let (mut s, object) = three_object_keys();
+        s.set_frame(FrameIndex(0));
+        s.select_frames_to(FrameIndex(6));
+        s.execute(Box::new(editor::commands::SetLayerLocked::new(
+            object, true,
+        )))
+        .unwrap();
+        assert!(s.tween_targets(None).creatable.is_empty());
+        let _ = layer;
+    }
+
+    #[test]
+    fn tool_settings_edit_the_tween_under_the_playhead() {
+        let (mut s, layer) = three_object_keys();
+        s.set_frame(FrameIndex(3));
+        let at = s.tween_at_playhead().unwrap();
+        assert_eq!(
+            (at.layer, at.key_frame, at.tween, at.end),
+            (layer, FrameIndex(0), None, Some(FrameIndex(6)))
+        );
+        assert!(s.set_tween_at_playhead(Some(Interpolation::EaseIn)));
+        assert!(!s.set_tween_at_playhead(Some(Interpolation::EaseIn)));
+        assert_eq!(
+            s.tween_at_playhead().unwrap().tween,
+            Some(Interpolation::EaseIn)
+        );
+        assert!(s.set_tween_at_playhead(None));
+        assert_eq!(s.tween_at_playhead().unwrap().tween, None);
+        // The last key has no partner.
+        s.set_frame(FrameIndex(14));
+        assert_eq!(s.tween_at_playhead().unwrap().end, None);
+        assert!(!s.set_tween_at_playhead(Some(Interpolation::Linear)));
+        assert!(s.status().unwrap().is_error);
+    }
+
+    #[test]
+    fn span_picking_rules() {
+        let r = |a: u32, b: u32| FrameRange::new(FrameIndex(a), FrameIndex(b));
+        let f = FrameIndex;
+        // One frame: the exposure holding it.
+        assert!(span_picked(f(0), Some(f(6)), 18, r(5, 6)));
+        assert!(!span_picked(f(0), Some(f(6)), 18, r(6, 7)));
+        assert!(span_picked(f(12), None, 18, r(17, 18)));
+        // Key to key, inclusive: that pair only.
+        assert!(span_picked(f(0), Some(f(6)), 18, r(0, 7)));
+        assert!(!span_picked(f(6), Some(f(12)), 18, r(0, 7)));
+        // Two frames inside one span.
+        assert!(span_picked(f(0), Some(f(6)), 18, r(2, 4)));
+        // A span the selection only touches at its last key is not picked.
+        assert!(!span_picked(f(0), Some(f(6)), 18, r(6, 10)));
     }
 }
