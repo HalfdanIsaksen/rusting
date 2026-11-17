@@ -10,6 +10,7 @@ mod layers;
 mod merge;
 mod opacity;
 mod select;
+mod symbols;
 pub use assets::{AddAsset, RemoveAsset, RenameAsset};
 pub use canvas::ResizeCanvas;
 pub use fill::{AddFill, RemoveFill, ReplaceFill};
@@ -20,6 +21,7 @@ pub use layers::DuplicateLayer;
 pub use merge::MergeSameColour;
 pub use opacity::SetOpacity;
 pub use select::{TransformItems, TranslateItems, remove_items};
+pub use symbols::ConvertToSymbol;
 
 use crate::{Command, CommandError};
 use animation_core::{DrawingId, Fps, FrameIndex, GroupId, LayerId, StrokeId};
