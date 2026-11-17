@@ -5,9 +5,9 @@
 use super::{editable_layer, frame_in_range};
 use crate::{Command, CommandError};
 use animation_core::{DrawingId, FrameIndex, FrameRange, LayerId, SymbolId};
-use document::drawing::DrawingContent;
+use document::drawing::{DrawingContent, ItemId};
 use document::scene::Layer;
-use document::timeline::{InstanceKey, Keyframe, Track};
+use document::timeline::{InstanceKey, InstanceTransform, Keyframe, Track};
 use document::{Document, Symbol};
 use std::collections::BTreeMap;
 
@@ -306,6 +306,147 @@ impl Command for ConvertToSymbol {
     }
 }
 
+/// Turns items selected on the canvas into a one-frame symbol (object).
+///
+/// The items are taken out of the drawing that `layer` shows at `frame`
+/// and moved so the centre of their bounds is the symbol's origin. A new
+/// layer right above `layer` places the object for the same frames that
+/// drawing is exposed, with its translation set to that centre, so nothing
+/// moves on the canvas.
+#[derive(Debug)]
+pub struct ConvertItemsToSymbol {
+    layer: LayerId,
+    frame: FrameIndex,
+    items: Vec<ItemId>,
+    name: Option<String>,
+    built: Option<Conversion>,
+    previous: Option<Previous>,
+}
+
+impl ConvertItemsToSymbol {
+    /// Creates the command.
+    pub fn new(layer: LayerId, frame: FrameIndex, items: Vec<ItemId>) -> Self {
+        Self {
+            layer,
+            frame,
+            items,
+            name: None,
+            built: None,
+            previous: None,
+        }
+    }
+
+    /// Names the symbol (default: the next free "Object N").
+    pub fn named(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    /// ID of the symbol created by the last apply.
+    pub fn symbol_id(&self) -> Option<SymbolId> {
+        self.built.as_ref().map(|c| c.symbol.id)
+    }
+
+    /// ID of the layer holding the instance, after the first apply.
+    pub fn layer_id(&self) -> Option<LayerId> {
+        self.built.as_ref().map(|c| c.layer.id)
+    }
+
+    fn build(&self, doc: &Document) -> Result<Conversion, CommandError> {
+        editable_layer(doc, self.layer)?;
+        frame_in_range(doc, self.frame)?;
+        let track = doc.track(self.layer).ok_or(CommandError::LayerNotFound)?;
+        let source_id = track
+            .drawing_at(self.frame)
+            .ok_or(CommandError::NothingToConvert)?;
+        let exposure = track
+            .exposure_range(self.frame, doc.frame_count)
+            .ok_or(CommandError::NothingToConvert)?;
+        let source = doc
+            .drawing(source_id)
+            .and_then(DrawingContent::as_vector)
+            .ok_or(CommandError::DrawingNotFound)?;
+        let items: Vec<ItemId> = self
+            .items
+            .iter()
+            .copied()
+            .filter(|&i| source.contains_item(i))
+            .collect();
+        let (min, max) = source
+            .items_bounds(&items)
+            .ok_or(CommandError::NothingToConvert)?;
+        let centre = (min + max) * 0.5;
+
+        let mut kept = source.clone();
+        let mut taken = source.clone();
+        for item in source.all_items() {
+            let target = if items.contains(&item) {
+                &mut kept
+            } else {
+                &mut taken
+            };
+            match item {
+                ItemId::Stroke(id) => drop(target.remove_stroke(id)),
+                ItemId::Fill(id) => drop(target.remove_fill(id)),
+                ItemId::Image(id) => drop(target.remove_image(id)),
+            }
+        }
+        taken.translate(-centre);
+        let content = DrawingContent::Vector(taken).duplicate();
+
+        let name = self.name.clone().unwrap_or_else(|| doc.next_symbol_name());
+        let mut symbol = Symbol::new(name.clone(), 1);
+        let drawing = DrawingId::new();
+        let mut inner = Track::new();
+        inner.set_key(FrameIndex(0), Keyframe::Drawing(drawing));
+        let layer_name = doc
+            .layers()
+            .get(self.layer)
+            .map_or_else(|| "Layer 1".to_owned(), |l| l.name.clone());
+        symbol.push_layer(Layer::new(layer_name), inner);
+
+        let (layer, index) = object_layer(doc, &name, self.layer)?;
+        let mut track = Track::new();
+        let key =
+            InstanceKey::new(symbol.id).with_transform(InstanceTransform::from_translation(centre));
+        track.set_key(exposure.start, Keyframe::Instance(key));
+        if exposure.end.0 < doc.frame_count {
+            track.set_key(exposure.end, Keyframe::Empty);
+        }
+        Ok(Conversion {
+            symbol,
+            drawings: vec![(drawing, content)],
+            tracks: Vec::new(),
+            replaced_drawings: vec![(source_id, DrawingContent::Vector(kept))],
+            layer,
+            index,
+            track,
+        })
+    }
+}
+
+impl Command for ConvertItemsToSymbol {
+    fn label(&self) -> &str {
+        "Convert to Object"
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        let built = match self.built.take() {
+            Some(built) => built,
+            None => self.build(doc)?,
+        };
+        self.previous = Some(apply_conversion(doc, &built)?);
+        self.built = Some(built);
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        let built = self.built.as_ref().ok_or(CommandError::SymbolNotFound)?;
+        let previous = self.previous.take().ok_or(CommandError::SymbolNotFound)?;
+        undo_conversion(doc, built, previous)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,16 +499,18 @@ mod tests {
     }
 
     /// The document frames, as drawn: per frame, the first point's x of
-    /// every rendered layer.
+    /// every stroke drawn.
     fn picture(d: &Document) -> Vec<Vec<f32>> {
         (0..d.frame_count)
             .map(|f| {
                 d.evaluate(FrameIndex(f))
                     .layers
                     .iter()
-                    .map(|l| {
-                        let p = l.drawing.strokes()[0].points[0].pos;
-                        l.transform.transform_point2(p).x
+                    .flat_map(|l| {
+                        l.drawing
+                            .strokes()
+                            .iter()
+                            .map(|s| l.transform.transform_point2(s.points[0].pos).x)
                     })
                     .collect()
             })
@@ -467,5 +610,79 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(sorted(picture(&d)), sorted(shown));
+    }
+    #[test]
+    fn convert_items_centres_the_object_and_keeps_the_picture() {
+        let mut d = doc();
+        let l = d.add_layer("L");
+        let mut v = VectorDrawing::new();
+        let stroke = |x: f32| {
+            Stroke::new(
+                vec![
+                    StrokePoint::new(Vec2::new(x, 10.0)),
+                    StrokePoint::new(Vec2::new(x + 10.0, 30.0)),
+                ],
+                BrushStyle {
+                    width: 0.0,
+                    ..BrushStyle::default()
+                },
+            )
+        };
+        let (keep, take) = (stroke(0.0), stroke(40.0));
+        let take_id = ItemId::Stroke(take.id);
+        v.push_stroke(keep);
+        v.push_stroke(take);
+        let id = d.add_drawing(DrawingContent::Vector(v));
+        let t = d.track_mut(l).unwrap();
+        t.set_key(FrameIndex(2), Keyframe::Drawing(id));
+        t.set_key(FrameIndex(7), Keyframe::Empty);
+        let before = d.clone();
+        let shown = picture(&d);
+
+        let mut h = History::new();
+        h.execute(
+            &mut d,
+            Box::new(ConvertItemsToSymbol::new(l, FrameIndex(4), vec![take_id])),
+        )
+        .unwrap();
+        let sorted = |p: Vec<Vec<f32>>| {
+            p.into_iter()
+                .map(|mut v| {
+                    v.sort_by(f32::total_cmp);
+                    v
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(sorted(picture(&d)), sorted(shown));
+        let symbol = d.symbols().values().next().unwrap();
+        assert_eq!(symbol.frame_count, 1);
+        let object = d.layers().iter().last().unwrap().id;
+        let track = d.track(object).unwrap();
+        let key = track.key_at(FrameIndex(2)).unwrap().instance().unwrap();
+        // Bounds (40,10)-(50,30): centre (45,20).
+        assert_eq!(key.transform.translation, Vec2::new(45.0, 20.0));
+        assert_eq!(track.key_at(FrameIndex(7)), Some(&Keyframe::Empty));
+        assert_eq!(
+            d.drawing(id).unwrap().as_vector().unwrap().strokes().len(),
+            1
+        );
+
+        h.undo(&mut d).unwrap();
+        assert_eq!(d, before);
+        let mut h = History::new();
+        assert_eq!(
+            h.execute(
+                &mut d,
+                Box::new(ConvertItemsToSymbol::new(l, FrameIndex(4), vec![])),
+            ),
+            Err(CommandError::NothingToConvert)
+        );
+        assert_eq!(
+            h.execute(
+                &mut d,
+                Box::new(ConvertItemsToSymbol::new(l, FrameIndex(8), vec![take_id])),
+            ),
+            Err(CommandError::NothingToConvert)
+        );
     }
 }

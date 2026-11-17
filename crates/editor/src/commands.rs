@@ -21,7 +21,7 @@ pub use layers::DuplicateLayer;
 pub use merge::MergeSameColour;
 pub use opacity::SetOpacity;
 pub use select::{TransformItems, TranslateItems, remove_items};
-pub use symbols::ConvertToSymbol;
+pub use symbols::{ConvertItemsToSymbol, ConvertToSymbol};
 
 use crate::{Command, CommandError};
 use animation_core::{DrawingId, Fps, FrameIndex, GroupId, LayerId, StrokeId};
