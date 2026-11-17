@@ -30,7 +30,7 @@ Arrows point from a dependency to its dependents. Rules:
 | `Fps` | Rational frames/second (e.g. 24000/1001) |
 | `LayerId`, `GroupId`, `DrawingId`, `StrokeId`, `FillId`, `ImageId`, `AssetId`, `SymbolId`, `DocumentId` | UUID v4 newtypes, stable across save and load |
 | `Rgba` | Straight-alpha color, f32 components |
-| `Interpolation` | `Step`, `Linear` (Bezier later) |
+| `Interpolation` | `Step`, `Linear`, `EaseIn`, `EaseOut`, `EaseInOut` (cubic; Bezier later) |
 | `Vec2` | `glam::Vec2`, re-exported |
 
 ## Data model
