@@ -16,6 +16,12 @@
 //! the asset on load. Assets nothing uses are saved too: the library owns
 //! them.
 //!
+//! # Objects
+//! Symbols (objects, ADR-018) are saved in the document's `symbols` map,
+//! with their own layers and tracks. Their drawings are saved in the shared
+//! drawing pool and are never dropped as unreferenced while the symbol is in
+//! the library.
+//!
 //! # Unknown fields
 //! Within a supported version, fields this build does not know are **ignored**
 //! by [`from_str`] and [`load`]; the document still loads. A writer that adds
@@ -25,7 +31,9 @@
 //! them silently, [`from_str_with_report`] and [`load_with_report`] list them
 //! in a [`LoadReport`] so the app can warn before overwriting the file.
 
-use animation_core::{AssetId, DrawingId, FillId, FrameIndex, GroupId, ImageId, LayerId, StrokeId};
+use animation_core::{
+    AssetId, DrawingId, FillId, FrameIndex, GroupId, ImageId, LayerId, StrokeId, SymbolId,
+};
 use document::Document;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -63,7 +71,11 @@ use std::path::{Path, PathBuf};
 ///   its `data`, which is filled back in from the asset on load (ADR-017).
 ///   v9 files need no migration. Older builds must reject these files: they
 ///   would load the pictures as empty.
-pub const FORMAT_VERSION: u32 = 10;
+/// - 11: the document may have `symbols` (objects: layers, tracks and a
+///   length; absent means none), and keys may be `Instance` keys placing a
+///   symbol (ADR-018). v10 files need no migration. Older builds must reject
+///   these files: they cannot read instance keys.
+pub const FORMAT_VERSION: u32 = 11;
 
 /// File extension for project files (without the dot).
 pub const FILE_EXTENSION: &str = "rusting";
@@ -207,6 +219,60 @@ pub enum ValidationError {
     EmptyAsset {
         /// The asset.
         id: AssetId,
+        /// Its name.
+        name: String,
+    },
+    /// A key places an object (symbol) that is not in the file.
+    #[error(
+        "layer \"{layer_name}\" ({layer}) places object {symbol} at frame {frame}, which is not \
+         in the file"
+    )]
+    MissingSymbol {
+        /// Layer holding the key.
+        layer: LayerId,
+        /// Name of that layer.
+        layer_name: String,
+        /// Frame of the key.
+        frame: FrameIndex,
+        /// The missing symbol.
+        symbol: SymbolId,
+    },
+    /// An object key starts past the end of its object.
+    #[error(
+        "layer \"{layer_name}\" ({layer}) starts an object at its frame {first_frame}, but the \
+         object has only {frame_count} frames"
+    )]
+    FirstFrameOutOfRange {
+        /// Layer holding the key.
+        layer: LayerId,
+        /// Name of that layer.
+        layer_name: String,
+        /// The key's first frame.
+        first_frame: FrameIndex,
+        /// The object's length.
+        frame_count: u32,
+    },
+    /// Objects place each other in a loop.
+    #[error("object \"{name}\" ({id}) contains itself")]
+    SymbolCycle {
+        /// An object on the loop.
+        id: SymbolId,
+        /// Its name.
+        name: String,
+    },
+    /// An object is stored under another object's ID.
+    #[error("object {id} is stored under the ID {key}")]
+    SymbolKeyMismatch {
+        /// The key in the file.
+        key: SymbolId,
+        /// The object's own ID.
+        id: SymbolId,
+    },
+    /// An object has no frames.
+    #[error("object \"{name}\" ({id}) has no frames")]
+    EmptySymbol {
+        /// The object.
+        id: SymbolId,
         /// Its name.
         name: String,
     },
@@ -607,22 +673,12 @@ pub fn validate(doc: &Document) -> Result<(), ValidationError> {
         document::scene::GroupError::Duplicate(g) => ValidationError::DuplicateGroup(g),
     })?;
 
+    validate_symbols(doc, &mut seen_layers)?;
     for (&layer, track) in doc.tracks() {
         let Some(layer_info) = doc.layers().get(layer) else {
             return Err(ValidationError::OrphanTrack(layer));
         };
-        for (frame, key) in track.keys() {
-            if let Some(drawing) = key.drawing()
-                && doc.drawing(drawing).is_none()
-            {
-                return Err(ValidationError::MissingDrawing {
-                    layer,
-                    layer_name: layer_info.name.clone(),
-                    frame,
-                    drawing,
-                });
-            }
-        }
+        check_keys(doc, layer_info, track)?;
     }
 
     let mut seen_assets = BTreeSet::new();
@@ -773,6 +829,154 @@ pub fn validate(doc: &Document) -> Result<(), ValidationError> {
                 )?;
             }
         }
+    }
+    Ok(())
+}
+
+/// Checks the keys of one track: drawings and objects exist, and object
+/// placements are usable.
+fn check_keys(
+    doc: &Document,
+    layer: &document::scene::Layer,
+    track: &document::timeline::Track,
+) -> Result<(), ValidationError> {
+    for (frame, key) in track.keys() {
+        if let Some(drawing) = key.drawing()
+            && doc.drawing(drawing).is_none()
+        {
+            return Err(ValidationError::MissingDrawing {
+                layer: layer.id,
+                layer_name: layer.name.clone(),
+                frame,
+                drawing,
+            });
+        }
+        let Some(instance) = key.instance() else {
+            continue;
+        };
+        let Some(symbol) = doc.symbol(instance.symbol) else {
+            return Err(ValidationError::MissingSymbol {
+                layer: layer.id,
+                layer_name: layer.name.clone(),
+                frame,
+                symbol: instance.symbol,
+            });
+        };
+        if instance.first_frame.0 >= symbol.frame_count {
+            return Err(ValidationError::FirstFrameOutOfRange {
+                layer: layer.id,
+                layer_name: layer.name.clone(),
+                first_frame: instance.first_frame,
+                frame_count: symbol.frame_count,
+            });
+        }
+        let what = |part: &str| {
+            format!(
+                "layer \"{}\" object at frame {} {part}",
+                layer.name,
+                frame.display_number()
+            )
+        };
+        check_range(
+            || what("opacity"),
+            instance.opacity,
+            unit(instance.opacity),
+            "0..=1",
+        )?;
+        let t = &instance.transform;
+        for (part, v) in [
+            ("x position", t.translation.x),
+            ("y position", t.translation.y),
+            ("rotation", t.rotation),
+            ("x scale", t.scale.x),
+            ("y scale", t.scale.y),
+        ] {
+            check_range(|| what(part), v, v.is_finite(), "finite numbers")?;
+        }
+    }
+    Ok(())
+}
+
+/// Checks every symbol: its key, length, layers and tracks, the keys on
+/// those tracks, and that no symbol contains itself. Layer IDs must be
+/// unique across the document and all symbols.
+fn validate_symbols(
+    doc: &Document,
+    seen_layers: &mut BTreeSet<LayerId>,
+) -> Result<(), ValidationError> {
+    for (&key, symbol) in doc.symbols() {
+        if key != symbol.id {
+            return Err(ValidationError::SymbolKeyMismatch { key, id: symbol.id });
+        }
+        if symbol.frame_count == 0 {
+            return Err(ValidationError::EmptySymbol {
+                id: symbol.id,
+                name: symbol.name.clone(),
+            });
+        }
+    }
+    for symbol in doc.symbols().values() {
+        for layer in symbol.layers.iter() {
+            if !seen_layers.insert(layer.id) {
+                return Err(ValidationError::DuplicateLayer(layer.id));
+            }
+            if !symbol.tracks.contains_key(&layer.id) {
+                return Err(ValidationError::MissingTrack {
+                    id: layer.id,
+                    name: layer.name.clone(),
+                });
+            }
+            check_range(
+                || {
+                    format!(
+                        "object \"{}\" layer \"{}\" opacity",
+                        symbol.name, layer.name
+                    )
+                },
+                layer.opacity,
+                unit(layer.opacity),
+                "0..=1",
+            )?;
+        }
+        for (&layer, track) in &symbol.tracks {
+            let Some(info) = symbol.layers.get(layer) else {
+                return Err(ValidationError::OrphanTrack(layer));
+            };
+            check_keys(doc, info, track)?;
+        }
+    }
+
+    // Depth-first search for a symbol that reaches itself.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Mark {
+        Visiting,
+        Done,
+    }
+    fn visit(
+        doc: &Document,
+        id: SymbolId,
+        marks: &mut std::collections::BTreeMap<SymbolId, Mark>,
+    ) -> Result<(), SymbolId> {
+        match marks.get(&id) {
+            Some(Mark::Done) => return Ok(()),
+            Some(Mark::Visiting) => return Err(id),
+            None => {}
+        }
+        marks.insert(id, Mark::Visiting);
+        if let Some(symbol) = doc.symbol(id) {
+            for nested in symbol.nested_symbols() {
+                visit(doc, nested, marks)?;
+            }
+        }
+        marks.insert(id, Mark::Done);
+        Ok(())
+    }
+    let mut marks = std::collections::BTreeMap::new();
+    for &id in doc.symbols().keys() {
+        visit(doc, id, &mut marks).map_err(|id| ValidationError::SymbolCycle {
+            id,
+            name: doc.symbol(id).map(|s| s.name.clone()).unwrap_or_default(),
+        })?;
     }
     Ok(())
 }
@@ -1126,6 +1330,171 @@ mod tests {
     } ] } } }
   }
 }"#;
+
+    /// `sample()` plus a 12-frame object (with a nested one-frame object)
+    /// placed on its first layer at frame 2.
+    fn symbol_sample() -> (Document, SymbolId, SymbolId) {
+        use document::Symbol;
+        use document::scene::Layer;
+        use timeline::{InstanceKey, InstanceMode, InstanceTransform, Track};
+        let mut doc = sample();
+        let mut v = VectorDrawing::new();
+        v.push_stroke(Stroke::new(
+            vec![StrokePoint::new(Vec2::ZERO), StrokePoint::new(Vec2::ONE)],
+            BrushStyle::default(),
+        ));
+        let drawing = doc.add_drawing(DrawingContent::Vector(v));
+        let mut inner = Symbol::new("Dot", 1);
+        let mut track = Track::new();
+        track.set_key(FrameIndex(0), Keyframe::Drawing(drawing));
+        inner.push_layer(Layer::new("dot"), track);
+        let inner_id = inner.id;
+        let mut outer = Symbol::new("Ball", 12);
+        let mut track = Track::new();
+        track.set_key(
+            FrameIndex(3),
+            Keyframe::Instance(
+                InstanceKey::new(inner_id).with_transform(InstanceTransform {
+                    translation: Vec2::new(1.5, -2.0),
+                    scale: Vec2::new(2.0, 0.5),
+                    rotation: 0.25,
+                }),
+            ),
+        );
+        track.set_key(FrameIndex(9), Keyframe::Empty);
+        outer.push_layer(Layer::new("ball"), track);
+        let outer_id = outer.id;
+        doc.insert_symbol(inner);
+        doc.insert_symbol(outer);
+        let layer = doc.layers().iter().next().unwrap().id;
+        doc.track_mut(layer).unwrap().set_key(
+            FrameIndex(2),
+            Keyframe::Instance(InstanceKey {
+                opacity: 0.5,
+                mode: InstanceMode::Once,
+                first_frame: FrameIndex(4),
+                ..InstanceKey::new(outer_id)
+            }),
+        );
+        (doc, outer_id, inner_id)
+    }
+
+    #[test]
+    fn symbols_roundtrip_and_keep_their_drawings() {
+        let (doc, _, _) = symbol_sample();
+        let text = to_string(&doc).unwrap();
+        assert!(text.contains("\"symbols\"") && text.contains("\"Instance\""));
+        let loaded = from_str(&text).unwrap();
+        assert_eq!(loaded, doc);
+        for f in 0..doc.frame_count {
+            assert_eq!(loaded.evaluate(FrameIndex(f)), doc.evaluate(FrameIndex(f)));
+        }
+        // An unplaced object keeps its drawings through a save too.
+        let mut unplaced = doc.clone();
+        let layer = unplaced.layers().iter().next().unwrap().id;
+        unplaced.track_mut(layer).unwrap().remove_key(FrameIndex(2));
+        assert_eq!(from_str(&to_string(&unplaced).unwrap()).unwrap(), unplaced);
+    }
+
+    #[test]
+    fn version_10_files_load_unchanged() {
+        let doc = sample();
+        let v10 = edit_json(&doc, |j| j["format_version"] = 10.into());
+        assert!(!v10.contains("symbols"));
+        assert_eq!(from_str(&v10).unwrap(), doc);
+    }
+
+    #[test]
+    fn broken_symbols_are_rejected() {
+        let (doc, outer, inner) = symbol_sample();
+        let (outer_s, inner_s) = (outer.to_string(), inner.to_string());
+
+        let mut missing = doc.clone();
+        missing.remove_symbol(inner);
+        assert!(matches!(
+            invalid(&to_string(&missing).unwrap()),
+            ValidationError::MissingSymbol { .. }
+        ));
+
+        let past_end = edit_json(&doc, |j| {
+            for track in j["document"]["tracks"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+            {
+                if let Some(key) = track["keys"].get_mut("2") {
+                    key["Instance"]["first_frame"] = 12.into();
+                }
+            }
+        });
+        assert!(matches!(
+            invalid(&past_end),
+            ValidationError::FirstFrameOutOfRange {
+                frame_count: 12,
+                ..
+            }
+        ));
+
+        let cycle = edit_json(&doc, |j| {
+            let tracks = j["document"]["symbols"][&inner_s]["tracks"]
+                .as_object_mut()
+                .unwrap();
+            let track = tracks.values_mut().next().unwrap();
+            track["keys"]["0"] = serde_json::json!({ "Instance": {
+                "symbol": outer_s,
+                "transform": { "translation": [0.0, 0.0], "scale": [1.0, 1.0], "rotation": 0.0 },
+                "opacity": 1.0, "mode": "Loop", "first_frame": 0
+            }});
+        });
+        assert!(matches!(
+            invalid(&cycle),
+            ValidationError::SymbolCycle { .. }
+        ));
+
+        let no_track = edit_json(&doc, |j| {
+            j["document"]["symbols"][&outer_s]["tracks"] = serde_json::json!({});
+        });
+        assert!(matches!(
+            invalid(&no_track),
+            ValidationError::MissingTrack { .. }
+        ));
+
+        let empty = edit_json(&doc, |j| {
+            j["document"]["symbols"][&outer_s]["frame_count"] = 0.into();
+        });
+        assert!(matches!(
+            invalid(&empty),
+            ValidationError::EmptySymbol { .. }
+        ));
+
+        let mismatch = edit_json(&doc, |j| {
+            j["document"]["symbols"][&outer_s]["id"] = inner_s.clone().into();
+        });
+        assert!(matches!(
+            invalid(&mismatch),
+            ValidationError::SymbolKeyMismatch { .. }
+        ));
+
+        let bad_opacity = edit_json(&doc, |j| {
+            for track in j["document"]["tracks"]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+            {
+                if let Some(key) = track["keys"].get_mut("2") {
+                    key["Instance"]["opacity"] = 2.0.into();
+                }
+            }
+        });
+        assert!(matches!(
+            invalid(&bad_opacity),
+            ValidationError::OutOfRange { .. }
+        ));
+
+        let older = edit_json(&doc, |j| j["format_version"] = 10.into());
+        // A v10 file can't hold objects, but if one does it is still checked.
+        assert!(from_str(&older).is_ok());
+    }
 
     #[test]
     fn version_1_file_loads_without_fills() {
