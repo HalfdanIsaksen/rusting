@@ -10,6 +10,12 @@
 //! the same directory and renames it over the target, so a crash or full disk
 //! never leaves a half-written project behind.
 //!
+//! # Library assets
+//! Assets in the document's library are saved once (ADR-017). An image item
+//! placed from an asset is saved without its bytes and gets them back from
+//! the asset on load. Assets nothing uses are saved too: the library owns
+//! them.
+//!
 //! # Unknown fields
 //! Within a supported version, fields this build does not know are **ignored**
 //! by [`from_str`] and [`load`]; the document still loads. A writer that adds
@@ -19,7 +25,7 @@
 //! them silently, [`from_str_with_report`] and [`load_with_report`] list them
 //! in a [`LoadReport`] so the app can warn before overwriting the file.
 
-use animation_core::{DrawingId, FillId, FrameIndex, GroupId, ImageId, LayerId, StrokeId};
+use animation_core::{AssetId, DrawingId, FillId, FrameIndex, GroupId, ImageId, LayerId, StrokeId};
 use document::Document;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -52,7 +58,12 @@ use std::path::{Path, PathBuf};
 ///   their file bytes as base64 (absent means none, so v8 needs no
 ///   migration; ADR-015). Older builds must reject these files: they would
 ///   drop the pictures.
-pub const FORMAT_VERSION: u32 = 9;
+/// - 10: the document may have a library of `assets` (absent means none), and
+///   images an `asset` reference. An image with an asset is saved without
+///   its `data`, which is filled back in from the asset on load (ADR-017).
+///   v9 files need no migration. Older builds must reject these files: they
+///   would load the pictures as empty.
+pub const FORMAT_VERSION: u32 = 10;
 
 /// File extension for project files (without the dot).
 pub const FILE_EXTENSION: &str = "rusting";
@@ -164,6 +175,41 @@ pub enum ValidationError {
     /// An image has no pixels or no file bytes.
     #[error("image {0} is empty")]
     EmptyImage(ImageId),
+    /// An image refers to a library asset that is not in the file.
+    #[error("image {image} was placed from library asset {asset}, which is not in the file")]
+    MissingAsset {
+        /// The image.
+        image: ImageId,
+        /// The missing asset.
+        asset: AssetId,
+    },
+    /// An image refers to a library asset that is not a picture.
+    #[error("image {image} was placed from library asset {asset}, which is not a picture")]
+    NotAnImageAsset {
+        /// The image.
+        image: ImageId,
+        /// The asset.
+        asset: AssetId,
+    },
+    /// Two library assets share an ID.
+    #[error("asset ID {0} is used by more than one library asset")]
+    DuplicateAsset(AssetId),
+    /// A library asset is stored under another asset's ID.
+    #[error("library asset {id} is stored under the ID {key}")]
+    AssetKeyMismatch {
+        /// The key in the library.
+        key: AssetId,
+        /// The asset's own ID.
+        id: AssetId,
+    },
+    /// A library picture has no pixels or no file bytes.
+    #[error("library asset \"{name}\" ({id}) is an empty picture")]
+    EmptyAsset {
+        /// The asset.
+        id: AssetId,
+        /// Its name.
+        name: String,
+    },
     /// The frame rate has a zero numerator or denominator.
     #[error("frame rate {numerator}/{denominator} is not valid; both parts must be above zero")]
     InvalidFps {
@@ -234,34 +280,98 @@ struct EnvelopeOld {
 }
 
 /// Serializes a document to a JSON string. Drawings no keyframe refers to,
-/// and groups with no layers, are left out; the document passed in is not
+/// and groups with no layers, are left out, and images placed from a library
+/// asset are written without their bytes; the document passed in is not
 /// changed.
 pub fn to_string(doc: &Document) -> Result<String, FileFormatError> {
-    let doc: Cow<'_, Document> = if doc.has_unreferenced_drawings() || doc.has_empty_groups() {
-        let mut copy = doc.clone();
-        copy.garbage_collect_drawings();
-        copy.remove_empty_groups();
-        Cow::Owned(copy)
-    } else {
-        Cow::Borrowed(doc)
-    };
+    let doc: Cow<'_, Document> =
+        if doc.has_unreferenced_drawings() || doc.has_empty_groups() || has_asset_images(doc) {
+            let mut copy = doc.clone();
+            copy.garbage_collect_drawings();
+            copy.remove_empty_groups();
+            strip_asset_bytes(&mut copy);
+            Cow::Owned(copy)
+        } else {
+            Cow::Borrowed(doc)
+        };
     Ok(serde_json::to_string_pretty(&EnvelopeOut {
         format_version: FORMAT_VERSION,
         document: &doc,
     })?)
 }
 
+/// Whether some image was placed from a library asset.
+fn has_asset_images(doc: &Document) -> bool {
+    doc.drawings()
+        .values()
+        .filter_map(|c| c.as_vector())
+        .any(|v| v.images().iter().any(|i| i.asset.is_some()))
+}
+
+/// Calls `f` on every image of every drawing in `doc`.
+fn for_each_image_mut(doc: &mut Document, mut f: impl FnMut(&mut document::drawing::Image)) {
+    let ids: Vec<DrawingId> = doc.drawings().keys().copied().collect();
+    for id in ids {
+        let Some(vector) = doc.drawing_mut(id).and_then(|c| c.as_vector_mut()) else {
+            continue;
+        };
+        let images: Vec<ImageId> = vector.images().iter().map(|i| i.id).collect();
+        for image in images {
+            if let Some(image) = vector.image_mut(image) {
+                f(image);
+            }
+        }
+    }
+}
+
+/// Drops the bytes of images whose library asset holds the same picture; an
+/// image whose asset is gone (possible only for a drawing kept for undo) keeps
+/// its bytes and loses the reference, so the file always loads.
+fn strip_asset_bytes(doc: &mut Document) {
+    let pictures: BTreeSet<AssetId> = doc
+        .assets()
+        .values()
+        .filter(|a| a.image().is_some())
+        .map(|a| a.id)
+        .collect();
+    for_each_image_mut(doc, |image| {
+        if let Some(asset) = image.asset {
+            if pictures.contains(&asset) {
+                image.data = document::drawing::ImageData::default();
+            } else {
+                image.asset = None;
+            }
+        }
+    });
+}
+
+/// Gives every image placed from a library picture that picture's bytes.
+/// References to missing assets are left for [`validate`] to report.
+fn fill_asset_bytes(doc: &mut Document) {
+    let pictures: std::collections::BTreeMap<AssetId, document::drawing::ImageData> = doc
+        .assets()
+        .values()
+        .filter_map(|a| Some((a.id, a.image()?.clone())))
+        .collect();
+    for_each_image_mut(doc, |image| {
+        if let Some(data) = image.asset.and_then(|a| pictures.get(&a)) {
+            image.data = data.clone();
+        }
+    });
+}
+
 /// Parses, migrates and validates a document from a JSON string. Unknown
 /// fields are ignored; use [`from_str_with_report`] to find out about them.
 pub fn from_str(text: &str) -> Result<Document, FileFormatError> {
     let version = read_version(text)?;
-    let doc = if version == FORMAT_VERSION {
+    let mut doc = if version == FORMAT_VERSION {
         // Parsing straight from text keeps line/column info in error messages.
         serde_json::from_str::<EnvelopeCurrent>(text)?.document
     } else {
         let envelope: EnvelopeOld = serde_json::from_str(text)?;
         serde_json::from_value(migrate(version, envelope.document))?
     };
+    fill_asset_bytes(&mut doc);
     validate(&doc)?;
     Ok(doc)
 }
@@ -515,6 +625,27 @@ pub fn validate(doc: &Document) -> Result<(), ValidationError> {
         }
     }
 
+    let mut seen_assets = BTreeSet::new();
+    for asset in doc.assets().values() {
+        if !seen_assets.insert(asset.id) {
+            return Err(ValidationError::DuplicateAsset(asset.id));
+        }
+    }
+    for (&key, asset) in doc.assets() {
+        if key != asset.id {
+            return Err(ValidationError::AssetKeyMismatch { key, id: asset.id });
+        }
+        if asset
+            .image()
+            .is_some_and(document::drawing::ImageData::is_empty)
+        {
+            return Err(ValidationError::EmptyAsset {
+                id: asset.id,
+                name: asset.name.clone(),
+            });
+        }
+    }
+
     let mut seen_strokes = BTreeSet::new();
     let mut seen_fills = BTreeSet::new();
     let mut seen_images = BTreeSet::new();
@@ -529,7 +660,24 @@ pub fn validate(doc: &Document) -> Result<(), ValidationError> {
                     drawing,
                 });
             }
-            if image.data.width == 0 || image.data.height == 0 || image.data.bytes.is_empty() {
+            if let Some(asset) = image.asset {
+                match doc.asset(asset) {
+                    None => {
+                        return Err(ValidationError::MissingAsset {
+                            image: image.id,
+                            asset,
+                        });
+                    }
+                    Some(a) if a.image().is_none() => {
+                        return Err(ValidationError::NotAnImageAsset {
+                            image: image.id,
+                            asset,
+                        });
+                    }
+                    Some(_) => {}
+                }
+            }
+            if image.data.is_empty() {
                 return Err(ValidationError::EmptyImage(image.id));
             }
             let what = |field: &str| format!("image {} {field}", image.id);
@@ -820,6 +968,137 @@ mod tests {
             j["document"]["drawings"][drawing.to_string()]["Vector"]["images"][0] = img;
         });
         assert!(from_str(&bad).is_err());
+    }
+
+    /// `sample()` plus a library picture placed twice (frames 0 and 6 of
+    /// the "Color" layer) and an unused library picture.
+    fn library_sample() -> (Document, document::Asset, document::Asset) {
+        use document::drawing::{Image, ImageData};
+        use document::{Asset, AssetKind};
+        let mut doc = sample();
+        let data = ImageData::new(3, 2, vec![0x89, b'P', b'N', b'G', 7, 7, 7]);
+        let used = Asset::new("photo.png", AssetKind::Image(data.clone()));
+        let unused = Asset::new(
+            "spare.jpg",
+            AssetKind::Image(ImageData::new(1, 1, vec![0xFF, 0xD8, 1])),
+        );
+        doc.insert_asset(used.clone());
+        doc.insert_asset(unused.clone());
+        let layer = doc.layers().iter().nth(1).unwrap().id;
+        for frame in [0, 6] {
+            let mut v = VectorDrawing::new();
+            v.push_image(
+                Image::new(data.clone(), Vec2::ZERO, Vec2::new(30.0, 20.0)).with_asset(used.id),
+            );
+            let drawing = doc.add_drawing(DrawingContent::Vector(v));
+            doc.track_mut(layer)
+                .unwrap()
+                .set_key(FrameIndex(frame), Keyframe::Drawing(drawing));
+        }
+        (doc, used, unused)
+    }
+
+    #[test]
+    fn library_roundtrips_and_placed_images_are_saved_without_bytes() {
+        let (doc, used, unused) = library_sample();
+        let text = to_string(&doc).unwrap();
+        assert!(text.contains("\"assets\""));
+        // The picture's bytes ("iVBORwcHBw==") are saved once, in the library.
+        assert_eq!(text.matches("iVBORwcHBw==").count(), 1, "{text}");
+        let loaded = from_str(&text).unwrap();
+        assert_eq!(loaded, doc);
+        // The library owns its assets: an unused one is kept.
+        assert_eq!(loaded.asset(unused.id), Some(&unused));
+        assert_eq!(loaded.asset(used.id), Some(&used));
+        let (_, report) = from_str_with_report(&text).unwrap();
+        assert!(report.is_clean(), "{report:?}");
+    }
+
+    #[test]
+    fn version_9_files_with_images_load_unchanged() {
+        use document::drawing::{Image, ImageData};
+        let mut doc = sample();
+        let drawing = *doc.drawings().keys().next().unwrap();
+        doc.drawing_mut(drawing)
+            .and_then(|c| c.as_vector_mut())
+            .unwrap()
+            .push_image(Image::new(
+                ImageData::new(2, 2, vec![1, 2, 3]),
+                Vec2::ZERO,
+                Vec2::ONE,
+            ));
+        let v9 = edit_json(&doc, |j| j["format_version"] = 9.into());
+        assert!(!v9.contains("assets"));
+        assert_eq!(from_str(&v9).unwrap(), doc);
+    }
+
+    #[test]
+    fn image_of_a_deleted_asset_keeps_its_bytes() {
+        let (mut doc, used, _) = library_sample();
+        // Only possible in memory (undo keeps such drawings), but saving
+        // must still write a file that loads.
+        doc.remove_asset(used.id);
+        let loaded = from_str(&to_string(&doc).unwrap()).unwrap();
+        let images: Vec<_> = loaded
+            .drawings()
+            .values()
+            .filter_map(|c| c.as_vector())
+            .flat_map(|v| v.images().to_vec())
+            .collect();
+        assert_eq!(images.len(), 2);
+        assert!(
+            images
+                .iter()
+                .all(|i| i.asset.is_none() && !i.data.is_empty())
+        );
+    }
+
+    #[test]
+    fn broken_library_references_are_rejected() {
+        let (doc, used, unused) = library_sample();
+
+        let missing = edit_json(&doc, |j| {
+            j["document"]["assets"]
+                .as_object_mut()
+                .unwrap()
+                .remove(&used.id.to_string());
+        });
+        assert!(matches!(
+            invalid(&missing),
+            ValidationError::MissingAsset { asset, .. } if asset == used.id
+        ));
+
+        // The unused asset stored a second time, under another key.
+        let duplicate = edit_json(&doc, |j| {
+            let copy = j["document"]["assets"][unused.id.to_string()].clone();
+            j["document"]["assets"][AssetId::new().to_string()] = copy;
+        });
+        assert_eq!(
+            invalid(&duplicate),
+            ValidationError::DuplicateAsset(unused.id)
+        );
+
+        let other = AssetId::new();
+        let moved = edit_json(&doc, |j| {
+            let assets = j["document"]["assets"].as_object_mut().unwrap();
+            let copy = assets.remove(&unused.id.to_string()).unwrap();
+            assets.insert(other.to_string(), copy);
+        });
+        assert_eq!(
+            invalid(&moved),
+            ValidationError::AssetKeyMismatch {
+                key: other,
+                id: unused.id
+            }
+        );
+
+        let empty = edit_json(&doc, |j| {
+            j["document"]["assets"][unused.id.to_string()]["kind"]["Image"]["width"] = 0.into();
+        });
+        assert!(matches!(
+            invalid(&empty),
+            ValidationError::EmptyAsset { id, .. } if id == unused.id
+        ));
     }
 
     /// A version 1 file as written by the first release (no `fills`).
