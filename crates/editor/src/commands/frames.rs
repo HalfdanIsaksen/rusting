@@ -31,6 +31,7 @@ pub struct DuplicateFrame {
     frame: FrameIndex,
     /// Built on the first apply and reused on redo, so redo keeps the IDs.
     copies: Option<Vec<LayerCopy>>,
+    clips: ClipStarts,
 }
 
 impl DuplicateFrame {
@@ -39,6 +40,7 @@ impl DuplicateFrame {
         Self {
             frame,
             copies: None,
+            clips: ClipStarts::new(),
         }
     }
 
@@ -123,6 +125,7 @@ impl Command for DuplicateFrame {
         }
         doc.frame_count = frame_count;
         shift_tags(doc, new, true);
+        self.clips = shift_clips(doc, |f| if f >= new { FrameIndex(f.0 + 1) } else { f });
         self.copies = Some(copies);
         Ok(())
     }
@@ -145,19 +148,22 @@ impl Command for DuplicateFrame {
         }
         doc.frame_count = doc.frame_count.saturating_sub(1);
         shift_tags(doc, new, false);
+        restore_clips(doc, &self.clips);
         Ok(())
     }
 }
 
 /// Inserts `count` blank frames at `at` on every layer: the exposure that
 /// covers the frame before `at` gets longer and later keys move right. The
-/// animation grows by `count`. A tag ending right before `at` grows with it.
+/// animation grows by `count`. A tag ending right before `at` grows with it,
+/// and audio clips starting at `at` or later move right.
 #[derive(Debug)]
 pub struct InsertFrames {
     at: FrameIndex,
     count: u32,
     /// The tags before the insert, swapped back on undo.
     tags: Vec<FrameTag>,
+    clips: ClipStarts,
 }
 
 impl InsertFrames {
@@ -167,6 +173,7 @@ impl InsertFrames {
             at,
             count,
             tags: Vec::new(),
+            clips: ClipStarts::new(),
         }
     }
 }
@@ -214,6 +221,14 @@ impl Command for InsertFrames {
                 tag.range.end.0 += self.count;
             }
         }
+        let (at, count) = (self.at, self.count);
+        self.clips = shift_clips(doc, |f| {
+            if f >= at {
+                FrameIndex(f.0.saturating_add(count))
+            } else {
+                f
+            }
+        });
         Ok(())
     }
 
@@ -226,6 +241,7 @@ impl Command for InsertFrames {
         }
         doc.frame_count = doc.frame_count.saturating_sub(self.count);
         std::mem::swap(&mut doc.tags, &mut self.tags);
+        restore_clips(doc, &self.clips);
         Ok(())
     }
 }
@@ -242,7 +258,9 @@ struct LayerRemoval {
 
 /// Removes a range of frames on every layer: keys inside it are dropped and
 /// later keys move left. The animation shrinks by the range length. Tags
-/// shrink with it, and tags left with no frames are removed.
+/// shrink with it, and tags left with no frames are removed. Audio clips
+/// starting after the range move left; one starting inside it starts where
+/// the range was.
 ///
 /// Fails with [`CommandError::ZeroFrameCount`] rather than removing every frame.
 #[derive(Debug)]
@@ -251,6 +269,7 @@ pub struct RemoveFrames {
     removals: Vec<LayerRemoval>,
     /// The tags before the removal, swapped back on undo.
     tags: Vec<FrameTag>,
+    clips: ClipStarts,
 }
 
 impl RemoveFrames {
@@ -260,6 +279,7 @@ impl RemoveFrames {
             range,
             removals: Vec::new(),
             tags: Vec::new(),
+            clips: ClipStarts::new(),
         }
     }
 }
@@ -318,6 +338,7 @@ impl Command for RemoveFrames {
             tag.range = FrameRange::new(map(tag.range.start), map(tag.range.end));
         }
         doc.tags.retain(|t| !t.range.is_empty());
+        self.clips = shift_clips(doc, map);
         Ok(())
     }
 
@@ -333,12 +354,14 @@ impl Command for RemoveFrames {
         }
         doc.frame_count += self.range.len();
         std::mem::swap(&mut doc.tags, &mut self.tags);
+        restore_clips(doc, &self.clips);
         Ok(())
     }
 }
 
 /// Moves the keys inside a range of frames to start at `to`, on every layer.
-/// Frames are not added or removed and tags stay where they are.
+/// Frames are not added or removed and tags stay where they are. Audio clips
+/// starting inside the range move with it; a clip start never blocks a move.
 ///
 /// Fails with [`CommandError::KeyframeExists`] if a key outside the range
 /// sits where a moved key would land, so a move never replaces a drawing.
@@ -348,12 +371,17 @@ impl Command for RemoveFrames {
 pub struct MoveFrames {
     range: FrameRange,
     to: FrameIndex,
+    clips: ClipStarts,
 }
 
 impl MoveFrames {
     /// Creates the command.
     pub fn new(range: FrameRange, to: FrameIndex) -> Self {
-        Self { range, to }
+        Self {
+            range,
+            to,
+            clips: ClipStarts::new(),
+        }
     }
 
     /// Where the range lands.
@@ -392,28 +420,71 @@ impl Command for MoveFrames {
         if let Some(frame) = self.blocked_by(doc) {
             return Err(CommandError::KeyframeExists(frame));
         }
-        let layers: Vec<LayerId> = doc.tracks().keys().copied().collect();
-        for layer in layers {
-            let Some(track) = doc.track_mut(layer) else {
-                continue;
-            };
-            let moved: Vec<(FrameIndex, Keyframe)> = track
-                .keys()
-                .filter(|(f, _)| self.range.contains(*f))
-                .map(|(f, k)| (f, *k))
-                .collect();
-            for &(f, _) in &moved {
-                track.remove_key(f);
+        move_keys(doc, self.range, self.to);
+        let (range, to) = (self.range, self.to);
+        self.clips = shift_clips(doc, |f| {
+            if range.contains(f) {
+                FrameIndex(f.0 - range.start.0 + to.0)
+            } else {
+                f
             }
-            for (f, key) in moved {
-                track.set_key(FrameIndex(f.0 - self.range.start.0 + self.to.0), key);
-            }
-        }
+        });
         Ok(())
     }
 
     fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
-        MoveFrames::new(self.target(), self.range.start).apply(doc)
+        move_keys(doc, self.target(), self.range.start);
+        restore_clips(doc, &self.clips);
+        Ok(())
+    }
+}
+
+/// Moves the keys inside `range` to start at `to`, on every layer. The
+/// caller has checked that nothing is in the way.
+fn move_keys(doc: &mut Document, range: FrameRange, to: FrameIndex) {
+    let layers: Vec<LayerId> = doc.tracks().keys().copied().collect();
+    for layer in layers {
+        let Some(track) = doc.track_mut(layer) else {
+            continue;
+        };
+        let moved: Vec<(FrameIndex, Keyframe)> = track
+            .keys()
+            .filter(|(f, _)| range.contains(*f))
+            .map(|(f, k)| (f, *k))
+            .collect();
+        for &(f, _) in &moved {
+            track.remove_key(f);
+        }
+        for (f, key) in moved {
+            track.set_key(FrameIndex(f.0 - range.start.0 + to.0), key);
+        }
+    }
+}
+
+/// Where each audio clip started before a frame edit, put back on undo.
+type ClipStarts = Vec<(LayerId, FrameIndex)>;
+
+/// Moves every audio clip's start through `map` (ADR-020), returning the
+/// old starts for [`restore_clips`].
+fn shift_clips(doc: &mut Document, map: impl Fn(FrameIndex) -> FrameIndex) -> ClipStarts {
+    let layers: ClipStarts = doc
+        .audio_layers()
+        .map(|(layer, clip)| (layer.id, clip.start))
+        .collect();
+    for &(layer, start) in &layers {
+        if let Some(clip) = doc.layer_mut(layer).and_then(|l| l.audio_clip_mut()) {
+            clip.start = map(start);
+        }
+    }
+    layers
+}
+
+/// Puts back clip starts saved by [`shift_clips`].
+fn restore_clips(doc: &mut Document, starts: &ClipStarts) {
+    for &(layer, start) in starts {
+        if let Some(clip) = doc.layer_mut(layer).and_then(|l| l.audio_clip_mut()) {
+            clip.start = start;
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 //! Concrete document commands.
 
 mod assets;
+mod audio;
 mod canvas;
 mod fill;
 mod frames;
@@ -11,6 +12,7 @@ mod merge;
 mod opacity;
 mod select;
 pub use assets::{AddAsset, RemoveAsset, RenameAsset};
+pub use audio::{AddAudioLayer, SetAudioClip};
 pub use canvas::ResizeCanvas;
 pub use fill::{AddFill, RemoveFill, ReplaceFill};
 pub use frames::{DuplicateFrame, InsertFrames, MoveFrames, RemoveFrames};
@@ -137,15 +139,24 @@ impl Command for RenameLayer {
     }
 }
 
-/// Fails with [`CommandError::LayerLocked`] unless `layer` exists and is editable.
+/// Fails with [`CommandError::LayerLocked`] unless `layer` exists and is
+/// editable, and with [`CommandError::AudioLayer`] if it is an audio layer:
+/// drawing commands only act on drawing layers.
 fn editable_layer(doc: &Document, layer: LayerId) -> Result<(), CommandError> {
-    if doc.layers().get(layer).is_none() {
-        return Err(CommandError::LayerNotFound);
-    }
+    drawing_layer(doc, layer)?;
     if doc.layers().is_editable(layer) {
         Ok(())
     } else {
         Err(CommandError::LayerLocked)
+    }
+}
+
+/// Fails unless `layer` exists and is a drawing layer (not an audio layer).
+fn drawing_layer(doc: &Document, layer: LayerId) -> Result<(), CommandError> {
+    match doc.layers().get(layer) {
+        None => Err(CommandError::LayerNotFound),
+        Some(l) if l.is_audio() => Err(CommandError::AudioLayer),
+        Some(_) => Ok(()),
     }
 }
 
@@ -609,6 +620,7 @@ impl Command for AddKeyframe {
 
     fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
         frame_in_range(doc, self.frame)?;
+        drawing_layer(doc, self.layer)?;
         let track = doc
             .track_mut(self.layer)
             .ok_or(CommandError::LayerNotFound)?;

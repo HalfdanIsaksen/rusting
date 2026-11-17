@@ -53,6 +53,15 @@ pub enum CommandError {
     /// The asset is placed somewhere in the animation, so it can't be removed.
     #[error("\"{0}\" is used in the animation; delete its placed copies first")]
     AssetInUse(String),
+    /// The layer is an audio layer, which holds no drawings or keys.
+    #[error("it is an audio layer; draw on a drawing layer")]
+    AudioLayer,
+    /// The layer is not an audio layer.
+    #[error("the layer is not an audio layer")]
+    NotAnAudioLayer,
+    /// The library asset is not a sound.
+    #[error("\"{0}\" is not a sound")]
+    NotAudio(String),
     /// The canvas must be at least one pixel wide and high.
     #[error("the canvas must be at least 1×1 pixels")]
     EmptyCanvas,
