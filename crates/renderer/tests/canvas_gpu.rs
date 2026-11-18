@@ -93,6 +93,7 @@ fn renders_workspace_background_and_strokes() {
         transform: Mat4::IDENTITY,
         layer: None,
         blend: Default::default(),
+        brush: None,
     }];
     let mut encoder = device.create_command_encoder(&Default::default());
     canvas.render(
@@ -202,6 +203,7 @@ fn translucent_stroke_covers_each_pixel_once() {
             transform: Mat4::IDENTITY,
             layer: None,
             blend: Default::default(),
+            brush: None,
         },
         StrokeDraw {
             id: on_top.into(),
@@ -210,6 +212,7 @@ fn translucent_stroke_covers_each_pixel_once() {
             transform: Mat4::IDENTITY,
             layer: None,
             blend: Default::default(),
+            brush: None,
         },
     ];
     let mut encoder = device.create_command_encoder(&Default::default());

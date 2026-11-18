@@ -9,7 +9,7 @@
 //! [`Document::assets`]: crate::Document::assets
 
 use animation_core::AssetId;
-use drawing::ImageData;
+use drawing::{BrushData, ImageData};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -38,7 +38,7 @@ impl Asset {
     pub fn image(&self) -> Option<&ImageData> {
         match &self.kind {
             AssetKind::Image(data) => Some(data),
-            AssetKind::Audio(_) => None,
+            AssetKind::Audio(_) | AssetKind::Brush(_) => None,
         }
     }
 
@@ -46,7 +46,15 @@ impl Asset {
     pub fn audio(&self) -> Option<&AudioData> {
         match &self.kind {
             AssetKind::Audio(data) => Some(data),
-            AssetKind::Image(_) => None,
+            AssetKind::Image(_) | AssetKind::Brush(_) => None,
+        }
+    }
+
+    /// The brush, if this is a brush asset (ADR-022).
+    pub fn brush(&self) -> Option<&BrushData> {
+        match &self.kind {
+            AssetKind::Brush(data) => Some(data),
+            AssetKind::Image(_) | AssetKind::Audio(_) => None,
         }
     }
 }
@@ -59,6 +67,8 @@ pub enum AssetKind {
     Image(ImageData),
     /// An imported MP3/WAV sound (ADR-020).
     Audio(AudioData),
+    /// A stamp brush that strokes are drawn with (ADR-022).
+    Brush(BrushData),
 }
 
 impl AssetKind {
@@ -67,6 +77,7 @@ impl AssetKind {
         match self {
             Self::Image(_) => "Image",
             Self::Audio(_) => "Audio",
+            Self::Brush(_) => "Brush",
         }
     }
 }

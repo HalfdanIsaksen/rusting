@@ -218,11 +218,22 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
             );
         }
         Tool::Brush => {
+            brush_picker(ui, session);
             brush_size(ui, session);
             brush_smoothing(ui, session);
             ui.separator();
             paint_order(ui, &mut session.tools.brush_order);
-            merge_same_colour(ui, session);
+            if session.brush().is_some() {
+                ui.add_enabled(
+                    false,
+                    egui::Checkbox::new(&mut session.tools.merge_same_colour, "Merge same colour"),
+                )
+                .on_disabled_hover_text(
+                    "Textured brushes don't merge: a fill can't keep their texture.",
+                );
+            } else {
+                merge_same_colour(ui, session);
+            }
             ui.separator();
             paint_settings(ui, session);
             ui.separator();
@@ -381,6 +392,42 @@ fn active_tool_label(ui: &mut egui::Ui, session: &Session) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
     (entry.icon)(ui.painter(), rect, ui.visuals().strong_text_color());
     ui.strong(entry.name);
+}
+
+const BRUSH_HINT: &str = "Vector (solid) draws an even line. The other brushes stamp a \
+                          textured tip along the line, on a paper grain (pencil, charcoal, \
+                          chalk...). File → Import… adds .rustbrush brushes.";
+
+/// The brush the Brush tool draws with (ADR-022): the solid vector brush,
+/// the built-in brushes and the project's library brushes.
+fn brush_picker(ui: &mut egui::Ui, session: &mut Session) {
+    let options = session.brush_options();
+    let current = session.brush();
+    let selected = options
+        .iter()
+        .find(|o| o.id == current)
+        .map_or(crate::SOLID_BRUSH_NAME, |o| o.name.as_str())
+        .to_owned();
+    ui.label("Brush").on_hover_text(BRUSH_HINT);
+    let mut picked = None;
+    egui::ComboBox::from_id_salt("brush_picker")
+        .selected_text(selected)
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            for option in &options {
+                if ui
+                    .selectable_label(option.id == current, &option.name)
+                    .clicked()
+                {
+                    picked = Some(option.id);
+                }
+            }
+        })
+        .response
+        .on_hover_text(BRUSH_HINT);
+    if let Some(id) = picked {
+        session.set_brush(id);
+    }
 }
 
 fn brush_size(ui: &mut egui::Ui, session: &mut Session) {

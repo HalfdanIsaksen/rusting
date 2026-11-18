@@ -244,7 +244,8 @@ pub fn render_frame(
     background: Option<Rgba>,
 ) -> Result<RgbaImage, RendererError> {
     let list: RenderList<'_> = document.evaluate(frame);
-    let mut builder = DrawListBuilder::new(device, offscreen.stroke_cache_mut());
+    let mut builder =
+        DrawListBuilder::new(device, offscreen.stroke_cache_mut()).with_assets(document.assets());
     builder.render_list(&list);
     let draws = builder.finish();
     let pixels = offscreen.render(
@@ -751,6 +752,7 @@ mod tests {
                     color,
                     width: 8.0,
                     opacity: 1.0,
+                    brush: None,
                 },
             ));
             DrawingContent::Vector(d)

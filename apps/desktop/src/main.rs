@@ -5,6 +5,7 @@
 //! shows in the canvas pane (ADR-002, ADR-021). Frames are drawn only on demand.
 
 mod audio;
+mod brushes;
 mod export;
 mod icon;
 mod import;
@@ -113,6 +114,7 @@ impl App {
     /// the start menu for a new document.
     fn new(open: Option<&Path>) -> Self {
         let mut session = ui::Session::new();
+        session.set_brush_presets(brushes::presets());
         let layout_path = layout_file::path();
         if let Some(path) = &layout_path {
             layout_file::load(&mut session, path);
@@ -389,7 +391,8 @@ fn prepare_preview(
         );
     }
     let doc = &shell.session.document;
-    let mut draws = DrawListBuilder::new(device, preview.canvas.stroke_cache_mut());
+    let mut draws =
+        DrawListBuilder::new(device, preview.canvas.stroke_cache_mut()).with_assets(doc.assets());
     draws.render_list(&doc.evaluate(shell.session.preview_frame()));
     let draws = draws.finish();
     let state = PreviewState {
@@ -416,7 +419,16 @@ fn collect_draws(
     let session = &shell.session;
     let doc = &session.document;
     let frame = session.current_frame();
-    let mut draws = DrawListBuilder::new(device, canvas.stroke_cache_mut());
+    let mut draws =
+        DrawListBuilder::new(device, canvas.stroke_cache_mut()).with_assets(doc.assets());
+    // A built-in brush joins the library with its first stroke; until then
+    // the stroke being drawn finds it here (ADR-022).
+    if let Some(preset) = session
+        .brush()
+        .and_then(|id| session.brush_presets().iter().find(|p| p.id == id))
+    {
+        draws = draws.with_brush(preset.id, &preset.data);
+    }
 
     for skin in session.onion.collect(doc, frame) {
         let transform = transform_matrix(&skin.transform);
@@ -580,6 +592,7 @@ fn collect_draws(
             transform: Mat4::IDENTITY,
             layer: None,
             blend: BlendMode::Normal,
+            brush: None,
         });
     }
     draws.finish()
@@ -680,10 +693,31 @@ fn handle_request(shell: &mut Shell, request: ui::Request, event_loop: &ActiveEv
                 .add_filter("Pictures and sounds", import::ALL_EXTENSIONS)
                 .add_filter("Images (PNG, JPEG)", import::EXTENSIONS)
                 .add_filter("Audio (MP3, WAV)", import::AUDIO_EXTENSIONS)
+                .add_filter("Brushes (.rustbrush)", &[brushes::EXTENSION])
                 .pick_files();
             for path in picked.unwrap_or_default() {
                 if !import_file(session, &path) {
                     break;
+                }
+            }
+        }
+        ui::Request::ExportBrushDialog(id) => {
+            let Some(asset) = session.document.asset(id) else {
+                return;
+            };
+            let Some(data) = asset.brush() else {
+                return;
+            };
+            let name = asset.name.clone();
+            if let Some(path) = dialog()
+                .set_title("Export Brush")
+                .add_filter("Brush (.rustbrush)", &[brushes::EXTENSION])
+                .set_file_name(format!("{name}.{}", brushes::EXTENSION))
+                .save_file()
+            {
+                match brushes::write(&path, &name, data) {
+                    Ok(()) => session.set_status(format!("Exported brush {name}")),
+                    Err(err) => session.show_error("Could not export brush", err),
                 }
             }
         }
@@ -714,11 +748,19 @@ fn import_file(session: &mut ui::Session, path: &Path) -> bool {
                 false
             }
         },
+        Some(import::FileKind::Brush) => match brushes::read(path) {
+            Ok(package) => session.import_brush(&package.name, package.data).is_some(),
+            Err(err) => {
+                session.show_error("Could not import brush", format!("{name}\n\n{err}"));
+                false
+            }
+        },
         None => {
             session.show_error(
                 "Could not import file",
                 format!(
-                    "{name}\n\nOnly PNG and JPEG pictures and MP3 and WAV sounds can be imported."
+                    "{name}\n\nOnly PNG and JPEG pictures, MP3 and WAV sounds and .rustbrush \
+                     brushes can be imported."
                 ),
             );
             false

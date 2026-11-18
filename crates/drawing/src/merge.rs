@@ -84,12 +84,14 @@ struct Look {
 }
 
 impl Look {
-    fn of_stroke(stroke: &Stroke) -> Self {
-        Self {
+    /// `None` for brushed strokes (ADR-022): a fill can't carry their
+    /// texture, so they never merge.
+    fn of_stroke(stroke: &Stroke) -> Option<Self> {
+        stroke.style.brush.is_none().then_some(Self {
             color: stroke.style.color,
             opacity: stroke.style.opacity,
             placement: stroke.placement,
-        }
+        })
     }
 
     /// `None` for gradient fills, which never merge.
@@ -135,7 +137,7 @@ impl VectorDrawing {
     pub fn merge_same_colour(&self, item: ItemId) -> Option<Merge> {
         let look = match item {
             ItemId::Fill(id) => Look::of_fill(self.fill(id)?)?,
-            ItemId::Stroke(id) => Look::of_stroke(self.stroke(id)?),
+            ItemId::Stroke(id) => Look::of_stroke(self.stroke(id)?)?,
             ItemId::Image(_) => return None,
         };
         let mut candidates: Vec<Candidate<'_>> = Vec::new();
@@ -157,7 +159,7 @@ impl VectorDrawing {
             let wanted = match item {
                 ItemId::Stroke(id) => stroke.id == id,
                 // A new fill absorbs the same-look strokes it touches.
-                ItemId::Fill(_) => Look::of_stroke(stroke).matches(&look),
+                ItemId::Fill(_) => Look::of_stroke(stroke).is_some_and(|l| l.matches(&look)),
                 ItemId::Image(_) => false,
             };
             if wanted && let Some(bounds) = finite_bounds(stroke.bounds()) {
@@ -422,6 +424,7 @@ mod tests {
                 color,
                 width,
                 opacity: 1.0,
+                brush: None,
             },
         )
     }
@@ -461,6 +464,24 @@ mod tests {
         let id = stroke.id;
         d.push_stroke(stroke);
         assert_eq!(d.merge_same_colour(ItemId::Stroke(id)), None);
+    }
+
+    #[test]
+    fn brushed_strokes_never_merge() {
+        let mut d = VectorDrawing::new();
+        let mut stroke = line(v(80.0, 50.0), v(140.0, 50.0), 10.0, BROWN);
+        stroke.style.brush = Some(animation_core::AssetId::new());
+        let id = stroke.id;
+        d.push_stroke(stroke);
+        // Neither the brushed stroke merging into a fill...
+        d.push_fill(square(v(0.0, 0.0), v(100.0, 100.0), BROWN));
+        assert_eq!(d.merge_same_colour(ItemId::Stroke(id)), None);
+        // ...nor a new fill absorbing it.
+        let fill = square(v(120.0, 0.0), v(200.0, 100.0), BROWN);
+        let fill_id = fill.id;
+        d.push_fill(fill);
+        let merge = d.merge_same_colour(ItemId::Fill(fill_id));
+        assert!(merge.is_none_or(|m| m.strokes.is_empty()));
     }
 
     #[test]

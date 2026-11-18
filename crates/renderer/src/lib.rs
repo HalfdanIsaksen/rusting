@@ -17,7 +17,8 @@ pub mod stroke_cache;
 pub mod viewport;
 
 pub use canvas::{
-    CanvasFrame, CanvasRenderer, CanvasStyle, StrokeDraw, affine_matrix, transform_matrix,
+    BrushDraw, CanvasFrame, CanvasRenderer, CanvasStyle, StrokeDraw, affine_matrix,
+    transform_matrix,
 };
 pub use canvas_target::{
     CANVAS_DEPTH_FORMAT, CANVAS_DISPLAY_FORMAT, CANVAS_RENDER_FORMAT, CANVAS_SAMPLE_COUNT,
@@ -27,5 +28,5 @@ pub use draw_list::{DrawListBuilder, fill_color, fill_gradient, stroke_color};
 pub use gpu::{Gpu, RendererError, headless_device};
 pub use mesh::{Mesh, MeshRef, MeshSource};
 pub use offscreen::{OffscreenFrame, OffscreenRenderer, Pixels, output_size};
-pub use stroke_cache::{MeshId, StrokeCache, StrokeKey};
+pub use stroke_cache::{MeshId, StampMesh, StrokeCache, StrokeKey};
 pub use viewport::{MAX_ZOOM, MIN_ZOOM, Viewport};

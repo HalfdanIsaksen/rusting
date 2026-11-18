@@ -1,14 +1,16 @@
 //! GPU vertex/index buffers for stroke, fill and image meshes, cached by
-//! [`MeshId`], plus the textures of imported images.
+//! [`MeshId`], plus the textures of imported images and of brushes.
 //!
 //! A stroke is tessellated and uploaded once, then reused every frame until
 //! its [`StrokeKey`] changes or it is invalidated. An image is decoded once
-//! when first added and uploaded as a texture on the next render. Entries
-//! that are not drawn for a while are evicted.
+//! when first added and uploaded as a texture on the next render. A brushed
+//! stroke (ADR-022) caches a quad per stamp instead of its outline, and its
+//! brush's tip and grain textures are cached once per brush. Entries that
+//! are not drawn for a while are evicted.
 
 use crate::mesh::{MeshSource, valid_index_count};
-use animation_core::{FillId, ImageId, StrokeId};
-use drawing::{Fill, Image, Stroke};
+use animation_core::{AssetId, FillId, ImageId, StrokeId};
+use drawing::{BrushData, Fill, Image, Stamp, Stroke};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use wgpu::util::DeviceExt;
@@ -31,6 +33,7 @@ impl StrokeKey {
         let mut hasher = DefaultHasher::new();
         stroke.points.len().hash(&mut hasher);
         stroke.style.width.to_bits().hash(&mut hasher);
+        stroke.style.brush.hash(&mut hasher);
         for point in [stroke.points.first(), stroke.points.last()]
             .into_iter()
             .flatten()
@@ -96,6 +99,9 @@ pub enum MeshId {
     /// bottom-left, so the shader can derive texture coordinates from the
     /// vertex index).
     Image(ImageId),
+    /// A brushed stroke's stamps (ADR-022): one textured quad per stamp,
+    /// drawn with the brush pipeline.
+    Brushed(StrokeId),
 }
 
 impl From<ImageId> for MeshId {
@@ -133,13 +139,13 @@ struct Entry<T> {
 
 /// Key/age bookkeeping, separate from wgpu so it can be unit-tested.
 #[derive(Debug)]
-struct Cache<T> {
-    entries: HashMap<MeshId, Entry<T>>,
+struct Cache<T, K = MeshId> {
+    entries: HashMap<K, Entry<T>>,
     /// Incremented once per render.
     clock: u64,
 }
 
-impl<T> Default for Cache<T> {
+impl<T, K> Default for Cache<T, K> {
     fn default() -> Self {
         Self {
             entries: HashMap::new(),
@@ -148,9 +154,9 @@ impl<T> Default for Cache<T> {
     }
 }
 
-impl<T> Cache<T> {
+impl<T, K: Copy + Eq + std::hash::Hash> Cache<T, K> {
     /// Returns true if `id` has an entry with this `key`, marking it used.
-    fn touch(&mut self, id: MeshId, key: StrokeKey) -> bool {
+    fn touch(&mut self, id: K, key: StrokeKey) -> bool {
         match self.entries.get_mut(&id) {
             Some(entry) if entry.key == key => {
                 entry.last_used = self.clock;
@@ -160,7 +166,7 @@ impl<T> Cache<T> {
         }
     }
 
-    fn insert(&mut self, id: MeshId, key: StrokeKey, value: T) {
+    fn insert(&mut self, id: K, key: StrokeKey, value: T) {
         self.entries.insert(
             id,
             Entry {
@@ -171,7 +177,7 @@ impl<T> Cache<T> {
         );
     }
 
-    fn get(&mut self, id: MeshId) -> Option<&T> {
+    fn get(&mut self, id: K) -> Option<&T> {
         let entry = self.entries.get_mut(&id)?;
         entry.last_used = self.clock;
         Some(&entry.value)
@@ -208,6 +214,66 @@ pub(crate) enum ImageTexture {
     Failed,
 }
 
+/// A brush's tip and grain pictures, decoded, waiting to be uploaded. A
+/// brush without grain uploads its tip as the grain too (the shader then
+/// ignores it).
+#[derive(Debug)]
+pub(crate) struct DecodedBrush {
+    pub(crate) tip: DecodedImage,
+    pub(crate) grain: Option<DecodedImage>,
+}
+
+/// A brush's textures, or why there are none yet.
+#[derive(Debug)]
+pub(crate) enum BrushTexture {
+    /// Decoded, uploaded on the next render.
+    Pending(DecodedBrush),
+    /// Ready to draw: tip and grain at group 2.
+    Ready(wgpu::BindGroup),
+    /// The pictures could not be decoded; strokes with the brush are not
+    /// drawn.
+    Failed,
+}
+
+/// The quads of a brushed stroke's stamps: per vertex position (x, y),
+/// tip texture coordinates (u, v) and stamp opacity.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StampMesh {
+    /// `[x, y, u, v, opacity]` per vertex, four per stamp.
+    pub vertices: Vec<[f32; 5]>,
+    /// Two triangles per stamp.
+    pub indices: Vec<u32>,
+}
+
+impl StampMesh {
+    /// One quad per stamp, rotated by its angle.
+    pub fn new(stamps: &[Stamp]) -> Self {
+        let mut mesh = Self {
+            vertices: Vec::with_capacity(stamps.len() * 4),
+            indices: Vec::with_capacity(stamps.len() * 6),
+        };
+        for stamp in stamps {
+            let half = stamp.size * 0.5;
+            let (sin, cos) = stamp.angle.sin_cos();
+            let (ax, ay) = (cos * half, sin * half);
+            let (bx, by) = (-sin * half, cos * half);
+            let base = mesh.vertices.len() as u32;
+            for (su, sv) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
+                mesh.vertices.push([
+                    stamp.pos.x + ax * su + bx * sv,
+                    stamp.pos.y + ay * su + by * sv,
+                    (su + 1.0) * 0.5,
+                    (sv + 1.0) * 0.5,
+                    stamp.opacity,
+                ]);
+            }
+            mesh.indices
+                .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+        }
+        mesh
+    }
+}
+
 /// Stroke and fill meshes uploaded to the GPU, keyed by [`MeshId`]
 /// (a [`StrokeId`], [`FillId`] or [`ImageId`] converts into one), and image
 /// textures keyed by image.
@@ -215,6 +281,7 @@ pub(crate) enum ImageTexture {
 pub struct StrokeCache {
     cache: Cache<GpuMesh>,
     textures: Cache<ImageTexture>,
+    brushes: Cache<BrushTexture, AssetId>,
     /// Bumped whenever cached geometry changes.
     generation: u64,
 }
@@ -276,6 +343,72 @@ impl StrokeCache {
         }
     }
 
+    /// Makes sure brushed `stroke` has an up-to-date stamp mesh, drawn with
+    /// `brush` (library asset `asset`), and that the brush has textures. A
+    /// new or changed brush is decoded now and uploaded by the next render.
+    pub fn ensure_brushed(
+        &mut self,
+        device: &wgpu::Device,
+        stroke: &Stroke,
+        asset: AssetId,
+        brush: &BrushData,
+    ) {
+        let id = MeshId::Brushed(stroke.id);
+        let key = StrokeKey::of(stroke);
+        if !self.cache.touch(id, key) {
+            let mesh = StampMesh::new(&drawing::stamps(stroke, &brush.settings));
+            let index_bytes: Vec<u8> = mesh.indices.iter().flat_map(|i| i.to_le_bytes()).collect();
+            let vertex_bytes: Vec<u8> = mesh
+                .vertices
+                .iter()
+                .flatten()
+                .flat_map(|v| v.to_le_bytes())
+                .collect();
+            let gpu = upload_bytes(device, &vertex_bytes, &index_bytes, mesh.indices.len());
+            self.cache.insert(id, key, gpu);
+            self.generation += 1;
+        }
+        let key = brush_key(brush);
+        if !self.brushes.touch(asset, key) {
+            let max_size = device.limits().max_texture_dimension_2d;
+            let tip = decode_image(&brush.tip.bytes, max_size);
+            let grain = brush
+                .grain
+                .as_ref()
+                .map(|g| decode_image(&g.bytes, max_size));
+            let texture = match (tip, grain) {
+                (Some(tip), None) => BrushTexture::Pending(DecodedBrush { tip, grain: None }),
+                (Some(tip), Some(Some(grain))) => BrushTexture::Pending(DecodedBrush {
+                    tip,
+                    grain: Some(grain),
+                }),
+                _ => {
+                    tracing::warn!("could not decode brush {asset}");
+                    BrushTexture::Failed
+                }
+            };
+            self.brushes.insert(asset, key, texture);
+            self.generation += 1;
+        }
+    }
+
+    /// Brush textures still waiting for upload, for the renderer.
+    pub(crate) fn pending_brushes(&mut self) -> impl Iterator<Item = &mut BrushTexture> {
+        self.brushes
+            .entries
+            .values_mut()
+            .map(|entry| &mut entry.value)
+            .filter(|t| matches!(t, BrushTexture::Pending(_)))
+    }
+
+    /// The bind group of a brush's uploaded tip and grain.
+    pub(crate) fn brush_texture(&mut self, asset: AssetId) -> Option<&wgpu::BindGroup> {
+        match self.brushes.get(asset)? {
+            BrushTexture::Ready(bind_group) => Some(bind_group),
+            BrushTexture::Pending(_) | BrushTexture::Failed => None,
+        }
+    }
+
     /// Image textures still waiting for upload, for the renderer.
     pub(crate) fn pending_textures(&mut self) -> impl Iterator<Item = &mut ImageTexture> {
         self.textures
@@ -298,6 +431,9 @@ impl StrokeCache {
         let id = id.into();
         self.cache.entries.remove(&id);
         self.textures.entries.remove(&id);
+        if let MeshId::Stroke(stroke) = id {
+            self.cache.entries.remove(&MeshId::Brushed(stroke));
+        }
         self.generation += 1;
     }
 
@@ -305,6 +441,7 @@ impl StrokeCache {
     pub fn clear(&mut self) {
         self.cache.entries.clear();
         self.textures.entries.clear();
+        self.brushes.entries.clear();
         self.generation += 1;
     }
 
@@ -333,6 +470,7 @@ impl StrokeCache {
     /// Drops meshes not used in the last `max_unused` renders. Returns how many.
     pub fn evict_unused(&mut self, max_unused: u64) -> usize {
         self.textures.evict_unused(max_unused);
+        self.brushes.evict_unused(max_unused);
         self.cache.evict_unused(max_unused)
     }
 
@@ -340,6 +478,7 @@ impl StrokeCache {
     pub(crate) fn tick(&mut self) {
         self.cache.tick();
         self.textures.tick();
+        self.brushes.tick();
     }
 
     pub(crate) fn get(&mut self, id: MeshId) -> Option<&GpuMesh> {
@@ -377,14 +516,21 @@ pub(crate) fn decode_image(bytes: &[u8], max_size: u32) -> Option<DecodedImage> 
     Some(DecodedImage { levels })
 }
 
+/// Fingerprint of a brush's pictures and settings. Brush bytes are never
+/// edited in place, so the shared buffers' addresses identify them.
+fn brush_key(brush: &BrushData) -> StrokeKey {
+    let mut hasher = DefaultHasher::new();
+    for data in std::iter::once(&brush.tip).chain(&brush.grain) {
+        data.width.hash(&mut hasher);
+        data.height.hash(&mut hasher);
+        data.bytes.len().hash(&mut hasher);
+        std::ptr::hash(data.bytes.as_ptr(), &mut hasher);
+    }
+    StrokeKey(hasher.finish())
+}
+
 fn upload(device: &wgpu::Device, mesh: &impl MeshSource) -> GpuMesh {
     let index_count = valid_index_count(mesh);
-    if index_count == 0 {
-        return GpuMesh {
-            buffers: None,
-            index_count: 0,
-        };
-    }
     let vertex_bytes: Vec<u8> = mesh
         .vertices()
         .iter()
@@ -395,14 +541,36 @@ fn upload(device: &wgpu::Device, mesh: &impl MeshSource) -> GpuMesh {
         .iter()
         .flat_map(|i| i.to_le_bytes())
         .collect();
+    upload_bytes(device, &vertex_bytes, &index_bytes, index_count as usize)
+}
+
+/// Uploads vertex and index bytes (`index_count` `u32` indices).
+fn upload_bytes(
+    device: &wgpu::Device,
+    vertex_bytes: &[u8],
+    index_bytes: &[u8],
+    index_count: usize,
+) -> GpuMesh {
+    let Ok(index_count) = u32::try_from(index_count) else {
+        return GpuMesh {
+            buffers: None,
+            index_count: 0,
+        };
+    };
+    if index_count == 0 || vertex_bytes.is_empty() {
+        return GpuMesh {
+            buffers: None,
+            index_count: 0,
+        };
+    }
     let vertex = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("stroke-vertices"),
-        contents: &vertex_bytes,
+        contents: vertex_bytes,
         usage: wgpu::BufferUsages::VERTEX,
     });
     let index = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("stroke-indices"),
-        contents: &index_bytes,
+        contents: index_bytes,
         usage: wgpu::BufferUsages::INDEX,
     });
     GpuMesh {
@@ -427,6 +595,7 @@ mod tests {
                 color: Rgba::BLACK,
                 width,
                 opacity: 1.0,
+                brush: None,
             },
         )
     }
@@ -444,6 +613,36 @@ mod tests {
         let mut recolored = a.clone();
         recolored.style.color = Rgba::WHITE;
         assert_eq!(StrokeKey::of(&a), StrokeKey::of(&recolored));
+    }
+
+    #[test]
+    fn brush_changes_the_key() {
+        let a = stroke(&[(0.0, 0.0), (1.0, 1.0)], 2.0);
+        let mut brushed = a.clone();
+        brushed.style.brush = Some(AssetId::new());
+        assert_ne!(StrokeKey::of(&a), StrokeKey::of(&brushed));
+    }
+
+    #[test]
+    fn stamp_quads_are_centred_and_rotated() {
+        let mesh = StampMesh::new(&[Stamp {
+            pos: Vec2::new(10.0, 20.0),
+            size: 4.0,
+            angle: std::f32::consts::FRAC_PI_2,
+            opacity: 0.5,
+        }]);
+        assert_eq!(mesh.indices, [0, 1, 2, 0, 2, 3]);
+        let close =
+            |v: [f32; 5], x: f32, y: f32| (v[0] - x).abs() < 1e-5 && (v[1] - y).abs() < 1e-5;
+        // A quarter turn maps the tip's (-1, -1) corner to (+2, -2).
+        assert!(
+            close(mesh.vertices[0], 12.0, 18.0),
+            "{:?}",
+            mesh.vertices[0]
+        );
+        assert_eq!((mesh.vertices[0][2], mesh.vertices[0][3]), (0.0, 0.0));
+        assert_eq!((mesh.vertices[2][2], mesh.vertices[2][3]), (1.0, 1.0));
+        assert!(mesh.vertices.iter().all(|v| v[4] == 0.5));
     }
 
     #[test]

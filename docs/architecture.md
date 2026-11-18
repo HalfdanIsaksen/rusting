@@ -63,12 +63,16 @@ Document
 │     strokes, list order within each group
 │     (VectorDrawing::paint_order; ADR-007, ADR-010, ADR-011, ADR-015)
 │     Image.asset: Option<AssetId> = the library entry it was placed from (ADR-017)
+│     Stroke.style.brush: Option<AssetId> = the library brush it is stamped with
+│     (None = solid; ADR-022)
 ├─ assets: BTreeMap<AssetId, Asset>    (the library; document crate, ADR-017)
-│     Asset { id, name, kind: AssetKind };  AssetKind = Image(ImageData) | Audio(AudioData)
+│     Asset { id, name, kind: AssetKind };
+│     AssetKind = Image(ImageData) | Audio(AudioData) | Brush(BrushData)
+│     BrushData = tip PNG, optional grain PNG, BrushSettings (ADR-022)
 │     AudioData = MP3/WAV bytes, format, sample rate, channels, duration, peaks
 │     An asset stays until the user deletes it (RemoveAsset is refused while a
 │     drawing a keyframe shows, of the document or of an object, or an audio
-│     layer uses it). Files store a placed image's bytes only in its asset.
+│     layer uses it, or a stroke in such a drawing is drawn with it). Files store a placed image's bytes only in its asset.
 └─ symbols: BTreeMap<SymbolId, Symbol>   (objects; document crate, ADR-018)
       Symbol { id, name, layers: LayerStack, tracks, frame_count }
       Its drawings live in the shared pool, in the symbol's own coordinates,
@@ -91,7 +95,7 @@ input → ui/desktop → editor::Command → History → Document
                                                │
                      EditorState.current_frame ┘→ Document::evaluate(frame) → RenderList → renderer
 ```
-`evaluate` is cheap and allocates only one `Vec`. Audio layers are skipped there; sound follows `Session::playback_event` (started, seeked, stopped, scrubbed), which `apps/desktop/src/audio.rs` turns into rodio players for `Document::audio_at(frame)`. Instance keys are expanded recursively (at most `MAX_SYMBOL_DEPTH` levels): each visible symbol layer becomes a `RenderLayer` of the document layer holding the instance, with `transform: Affine2` = layer × instance × symbol layer, opacities multiplied, and `in_object` set so editing tools leave it alone. Inside an active motion tween, `Track::displayed_instance` blends the key's transform and opacity toward the next key by the eased factor, and the inner frame keeps counting from the first key (ADR-019). The renderer caches stroke, fill and image meshes by `MeshId` (a `StrokeId`, `FillId` or `ImageId`) and rebuilds a mesh only when its item changes. Image textures are decoded once per image and uploaded on the next render.
+`evaluate` is cheap and allocates only one `Vec`. Audio layers are skipped there; sound follows `Session::playback_event` (started, seeked, stopped, scrubbed), which `apps/desktop/src/audio.rs` turns into rodio players for `Document::audio_at(frame)`. Instance keys are expanded recursively (at most `MAX_SYMBOL_DEPTH` levels): each visible symbol layer becomes a `RenderLayer` of the document layer holding the instance, with `transform: Affine2` = layer × instance × symbol layer, opacities multiplied, and `in_object` set so editing tools leave it alone. Inside an active motion tween, `Track::displayed_instance` blends the key's transform and opacity toward the next key by the eased factor, and the inner frame keeps counting from the first key (ADR-019). The renderer caches stroke, fill and image meshes by `MeshId` (a `StrokeId`, `FillId` or `ImageId`) and rebuilds a mesh only when its item changes. A brushed stroke is drawn by `brush.wgsl` as one quad per stamp (`drawing::stamps`, `MeshId::Brushed`), with its brush's tip and paper grain textures cached per brush asset (ADR-022). Image textures are decoded once per image and uploaded on the next render.
 
 ## Error handling
 - Library crates return typed `thiserror` errors (`FileFormatError`, `CommandError`, `RendererError`).

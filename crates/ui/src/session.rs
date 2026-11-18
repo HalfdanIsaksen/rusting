@@ -40,6 +40,9 @@ pub enum Request {
     /// then call [`Session::import_image`] or [`Session::import_audio`] for
     /// each picked file.
     ImportDialog,
+    /// Show a save-file dialog and write library brush `AssetId` there as a
+    /// `.rustbrush` file (ADR-022).
+    ExportBrushDialog(document::animation_core::AssetId),
 }
 
 /// What File → Export writes.
@@ -302,6 +305,7 @@ impl Session {
         self.tools.cancel();
         self.cancel_text();
         self.sync_selection();
+        self.check_brush();
     }
 
     // ----- Commands -----------------------------------------------------
@@ -352,6 +356,7 @@ impl Session {
     /// Keeps the selection, playhead and playback valid after the document
     /// changed.
     fn after_change(&mut self) {
+        self.check_brush();
         let layers = self.document.layers();
         if self
             .state

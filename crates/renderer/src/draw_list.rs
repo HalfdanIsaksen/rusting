@@ -3,14 +3,19 @@
 //! The editor canvas and export both use [`DrawListBuilder`], so a frame
 //! exports exactly as it looks on screen: the same tessellation, the same
 //! colour and opacity rules, the same bottom-to-top order.
+//!
+//! A brushed stroke (ADR-022) is drawn with its library brush when the
+//! builder knows the document's library ([`DrawListBuilder::with_assets`]);
+//! without it, or if the brush is missing, it is drawn solid.
 
-use crate::canvas::{StrokeDraw, affine_matrix};
+use crate::canvas::{BrushDraw, StrokeDraw, affine_matrix};
 use crate::stroke_cache::{StrokeCache, StrokeKey};
 use animation_core::glam::Mat4;
-use animation_core::{LayerId, Rgba};
-use document::RenderList;
+use animation_core::{AssetId, LayerId, Rgba};
 use document::scene::BlendMode;
-use drawing::{Fill, Gradient, Image, PaintItem, Stroke, tessellate, tessellate_fill};
+use document::{Asset, RenderList};
+use drawing::{BrushData, Fill, Gradient, Image, PaintItem, Stroke, tessellate, tessellate_fill};
+use std::collections::BTreeMap;
 
 /// Draw colour of a stroke on a layer: its colour with brush and layer
 /// opacity applied.
@@ -44,6 +49,10 @@ pub struct DrawListBuilder<'a> {
     draws: Vec<StrokeDraw>,
     layer: Option<LayerId>,
     blend: BlendMode,
+    assets: Option<&'a BTreeMap<AssetId, Asset>>,
+    /// Brushes not (yet) in the library, e.g. a built-in brush whose first
+    /// stroke is being drawn.
+    extra_brushes: Vec<(AssetId, &'a BrushData)>,
 }
 
 impl<'a> DrawListBuilder<'a> {
@@ -55,7 +64,23 @@ impl<'a> DrawListBuilder<'a> {
             draws: Vec::new(),
             layer: None,
             blend: BlendMode::Normal,
+            assets: None,
+            extra_brushes: Vec::new(),
         }
+    }
+
+    /// Also knows brush `data` as `id`, for strokes whose brush is not in
+    /// the library yet.
+    pub fn with_brush(mut self, id: AssetId, data: &'a BrushData) -> Self {
+        self.extra_brushes.push((id, data));
+        self
+    }
+
+    /// Looks up the brushes of brushed strokes in `assets`, the document's
+    /// library.
+    pub fn with_assets(mut self, assets: &'a BTreeMap<AssetId, Asset>) -> Self {
+        self.assets = Some(assets);
+        self
     }
 
     /// Strokes and fills added from now on belong to `layer` and blend with
@@ -65,8 +90,43 @@ impl<'a> DrawListBuilder<'a> {
         self.blend = blend;
     }
 
-    /// Adds a stroke drawn in `color` through `transform`.
+    /// Adds a stroke drawn in `color` through `transform`: stamped with its
+    /// brush if it has one in the library, otherwise as a solid mesh.
     pub fn stroke(&mut self, stroke: &Stroke, color: Rgba, transform: Mat4) {
+        let brush = stroke.style.brush.and_then(|id| {
+            let data = self
+                .assets
+                .and_then(|assets| assets.get(&id)?.brush())
+                .or_else(|| {
+                    self.extra_brushes
+                        .iter()
+                        .find(|(extra, _)| *extra == id)
+                        .map(|(_, data)| *data)
+                })?;
+            Some((id, data))
+        });
+        if let Some((asset, data)) = brush {
+            self.cache.ensure_brushed(self.device, stroke, asset, data);
+            let grain_strength = if data.grain.is_some() {
+                data.settings.grain_strength
+            } else {
+                0.0
+            };
+            self.draws.push(StrokeDraw {
+                id: crate::MeshId::Brushed(stroke.id),
+                color,
+                gradient: None,
+                transform,
+                layer: self.layer,
+                blend: self.blend,
+                brush: Some(BrushDraw {
+                    asset,
+                    grain_scale: data.settings.grain_scale,
+                    grain_strength,
+                }),
+            });
+            return;
+        }
         self.cache
             .ensure(self.device, stroke.id, StrokeKey::of(stroke), || {
                 Some(tessellate(stroke))
@@ -78,6 +138,7 @@ impl<'a> DrawListBuilder<'a> {
             transform,
             layer: self.layer,
             blend: self.blend,
+            brush: None,
         });
     }
 
@@ -95,6 +156,7 @@ impl<'a> DrawListBuilder<'a> {
             transform,
             layer: self.layer,
             blend: self.blend,
+            brush: None,
         });
     }
 
@@ -110,6 +172,7 @@ impl<'a> DrawListBuilder<'a> {
             transform,
             layer: self.layer,
             blend: self.blend,
+            brush: None,
         });
     }
 

@@ -1,0 +1,10 @@
+{
+  "format_version": 1,
+  "id": "6a1f3c2e-8d4b-4f7a-9c11-0b5e2d7a3f06",
+  "name": "Marker",
+  "settings": {
+    "spacing": 0.05,
+    "flow": 0.12,
+    "follow_direction": true
+  }
+}

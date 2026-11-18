@@ -335,6 +335,7 @@ mod tests {
             width,
             color: Rgba::rgb(0.1, 0.2, 0.3),
             opacity: 0.7,
+            brush: None,
         }
     }
 

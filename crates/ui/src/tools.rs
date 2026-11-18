@@ -453,6 +453,8 @@ pub struct ToolController {
     shift: bool,
     /// Alt held: scale from the centre while transforming.
     alt: bool,
+    /// The built-in brushes (ADR-022), given by the host at startup.
+    pub brush_presets: Vec<crate::brushes::BrushPreset>,
 }
 
 impl Default for ToolController {
@@ -478,6 +480,7 @@ impl Default for ToolController {
             instance: None,
             shift: false,
             alt: false,
+            brush_presets: Vec::new(),
         }
     }
 }
@@ -1687,10 +1690,14 @@ impl Session {
                     let drawing = vector_at(&self.document, layer, frame);
                     let stroke = stroke.with_placement(order.placement(drawing));
                     let id = stroke.id;
-                    let mut commands: Vec<Box<dyn editor::Command>> = vec![Box::new(
+                    let brushed = stroke.style.brush.is_some();
+                    // A preset brush joins the library with its first stroke.
+                    let mut commands: Vec<Box<dyn editor::Command>> =
+                        self.brush_asset(stroke.style.brush).into_iter().collect();
+                    commands.push(Box::new(
                         AddStroke::new(layer, frame, stroke).behind(order.at_bottom()),
-                    )];
-                    if self.tools.merge_same_colour {
+                    ));
+                    if self.tools.merge_same_colour && !brushed {
                         commands.push(Box::new(MergeSameColour::new(layer, frame, id)));
                     }
                     let _ = self.execute(Box::new(Batch::new("Add Stroke", commands)));
