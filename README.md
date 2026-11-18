@@ -131,7 +131,7 @@ The tool strip runs down the side of the canvas:
 ### Panels
 - The tool strip, Tool Settings, Library, timeline and canvas are dockable panels. Drag a panel by its tab onto another panel to put it beside, above or below it, or behind it as another tab, for example the Library under Tool Settings in one column. Drag the line between two panels to resize them.
 - Resizing the window, or hiding a panel, resizes the canvas and leaves the other panels as they are.
-- The layout, and which panels are shown, are kept between launches.
+- The layout, and which panels are shown, are kept between launches. At launch, a panel saved smaller than its default size (timeline height, tool strip, Tool Settings and Library width) grows back to it, taking the room from the canvas, so every panel shows its contents.
 
 ### View menu
 - Toggle the **Toolbar** (`Cmd/Ctrl+1`), **Timeline** (`Cmd/Ctrl+2`), **Tool Settings** (`Cmd/Ctrl+3`) and **Library** (`Cmd/Ctrl+4`) to free up space for the canvas. A panel you show again comes back where it was.
