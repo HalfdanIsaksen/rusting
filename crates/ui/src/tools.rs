@@ -1196,8 +1196,12 @@ impl Session {
                 let mut commands: Vec<Box<dyn editor::Command>> = vec![Box::new(
                     AddFill::new(layer, frame, fill).behind(order.at_bottom()),
                 )];
+                // Merges with same-colour fills only: an outline of the
+                // fill colour stays line art (ADR-023).
                 if self.tools.merge_same_colour {
-                    commands.push(Box::new(MergeSameColour::new(layer, frame, id)));
+                    commands.push(Box::new(
+                        MergeSameColour::new(layer, frame, id).fills_only(true),
+                    ));
                 }
                 let _ = self.execute(Box::new(Batch::new("Fill", commands)));
             }
@@ -2061,19 +2065,24 @@ mod tests {
     }
 
     #[test]
-    fn bucket_fill_absorbs_its_same_colour_outline() {
+    fn bucket_fill_keeps_its_same_colour_outline_as_a_stroke() {
         let mut s = Session::new();
         s.tools.shape_style.fill = false;
         s.tools.shape_style.stroke_color = s.state.brush.color;
         rectangle(&mut s, Vec2::new(10.0, 10.0), Vec2::new(90.0, 90.0));
+        let outline = s.active_drawing().unwrap().strokes()[0].clone();
         let layer = s.state.active_layer.unwrap();
         s.fill_at(layer, FrameIndex(0), Vec2::new(50.0, 50.0), 1.0);
         let d = s.active_drawing().unwrap();
-        assert!(d.strokes().is_empty(), "outline merged into the fill");
+        assert_eq!(d.strokes(), std::slice::from_ref(&outline));
         assert_eq!(d.fills().len(), 1);
-        // The fill covers the outline's outer edge too.
-        assert!(d.fills()[0].contains(Vec2::new(9.0, 50.0)));
-        // One undo step brings back the outline alone.
+        assert_eq!(d.fills()[0].color, outline.style.color);
+        assert!(d.fills()[0].contains(Vec2::new(50.0, 50.0)));
+        // A click on the line still finds the line.
+        assert_eq!(
+            s.item_under(Vec2::new(10.0, 50.0), 1.0),
+            Some(ItemId::Stroke(outline.id))
+        );
         s.undo();
         let d = s.active_drawing().unwrap();
         assert_eq!((d.strokes().len(), d.fills().len()), (1, 0));

@@ -1,6 +1,6 @@
 # ADR-012: Merging same-colour strokes and fills
 
-**Status:** Proposed (merge-same-colour branch)
+**Status:** Proposed (merge-same-colour branch). The bucket part is amended by ADR-023: bucket fills no longer absorb strokes.
 
 ## Context
 Users paint a shape with the bucket and then extend or touch it up with the brush in the same colour, expecting one solid shape. Before this, the brush stroke stayed its own item: selecting, moving or erasing the shape only acted on one part. Below 100% opacity the overlap also looked darker, because each item blends on its own.

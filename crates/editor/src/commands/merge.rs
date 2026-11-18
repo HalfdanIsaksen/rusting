@@ -32,6 +32,7 @@ pub struct MergeSameColour {
     layer: LayerId,
     frame: FrameIndex,
     item: ItemId,
+    fills_only: bool,
     applied: Option<Applied>,
 }
 
@@ -42,8 +43,17 @@ impl MergeSameColour {
             layer,
             frame,
             item: item.into(),
+            fills_only: false,
             applied: None,
         }
+    }
+
+    /// Merges only with fills and never absorbs existing strokes (see
+    /// [`VectorDrawing::merge_same_colour_fills`](document::drawing::VectorDrawing::merge_same_colour_fills)).
+    /// The fill bucket uses this so a same-colour outline stays line art.
+    pub fn fills_only(mut self, fills_only: bool) -> Self {
+        self.fills_only = fills_only;
+        self
     }
 
     /// The merged fill, once applied and if anything merged.
@@ -64,7 +74,12 @@ impl Command for MergeSameColour {
             return Ok(());
         };
         let vector = vector_mut(doc, drawing)?;
-        let Some(merge) = vector.merge_same_colour(self.item) else {
+        let merge = if self.fills_only {
+            vector.merge_same_colour_fills(self.item)
+        } else {
+            vector.merge_same_colour(self.item)
+        };
+        let Some(merge) = merge else {
             return Ok(());
         };
         let mut fills = Vec::with_capacity(merge.fills.len());
