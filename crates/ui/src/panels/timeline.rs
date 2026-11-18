@@ -1422,7 +1422,7 @@ mod tests {
                 let count = s.document.frame_count as f32;
                 let rect = Rect::from_min_size(Pos2::ZERO, vec2(count * 10.0, 200.0));
                 let full = rect.with_max_x(rect.right() + LENGTH_HANDLE);
-                let id = ui.id().with("len");
+                let id = ui.scope_id().with("len");
                 length_handle(ui, &mut s, full, rect, 10.0, id);
             })
             .drop_without_applying_deltas();
