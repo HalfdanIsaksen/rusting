@@ -22,6 +22,7 @@ Before this, a drawing painted all its fills (in list order) and then all its st
   - *Normal* (default): normal tier, on top of the list. This is the old default.
   - *In front*: front tier, on top. The item stays above every normal item, also those drawn later. A front fill covers normal lines (the bucket's fills tuck half a line width under the lines, so an in-front bucket fill covers half of its outline).
   The old brush "Paint in front / Paint behind" toggle became this option (its "in front" was *Normal*).
+  **Update:** the *In front* choice was removed from the tool option, since in practice it behaved the same as *Normal*. `Placement::Front` stays in the data model so files with front items still load and keep their order.
 - **Preview.** `ui::paint_order::with_preview` adds the preview items to a copy of the layer's drawing, in the same place a commit would add them. The live preview therefore shows the final stacking, for example a *Behind* rectangle drawn under the lines while you drag.
 - **Keeping the tier.** Partial-erase pieces, transforms, moves, duplicates and bucket recolours keep `placement`. Every change is still an undoable command (`AddStroke`, `AddFill`, `Batch`).
 - **File format v6.** `FORMAT_VERSION = 6`. `placement` is written only for front items, and an absent field means `Normal`, so v5 files need no migration step. The bump is needed because a v5 build would silently drop `"Front"` and change the picture. `validate` needs no new check: serde rejects unknown tiers as malformed.

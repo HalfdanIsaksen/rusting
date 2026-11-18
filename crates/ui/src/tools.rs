@@ -1979,60 +1979,6 @@ mod tests {
     }
 
     #[test]
-    fn front_brush_stroke_stays_above_a_later_rectangle() {
-        let mut s = Session::new();
-        s.state.tool = Tool::Brush;
-        s.tools.brush_order = PaintOrder::InFront;
-        draw(&mut s, Vec2::new(0.0, 50.0), Vec2::new(100.0, 50.0));
-        let front = s.active_drawing().unwrap().strokes()[0].clone();
-        assert_eq!(front.placement, Placement::Front);
-
-        // A normal rectangle drawn later, right over the stroke.
-        rectangle(&mut s, Vec2::new(20.0, 20.0), Vec2::new(80.0, 80.0));
-        let d = s.active_drawing().unwrap();
-        let (fill, outline) = (d.fills()[0].id, d.strokes()[1].id);
-        assert_eq!(
-            painted(&s),
-            vec![
-                ItemId::Fill(fill),
-                ItemId::Stroke(outline),
-                ItemId::Stroke(front.id)
-            ]
-        );
-        // Clicking where they overlap picks the front stroke.
-        assert_eq!(
-            s.item_under(Vec2::new(50.0, 50.0), 1.0),
-            Some(ItemId::Stroke(front.id))
-        );
-
-        // An in-front rectangle goes into the front tier too: its fill above
-        // the normal rectangle but, as fills sit under strokes within a tier,
-        // under the front brush stroke; its outline on top.
-        s.tools.shape_style.order = PaintOrder::InFront;
-        rectangle(&mut s, Vec2::new(30.0, 30.0), Vec2::new(70.0, 70.0));
-        let d = s.active_drawing().unwrap();
-        let (front_fill, front_outline) = (&d.fills()[1], &d.strokes()[2]);
-        assert_eq!(front_fill.placement, Placement::Front);
-        assert_eq!(
-            painted(&s),
-            vec![
-                ItemId::Fill(fill),
-                ItemId::Stroke(outline),
-                ItemId::Fill(front_fill.id),
-                ItemId::Stroke(front.id),
-                ItemId::Stroke(front_outline.id)
-            ]
-        );
-        assert_eq!(
-            s.item_under(Vec2::new(40.0, 40.0), 1.0),
-            Some(ItemId::Fill(front_fill.id))
-        );
-        // Undo takes the whole in-front rectangle back in one step.
-        s.undo();
-        assert_eq!(painted(&s).len(), 3);
-    }
-
-    #[test]
     fn behind_brush_stroke_goes_under_existing_fills() {
         let mut s = Session::new();
         rectangle(&mut s, Vec2::new(20.0, 20.0), Vec2::new(80.0, 80.0));
@@ -2131,41 +2077,6 @@ mod tests {
         s.undo();
         let d = s.active_drawing().unwrap();
         assert_eq!((d.strokes().len(), d.fills().len()), (1, 0));
-    }
-
-    #[test]
-    fn bucket_keeps_the_tier_and_can_fill_in_front() {
-        let mut s = Session::new();
-        s.tools.shape_style.fill = false;
-        s.tools.shape_style.order = PaintOrder::InFront;
-        // Not the bucket's colour, so the fill does not absorb the outline.
-        s.tools.shape_style.stroke_color = Rgba::new(0.1, 0.1, 0.5, 1.0);
-        rectangle(&mut s, Vec2::new(10.0, 10.0), Vec2::new(90.0, 90.0));
-        let layer = s.state.active_layer.unwrap();
-        s.tools.fill_order = PaintOrder::InFront;
-        s.fill_at(layer, FrameIndex(0), Vec2::new(50.0, 50.0), 1.0);
-        let fill = s.active_drawing().unwrap().fills()[0].clone();
-        assert_eq!(fill.placement, Placement::Front);
-        // Recolouring with the bucket in Normal mode keeps the fill in front.
-        s.tools.fill_order = PaintOrder::Normal;
-        s.state.brush.color = Rgba::new(0.2, 0.6, 0.2, 1.0);
-        s.fill_at(layer, FrameIndex(0), Vec2::new(50.0, 50.0), 1.0);
-        let recoloured = &s.active_drawing().unwrap().fills()[0];
-        assert_eq!(recoloured.color, s.state.brush.color);
-        assert_eq!(recoloured.placement, Placement::Front);
-        // Partly erasing the in-front outline keeps the pieces in front.
-        let outline = s.active_drawing().unwrap().strokes()[0].id;
-        s.state.tool = Tool::Eraser;
-        s.tools.eraser_mode = EraserMode::Partial;
-        draw(&mut s, Vec2::new(5.0, 50.0), Vec2::new(15.0, 50.0));
-        let d = s.active_drawing().unwrap();
-        assert!(d.stroke(outline).is_none(), "outline was cut");
-        assert!(!d.strokes().is_empty());
-        assert!(
-            d.strokes()
-                .iter()
-                .all(|st| st.placement == Placement::Front)
-        );
     }
 
     #[test]

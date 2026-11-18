@@ -3,34 +3,28 @@
 
 use document::drawing::{Fill, Placement, Stroke, VectorDrawing};
 
-/// The "Behind / Normal / In front" choice of the brush, shape and fill
-/// tools.
+/// The "Behind / Normal" choice of the brush, shape and fill tools.
 ///
 /// Behind puts the new item on a new back level, under everything already
 /// in the frame (fills included). Normal puts it on top of the normal tier.
-/// In front puts it in the front tier, so it stays above everything drawn
-/// in the normal tier, also later.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PaintOrder {
     /// Under all of the frame's existing items (a new, deepest back level).
     Behind,
-    /// On top of the frame's existing items, but under front items.
+    /// On top of the frame's existing items.
     #[default]
     Normal,
-    /// Always on top: above every normal item, including ones drawn later.
-    InFront,
 }
 
 impl PaintOrder {
     /// Every choice, in menu order.
-    pub const ALL: [Self; 3] = [Self::Behind, Self::Normal, Self::InFront];
+    pub const ALL: [Self; 2] = [Self::Behind, Self::Normal];
 
     /// User-visible name.
     pub const fn label(self) -> &'static str {
         match self {
             Self::Behind => "Behind",
             Self::Normal => "Normal",
-            Self::InFront => "In front",
         }
     }
 
@@ -38,14 +32,7 @@ impl PaintOrder {
     pub const fn hint(self) -> &'static str {
         match self {
             Self::Behind => "Goes under the frame's existing strokes and fills.",
-            Self::Normal => {
-                "Goes on top of what is there; later drawing covers it. Items set to \
-                 In front stay above it."
-            }
-            Self::InFront => {
-                "Always on top: stays above everything else in the frame, also what you \
-                 draw later. A shape's fill covers the lines under it."
-            }
+            Self::Normal => "Goes on top of what is there; later drawing covers it.",
         }
     }
 
@@ -57,7 +44,6 @@ impl PaintOrder {
         match self {
             Self::Behind => drawing.map_or(Placement::Back(1), VectorDrawing::behind_placement),
             Self::Normal => Placement::Normal,
-            Self::InFront => Placement::Front,
         }
     }
 
@@ -128,6 +114,5 @@ mod tests {
         );
         assert_eq!(at(PaintOrder::Behind), vec![f, s, e]);
         assert_eq!(at(PaintOrder::Normal), vec![f, e, s]);
-        assert_eq!(at(PaintOrder::InFront), vec![e, f, s]);
     }
 }

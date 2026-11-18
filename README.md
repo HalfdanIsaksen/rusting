@@ -94,7 +94,7 @@ The tool strip runs down the side of the canvas:
 - **Import** a `.rustbrush` file (File → Import…) to add a brush, and right-click a brush in the Library → **Export Brush…** to share one. A `.rustbrush` file is a zip with `brush.json` (name and stamp settings), `tip.png` and an optional `grain.png`.
 - Textured strokes don't merge with same-colour fills, and pen pressure isn't read yet: lines are drawn at full pressure.
 
-**Draw order** (Brush, Rectangle, Ellipse, Text, Paint Bucket): **Behind** puts the new item under everything already in the frame, fills included, **Normal** puts it on top, and **In front** keeps it on top of everything else, including what you draw later. The live preview shows where it lands. Erasing, moving and transforming keep an item's draw order.
+**Draw order** (Brush, Rectangle, Ellipse, Text, Paint Bucket): **Behind** puts the new item under everything already in the frame, fills included, and **Normal** puts it on top. The live preview shows where it lands. Erasing, moving and transforming keep an item's draw order.
 
 ### Canvas
 - Pan with middle-drag or by holding Space, zoom with the wheel or pinch, press `F` to fit.
