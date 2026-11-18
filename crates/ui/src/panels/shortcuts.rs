@@ -319,6 +319,7 @@ fn finish_space(session: &mut Session, space_down: bool, space_up: bool, gesture
 mod tests {
     use super::*;
     use document::animation_core::FrameIndex;
+    use document::timeline::Keyframe;
 
     fn press(session: &mut Session, shortcut: KeyboardShortcut) {
         let ctx = egui::Context::default();
@@ -481,16 +482,29 @@ mod tests {
     fn f5_inserts_and_shift_f5_deletes_a_frame() {
         let mut s = Session::new();
         let count = s.document.frame_count;
+        let layer = s.state.active_layer.unwrap();
+        s.execute(Box::new(editor::commands::AddKeyframe::new(
+            layer,
+            FrameIndex(0),
+            editor::commands::KeyframeKind::Drawing,
+        )))
+        .unwrap();
         s.set_frame(FrameIndex(2));
         press(&mut s, INSERT_FRAME);
-        assert_eq!(s.document.frame_count, count + 1);
+        assert_eq!(s.document.frame_count, count, "inserting keeps the length");
         assert_eq!(s.current_frame(), FrameIndex(3));
+        let undos = s.history.undo_len();
         press(&mut s, DELETE_FRAMES);
-        assert_eq!(s.document.frame_count, count);
+        assert_eq!(s.history.undo_len(), undos + 1);
+        assert_eq!(s.document.frame_count, count, "deleting keeps the length");
         s.select_frames_to(FrameIndex(0));
         press(&mut s, KeyboardShortcut::new(Modifiers::NONE, Key::Delete));
-        assert_eq!(s.document.frame_count, count - 4);
+        assert_eq!(s.document.frame_count, count);
         assert_eq!(s.frame_selection(), None);
+        // Five frames were removed from the layer, so it ends five early.
+        let track = s.document.track(layer).unwrap();
+        let (end, key) = track.keys().last().unwrap();
+        assert_eq!((end, key), (FrameIndex(count - 5), &Keyframe::Empty));
     }
 
     #[test]
@@ -498,10 +512,27 @@ mod tests {
         let mut s = Session::new();
         let count = s.document.frame_count;
         s.set_frame(FrameIndex(2));
+        let layer = s.state.active_layer.unwrap();
         press(&mut s, DUPLICATE_FRAME);
-        assert_eq!(s.document.frame_count, count + 1);
+        assert_eq!(
+            s.document.frame_count, count,
+            "duplicating keeps the length"
+        );
         assert_eq!(s.current_frame(), FrameIndex(3));
+        assert!(
+            s.document
+                .track(layer)
+                .unwrap()
+                .key_at(FrameIndex(3))
+                .is_some()
+        );
         press(&mut s, UNDO);
-        assert_eq!(s.document.frame_count, count);
+        assert!(
+            s.document
+                .track(layer)
+                .unwrap()
+                .key_at(FrameIndex(3))
+                .is_none()
+        );
     }
 }

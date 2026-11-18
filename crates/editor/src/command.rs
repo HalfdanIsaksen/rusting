@@ -86,6 +86,9 @@ pub enum CommandError {
     /// The canvas must be at least one pixel wide and high.
     #[error("the canvas must be at least 1×1 pixels")]
     EmptyCanvas,
+    /// A key on the layer would be pushed past the end of the animation.
+    #[error("the last key on this layer would move past the end; make the animation longer first")]
+    NoRoomOnLayer,
 }
 
 /// An undoable change to a document.

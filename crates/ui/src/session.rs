@@ -12,7 +12,8 @@ use crate::tools::ToolController;
 use document::animation_core::{FrameIndex, FrameRange, GroupId, LayerId};
 use document::{CanvasAnchor, CanvasSize, Document, FrameTag, NewDocumentSettings, SettingsError};
 use editor::commands::{
-    DuplicateFrame, InsertFrames, MoveFrames, RemoveFrames, ResizeCanvas, SetTags,
+    DuplicateLayerFrame, InsertLayerFrame, MoveLayerFrames, RemoveLayerFrames, ResizeCanvas,
+    SetTags,
 };
 use editor::{Command, CommandError, EditorState, History};
 use std::collections::BTreeSet;
@@ -420,15 +421,20 @@ impl Session {
         self.set_frame(FrameIndex(u32::try_from(frame).unwrap_or(0)));
     }
 
-    /// Duplicates the frame under the playhead on every layer (one undo
-    /// step) and moves the playhead onto the copy.
+    /// Duplicates the frame under the playhead on the active layer only:
+    /// the next frame gets a copy, and the playhead moves onto it. The
+    /// animation keeps its length.
     pub fn duplicate_frame(&mut self) {
         if self.tools.is_active() {
             return;
         }
+        let Some(layer) = self.state.active_layer else {
+            self.set_status("Select a layer to duplicate its frame");
+            return;
+        };
         self.tools.cancel();
         self.playback.pause();
-        let command = DuplicateFrame::new(self.current_frame());
+        let command = DuplicateLayerFrame::new(layer, self.current_frame());
         let new_frame = command.new_frame();
         if self.execute(Box::new(command)).is_ok() {
             self.set_frame(new_frame);
@@ -439,25 +445,31 @@ impl Session {
         }
     }
 
-    /// Inserts a blank frame right after the playhead on every layer and
-    /// moves to it. The drawing at the playhead is held one frame longer.
+    /// Inserts a blank frame right after the playhead on the active layer
+    /// and moves to it. The drawing at the playhead is held one frame
+    /// longer; the animation keeps its length.
     pub fn insert_frame(&mut self) {
         if self.tools.is_active() {
             return;
         }
+        let Some(layer) = self.state.active_layer else {
+            self.set_status("Select a layer to insert a frame on");
+            return;
+        };
         self.tools.cancel();
         self.playback.pause();
         let new_frame = FrameIndex(self.current_frame().0 + 1);
         if self
-            .execute(Box::new(InsertFrames::new(new_frame, 1)))
+            .execute(Box::new(InsertLayerFrame::new(layer, new_frame)))
             .is_ok()
         {
             self.set_frame(new_frame);
         }
     }
 
-    /// Removes the selected frames (or the frame under the playhead) on
-    /// every layer.
+    /// Removes the selected frames (or the frame under the playhead) on the
+    /// selected layers; their later keys move left. The animation keeps its
+    /// length.
     pub fn delete_frames(&mut self) {
         if self.tools.is_active() {
             return;
@@ -468,15 +480,18 @@ impl Session {
         let range = self
             .frame_selection
             .unwrap_or(FrameRange::new(current, FrameIndex(current.0 + 1)));
-        if self.execute(Box::new(RemoveFrames::new(range))).is_ok() {
+        let layers = self.selected_layers();
+        if self
+            .execute(Box::new(RemoveLayerFrames::new(layers, range)))
+            .is_ok()
+        {
             self.clear_frame_selection();
-            let last = FrameIndex(self.document.frame_count - 1);
-            self.set_frame(range.start.min(last));
+            self.set_frame(range.start);
         }
     }
 
-    /// Moves the keys in the frame selection so it starts at `to`; the
-    /// selection and the playhead move with them.
+    /// Moves the keys in the frame selection, on the selected layers, so it
+    /// starts at `to`; the selection and the playhead move with them.
     pub fn move_frame_selection(&mut self, to: FrameIndex) {
         let Some(range) = self.frame_selection else {
             return;
@@ -484,7 +499,7 @@ impl Session {
         if to == range.start {
             return;
         }
-        let command = MoveFrames::new(range, to);
+        let command = MoveLayerFrames::new(self.selected_layers(), range, to);
         let target = command.target();
         let playhead = (self.current_frame().0.saturating_sub(range.start.0)).min(range.len() - 1);
         if self.execute(Box::new(command)).is_ok() {
@@ -1138,6 +1153,48 @@ mod tests {
         let track = s.document.track(layer).unwrap();
         assert!(track.key_at(FrameIndex(6)).is_some());
         assert!(track.key_at(FrameIndex(2)).is_none());
+    }
+
+    #[test]
+    fn moving_and_deleting_frames_only_touch_the_selected_layers() {
+        use editor::commands::{AddKeyframe, KeyframeKind};
+        let mut s = Session::new();
+        s.execute(Box::new(SetFrameCount::new(10))).unwrap();
+        let a = s.state.active_layer.unwrap();
+        s.execute(Box::new(AddLayer::new("B"))).unwrap();
+        let b = s.document.layers().iter().next_back().unwrap().id;
+        assert_ne!(a, b);
+        for layer in [a, b] {
+            s.execute(Box::new(AddKeyframe::new(
+                layer,
+                FrameIndex(2),
+                KeyframeKind::Drawing,
+            )))
+            .unwrap();
+        }
+        let keys = |s: &Session, l| {
+            s.document
+                .track(l)
+                .unwrap()
+                .keys()
+                .map(|(f, _)| f.0)
+                .collect::<Vec<_>>()
+        };
+        s.select_layer(b);
+        s.set_frame(FrameIndex(2));
+        s.select_frames_to(FrameIndex(2));
+        s.move_frame_selection(FrameIndex(4));
+        assert_eq!(keys(&s, b), [4]);
+        assert_eq!(keys(&s, a), [2], "unselected layers stay");
+
+        // A block over both layers: delete frames 1..=2 on both.
+        s.select_layers(b, [a]);
+        s.set_frame(FrameIndex(1));
+        s.select_frames_to(FrameIndex(2));
+        s.delete_frames();
+        assert_eq!(s.document.frame_count, 10);
+        assert_eq!(keys(&s, b), [2, 8], "pulled left, ends two frames early");
+        assert_eq!(keys(&s, a), [1, 8], "the drawing held past the range stays");
     }
 
     #[test]
