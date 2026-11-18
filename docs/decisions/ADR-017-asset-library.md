@@ -50,3 +50,4 @@ File → Import (ADR-015) copies each picture's bytes into the image item it cre
   - Extend `Document::used_assets` with whatever refers to the new kind.
   - Add an entry to `SECTIONS` in `ui/src/panels/library.rs`, with its own icon and empty-state text. Extend `describe` in the same file.
   - Add file-format validation for references to the new kind.
+  - Brushes (ADR-022) followed this list: `AssetKind::Brush`, stroke styles refer to them, and they have a Brushes section.

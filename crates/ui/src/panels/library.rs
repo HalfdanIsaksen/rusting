@@ -3,8 +3,8 @@
 //!
 //! Double-click a row to rename it. Right-click it to place it (a picture on
 //! the canvas, a sound on a new audio layer at the current frame, an object
-//! on a new layer on the canvas) or delete it (only while nothing in the
-//! animation uses it). Drag a row to place it where it is dropped: a picture
+//! on a new layer on the canvas), use it (a brush, ADR-022), export it (a
+//! brush) or delete it (only while nothing in the animation uses it). Drag a row to place it where it is dropped: a picture
 //! or sound row sets an [`AssetDrag`] payload, an object row an
 //! [`ObjectDrag`]. The host's canvas takes pictures and objects with
 //! `Response::dnd_release_payload` and calls [`Session::place_asset`] or
@@ -68,6 +68,13 @@ const SECTIONS: &[Section] = &[
         source: Source::Assets(|kind| matches!(kind, AssetKind::Audio(_))),
     },
     Section {
+        title: "Brushes",
+        empty: "Drawing with a built-in brush, or File → Import… of a .rustbrush file, adds \
+                brushes here.",
+        icon: icons::brush,
+        source: Source::Assets(|kind| matches!(kind, AssetKind::Brush(_))),
+    },
+    Section {
         title: "Objects",
         empty: "Select layers and frames (or items on the canvas) and choose Convert to \
                 Object (F8) to make one.",
@@ -85,6 +92,8 @@ struct Row {
     in_use: bool,
     /// A library sound: placed on the timeline, not on the canvas.
     is_sound: bool,
+    /// A library brush: used by the Brush tool, not placed (ADR-022).
+    is_brush: bool,
 }
 
 impl Section {
@@ -102,6 +111,7 @@ impl Section {
                         description: describe(a),
                         in_use: used.contains(&a.id),
                         is_sound: a.audio().is_some(),
+                        is_brush: a.brush().is_some(),
                     })
                     .collect()
             }
@@ -116,6 +126,7 @@ impl Section {
                         description: describe_object(s),
                         in_use: doc.symbol_in_use(s.id),
                         is_sound: false,
+                        is_brush: false,
                     })
                     .collect()
             }
@@ -136,6 +147,7 @@ struct Renaming {
 /// What a row asked for this frame; applied after the list is drawn.
 enum Action {
     Place(Entry),
+    ExportBrush(AssetId),
     Delete(Entry),
     Rename(Entry, String),
 }
@@ -155,7 +167,10 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .button("Import…")
-                .on_hover_text("Add PNG or JPEG pictures or MP3 or WAV sounds to the library")
+                .on_hover_text(
+                    "Add PNG or JPEG pictures, MP3 or WAV sounds or .rustbrush brushes to the \
+                     library",
+                )
                 .clicked()
             {
                 session.import();
@@ -197,8 +212,15 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
     ui.data_mut(|d| d.insert_temp(rename_id, renaming));
 
     match action {
+        Some(Action::ExportBrush(id)) => session.export_brush(id),
         Some(Action::Place(Entry::Asset(id))) => {
             if session
+                .document
+                .asset(id)
+                .is_some_and(|a| a.brush().is_some())
+            {
+                session.use_brush(id);
+            } else if session
                 .document
                 .asset(id)
                 .is_some_and(|a| a.audio().is_some())
@@ -261,6 +283,7 @@ fn row(ui: &mut egui::Ui, section: &Section, r: &Row, renaming: &mut Renaming) -
     }
 
     let drop_hint = match r.entry {
+        Entry::Asset(_) if r.is_brush => "Right-click → Use Brush to draw with it",
         Entry::Asset(_) if r.is_sound => "Drag onto the timeline to place it there",
         Entry::Asset(_) => "Drag onto the canvas to place it there",
         Entry::Object(_) => "Drag onto the canvas or onto a timeline cell to place it there",
@@ -276,6 +299,8 @@ fn row(ui: &mut egui::Ui, section: &Section, r: &Row, renaming: &mut Renaming) -
             r.name, r.description
         ));
     match r.entry {
+        // Brushes are picked, not dropped anywhere.
+        Entry::Asset(_) if r.is_brush => {}
         Entry::Asset(id) => response.dnd_set_drag_payload(AssetDrag(id)),
         Entry::Object(id) => response.dnd_set_drag_payload(ObjectDrag(id)),
     }
@@ -306,6 +331,10 @@ fn row(ui: &mut egui::Ui, section: &Section, r: &Row, renaming: &mut Renaming) -
     }
     response.context_menu(|ui| {
         let (place, place_hint) = match r.entry {
+            Entry::Asset(_) if r.is_brush => (
+                "Use Brush",
+                "Draw with it: picks the Brush tool with this brush",
+            ),
             Entry::Asset(_) if r.is_sound => (
                 "Add to Timeline",
                 "Put it on a new audio layer, starting at the current frame",
@@ -323,6 +352,16 @@ fn row(ui: &mut egui::Ui, section: &Section, r: &Row, renaming: &mut Renaming) -
             action = Some(Action::Place(r.entry));
             ui.close();
         }
+        if let Entry::Asset(id) = r.entry
+            && r.is_brush
+            && ui
+                .button("Export Brush…")
+                .on_hover_text("Save it as a .rustbrush file to share or use in other projects")
+                .clicked()
+        {
+            action = Some(Action::ExportBrush(id));
+            ui.close();
+        }
         if ui.button("Rename").clicked() {
             *renaming = Renaming {
                 target: Some(r.entry),
@@ -336,6 +375,8 @@ fn row(ui: &mut egui::Ui, section: &Section, r: &Row, renaming: &mut Renaming) -
             .add_enabled(!r.in_use, egui::Button::new("Delete"))
             .on_disabled_hover_text(if r.is_sound {
                 "It is used in the animation: delete its audio layers first"
+            } else if r.is_brush {
+                "It is used in the animation: delete the strokes drawn with it first"
             } else {
                 "It is used in the animation: delete its placed copies first"
             });
@@ -355,6 +396,16 @@ fn describe(asset: &Asset) -> String {
             "Audio, {}, {}",
             data.format.label(),
             format_duration(data.duration)
+        ),
+        AssetKind::Brush(data) => format!(
+            "Brush, {}×{} tip{}",
+            data.tip.width,
+            data.tip.height,
+            if data.grain.is_some() {
+                " with paper grain"
+            } else {
+                ""
+            }
         ),
     }
 }

@@ -1,0 +1,14 @@
+{
+  "format_version": 1,
+  "id": "6a1f3c2e-8d4b-4f7a-9c11-0b5e2d7a3f01",
+  "name": "Pencil (HB)",
+  "settings": {
+    "spacing": 0.08,
+    "flow": 0.22,
+    "opacity_pressure": 0.6,
+    "angle_jitter": 1.0,
+    "size_jitter": 0.1,
+    "grain_scale": 0.5,
+    "grain_strength": 0.62
+  }
+}

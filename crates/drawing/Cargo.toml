@@ -11,6 +11,7 @@ repository.workspace = true
 animation_core.workspace = true
 glam.workspace = true
 serde.workspace = true
+thiserror.workspace = true
 ttf-parser.workspace = true
 
 [dev-dependencies]

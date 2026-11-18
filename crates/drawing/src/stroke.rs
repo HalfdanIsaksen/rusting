@@ -1,6 +1,6 @@
 //! Strokes, brush styles and vector drawings.
 
-use animation_core::{FillId, ImageId, Rgba, StrokeId, Vec2};
+use animation_core::{AssetId, FillId, ImageId, Rgba, StrokeId, Vec2};
 use serde::{Deserialize, Serialize};
 
 use crate::fill::Fill;
@@ -31,6 +31,10 @@ pub struct BrushStyle {
     pub width: f32,
     /// Opacity multiplier in `0.0..=1.0`.
     pub opacity: f32,
+    /// The library brush (`AssetKind::Brush`) the stroke is stamped with, or
+    /// `None` for a solid stroke (ADR-022; file format v14+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brush: Option<AssetId>,
 }
 
 impl Default for BrushStyle {
@@ -39,6 +43,7 @@ impl Default for BrushStyle {
             color: Rgba::BLACK,
             width: 4.0,
             opacity: 1.0,
+            brush: None,
         }
     }
 }

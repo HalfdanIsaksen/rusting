@@ -198,6 +198,7 @@ pub fn shape_items(
                 color: style.stroke_color,
                 width: style.stroke_width.max(0.1),
                 opacity: 1.0,
+                brush: None,
             },
             placement,
         }

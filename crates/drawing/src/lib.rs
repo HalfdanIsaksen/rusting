@@ -23,11 +23,14 @@
 //!   of the same colour into one fill (see [`merge`]).
 //! - [`Image`] is an imported PNG/JPEG placed in a drawing by an affine
 //!   transform (ADR-015); it keeps the encoded file bytes.
+//! - [`brush`] has stamp brushes (ADR-022): [`BrushData`] and [`stamps`],
+//!   which lays a brushed stroke's tip stamps along its path.
 //! - [`select`] has the selection tool's geometry: [`ItemId`], item bounds,
 //!   translation, and hit-testing a point or rectangle against a drawing.
 //! - [`Font::layout`] turns text into glyph outlines (a [`FillShape`]) for
 //!   the text tool (see [`text`]).
 
+pub mod brush;
 pub mod builder;
 pub mod erase;
 pub mod fill;
@@ -41,6 +44,7 @@ pub mod stroke;
 pub mod tessellate;
 pub mod text;
 
+pub use brush::{BrushData, BrushSettings, BrushSettingsError, Stamp, stamps};
 pub use builder::StrokeBuilder;
 pub use erase::EraseResult;
 pub use fill::{Fill, FillError, FillShape, GapClosing, Gradient, fill_region};

@@ -47,7 +47,7 @@ Set `RUST_LOG=debug` for more log output.
 | `crates/renderer` | wgpu device, surface, canvas and stroke rendering, offscreen rendering for export |
 | `crates/ui` | The editing session and its egui panels |
 | `apps/desktop` | The executable: window, event loop, file dialogs, export wiring |
-| `assets` | WGSL shaders, the app logo and the macOS app icon |
+| `assets` | WGSL shaders, the built-in brushes, the app logo and the macOS app icon |
 | `tests` | Cross-crate integration tests (`integration_tests` crate) |
 | `Formula`, `scripts` | The Homebrew formula, the script that regenerates it on release, and the macOS DMG script |
 
@@ -56,7 +56,7 @@ Set `RUST_LOG=debug` for more log output.
 | Document | What it covers |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Crate dependency graph, data model, coordinate spaces, frame flow |
-| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-021) |
+| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-022) |
 | [docs/roadmap.md](docs/roadmap.md) | Development phases and their acceptance criteria |
 | [docs/smoke-test.md](docs/smoke-test.md) | Manual end-to-end test checklist |
 | [docs/releasing.md](docs/releasing.md) | How to tag a release and update the Homebrew tap |
@@ -77,7 +77,7 @@ The tool strip runs down the side of the canvas:
 | Selection | `V` | Select strokes, fills and imported pictures (click, or drag a box from anywhere), then move or delete them |
 | Lasso | `L` | Select strokes, fills and pictures by drawing a loop around them |
 | Transform | `Q` | Scale and rotate the selection with box handles |
-| Brush | `B` | Vector strokes with size, opacity, colour, a 0–100% smoothing slider and a draw order (see below). Hold `Shift` to draw a straight line |
+| Brush | `B` | Vector strokes with size, opacity, colour, a 0–100% smoothing slider and a draw order (see below). Pick the brush in Tool Settings: **Vector (solid)** or a textured brush (see Brushes below). Hold `Shift` to draw a straight line |
 | Rectangle | `R` | Drag out a rectangle with a stroke and a fill. Set stroke width, stroke colour and fill colour (or turn either off) in Tool Settings. The fill can be solid or a gradient into a second colour, running left to right, top to bottom or diagonally. `Shift` makes a square, `Alt` draws from the centre. Draw order applies to both fill and stroke |
 | Ellipse | `O` | Like Rectangle, for ellipses; `Shift` makes a circle |
 | Text | `T` | Click the canvas and type, with a live preview and caret. `Enter` starts a new line, `Backspace` deletes, `Esc` cancels; `Cmd/Ctrl+Enter`, a click elsewhere or another tool finishes. Set font size, colour, opacity and draw order in Tool Settings. The text becomes vector shapes (one fill per text block, letters keep their holes), so it selects, moves, transforms, erases and exports like any fill, but can't be edited as text afterwards. Tool and canvas shortcuts are off while you type. Font: Ubuntu Light |
@@ -86,6 +86,13 @@ The tool strip runs down the side of the canvas:
 | Eyedropper | `I` | Click the canvas to pick the colour (and opacity) of the topmost stroke or fill on the active layer; a gradient fill gives its colour at that point, and empty canvas gives the background colour. Sets the brush and paint bucket colour. `Alt`+click with the Brush, Paint Bucket, Rectangle or Ellipse picks a colour without switching tools (shapes take it as their stroke or fill colour; an `Alt`+drag still draws from the centre) |
 
 **Merge same colour** (Brush, Rectangle, Ellipse, Paint Bucket; on by default): a new stroke or fill that touches fills of the same colour, opacity and draw order becomes one fill with them, so the shape selects, moves and erases as one item. A new fill also takes in the strokes of its colour that touch it, so fill and outline become one shape; strokes in other colours stay line art and keep bounding bucket fills. Turn it off in Tool Settings to keep items separate.
+
+### Brushes
+- Tool Settings → **Brush** picks what the Brush tool draws with: **Vector (solid)**, a built-in brush (**Pencil (HB)**, **Soft Pencil (6B)**, **Charcoal**, **Chalk**, **Ink Pen**, **Marker**) or a brush in the project's Library.
+- Textured brushes stamp a tip picture along the line on a paper grain, for a drawn-on-paper look. Overlapping passes build up darker, and the paper's dips stay white. The stroke is still a vector line: it selects, moves, transforms, erases, recolours and exports like any other.
+- The first stroke drawn with a built-in brush adds the brush to the Library, so the project file keeps it and opens anywhere.
+- **Import** a `.rustbrush` file (File → Import…) to add a brush, and right-click a brush in the Library → **Export Brush…** to share one. A `.rustbrush` file is a zip with `brush.json` (name and stamp settings), `tip.png` and an optional `grain.png`.
+- Textured strokes don't merge with same-colour fills, and pen pressure isn't read yet: lines are drawn at full pressure.
 
 **Draw order** (Brush, Rectangle, Ellipse, Text, Paint Bucket): **Behind** puts the new item under everything already in the frame, fills included, **Normal** puts it on top, and **In front** keeps it on top of everything else, including what you draw later. The live preview shows where it lands. Erasing, moving and transforming keep an item's draw order.
 
@@ -140,8 +147,8 @@ The tool strip runs down the side of the canvas:
 - Export the current frame as PNG/JPG, an image sequence, or an H.264 video as MP4 or MOV (QuickTime).
 - **Export GIF**: the frame range as a looping animated GIF at the document frame rate, for animations up to 15 seconds. A longer range is refused with a message to export it as a video or image sequence instead.
 - **Export Sprite Sheet**: every frame tag becomes its own row of frames in one PNG/JPG image. Without tags, the chosen frame range goes on one row.
-- **Import** (File → Import…, below Export): pick one or more PNG or JPEG pictures, or MP3 or WAV sounds (see Audio layers). Each picture goes onto the current layer and frame, centred on the canvas and shrunk to fit if it is larger, and is selected so you can move it right away. Pictures move, scale, rotate and delete with the selection tools like any other item, paint under the strokes and fills you draw on top of them (handy for tracing), show in the preview and in every export, and are saved inside the project file. Each imported picture is also added to the Library.
-- **Library** (a panel, by default on the right of the canvas): lists every imported file, under Images and Audio, by file name, and every object under Objects. Drag a picture onto the canvas to place another copy where you drop it, or right-click it → Place on Canvas to put one in the centre. Drag a sound onto the timeline's frames to start a new audio layer at that frame, or right-click it → Add to Timeline to start one at the current frame. Double-click a row to rename it. Right-click → Delete removes it from the library, but only once nothing uses it (a frame, an object or an audio layer). The project file stores each library picture and sound once, however many times it is placed, and keeps unused library pictures and sounds.
+- **Import** (File → Import…, below Export): pick one or more PNG or JPEG pictures, MP3 or WAV sounds (see Audio layers), or `.rustbrush` brushes (see Brushes). Each picture goes onto the current layer and frame, centred on the canvas and shrunk to fit if it is larger, and is selected so you can move it right away. Pictures move, scale, rotate and delete with the selection tools like any other item, paint under the strokes and fills you draw on top of them (handy for tracing), show in the preview and in every export, and are saved inside the project file. Each imported picture is also added to the Library.
+- **Library** (a panel, by default on the right of the canvas): lists every imported file, under Images and Audio, by file name, the project's brushes under Brushes (right-click → Use Brush or Export Brush…), and every object under Objects. Drag a picture onto the canvas to place another copy where you drop it, or right-click it → Place on Canvas to put one in the centre. Drag a sound onto the timeline's frames to start a new audio layer at that frame, or right-click it → Add to Timeline to start one at the current frame. Double-click a row to rename it. Right-click → Delete removes it from the library, but only once nothing uses it (a frame, an object or an audio layer). The project file stores each library picture and sound once, however many times it is placed, and keeps unused library pictures and sounds.
 
 ## Contributing workflow
 

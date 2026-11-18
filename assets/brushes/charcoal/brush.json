@@ -1,0 +1,15 @@
+{
+  "format_version": 1,
+  "id": "6a1f3c2e-8d4b-4f7a-9c11-0b5e2d7a3f03",
+  "name": "Charcoal",
+  "settings": {
+    "spacing": 0.12,
+    "flow": 0.5,
+    "opacity_pressure": 0.4,
+    "angle_jitter": 1.0,
+    "size_jitter": 0.3,
+    "scatter": 0.1,
+    "grain_scale": 1.0,
+    "grain_strength": 0.6
+  }
+}

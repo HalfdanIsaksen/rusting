@@ -10,6 +10,7 @@
 //! and renders the canvas with [`OnionSkin::collect`] and
 //! [`ToolController::preview`].
 
+pub mod brushes;
 pub mod eyedropper;
 pub mod icons;
 pub mod import;
@@ -25,6 +26,7 @@ pub mod shapes;
 pub mod theme;
 pub mod tools;
 
+pub use brushes::{BrushOption, BrushPreset, SOLID_BRUSH_NAME};
 pub use eyedropper::{PickSource, PickedColor};
 pub use objects::{InstanceAt, TweenAt, TweenTargets};
 pub use onion::{OnionDrawing, OnionSkin};

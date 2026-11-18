@@ -10,11 +10,12 @@ use crate::canvas_target::{
 use crate::draw_list::{fill_color, fill_gradient, stroke_color};
 use crate::mesh::MeshSource;
 use crate::stroke_cache::{
-    DEFAULT_MAX_UNUSED_RENDERS, ImageTexture, MeshId, StrokeCache, StrokeKey,
+    BrushTexture, DEFAULT_MAX_UNUSED_RENDERS, DecodedImage, ImageTexture, MeshId, StrokeCache,
+    StrokeKey,
 };
 use crate::viewport::Viewport;
 use animation_core::glam::{Affine2, Mat4, Quat, Vec2};
-use animation_core::{LayerId, Rgba};
+use animation_core::{AssetId, LayerId, Rgba};
 use document::RenderList;
 use document::scene::{BlendMode, Transform2D};
 use drawing::{Fill, Gradient, Image, PaintItem, Stroke};
@@ -25,6 +26,7 @@ const FRAME_WGSL: &str = include_str!("../../../assets/shaders/canvas_frame.wgsl
 const STROKE_WGSL: &str = include_str!("../../../assets/shaders/stroke.wgsl");
 const COMPOSITE_WGSL: &str = include_str!("../../../assets/shaders/composite.wgsl");
 const IMAGE_WGSL: &str = include_str!("../../../assets/shaders/image.wgsl");
+const BRUSH_WGSL: &str = include_str!("../../../assets/shaders/brush.wgsl");
 
 /// Byte size of `Background` in `background.wgsl`.
 const BACKGROUND_UNIFORM_SIZE: u64 = 144;
@@ -90,6 +92,21 @@ pub struct StrokeDraw {
     pub layer: Option<LayerId>,
     /// How the draw's layer combines with what is below it.
     pub blend: BlendMode,
+    /// For a brushed stroke ([`MeshId::Brushed`]): its brush and grain
+    /// settings. `None` for everything else.
+    pub brush: Option<BrushDraw>,
+}
+
+/// The brush of a brushed stroke's draw (ADR-022).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BrushDraw {
+    /// The library brush, whose tip and grain textures are cached.
+    pub asset: AssetId,
+    /// Layer units per grain pixel.
+    pub grain_scale: f32,
+    /// How strongly the grain thins the line, `0.0..=1.0` (0 when the brush
+    /// has no grain).
+    pub grain_strength: f32,
 }
 
 /// Everything drawn on the canvas for one render.
@@ -161,6 +178,11 @@ pub struct CanvasRenderer {
     image_pipeline: wgpu::RenderPipeline,
     image_layout: wgpu::BindGroupLayout,
     image_sampler: wgpu::Sampler,
+    /// Draws brushed strokes' stamps with their tip and grain (group 2).
+    brush_pipeline: wgpu::RenderPipeline,
+    brush_layout: wgpu::BindGroupLayout,
+    /// Repeats, for the grain.
+    grain_sampler: wgpu::Sampler,
     strokes: StrokeCache,
     /// Colours and sizes of the workspace, outline, shadow and checkerboard.
     pub style: CanvasStyle,
@@ -198,7 +220,7 @@ impl CanvasRenderer {
                 &[layout],
                 &[],
                 wgpu::PrimitiveTopology::TriangleStrip,
-                false,
+                None,
             )
         };
         let background_pipeline = quad("canvas-background", BACKGROUND_WGSL, &background_layout);
@@ -214,7 +236,7 @@ impl CanvasRenderer {
                 attributes: &wgpu::vertex_attr_array![0 => Float32x2],
             })],
             wgpu::PrimitiveTopology::TriangleList,
-            true,
+            Some(wgpu::CompareFunction::Less),
         );
 
         let image_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -249,8 +271,60 @@ impl CanvasRenderer {
                 attributes: &wgpu::vertex_attr_array![0 => Float32x2],
             })],
             wgpu::PrimitiveTopology::TriangleList,
-            true,
+            Some(wgpu::CompareFunction::Less),
         );
+        let texture_entry = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let sampler_entry = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        };
+        let brush_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("brush"),
+            entries: &[
+                texture_entry(0),
+                sampler_entry(1),
+                texture_entry(2),
+                sampler_entry(3),
+            ],
+        });
+        // Stamps of one stroke share its depth: LessEqual lets them build up.
+        let brush_pipeline = create_pipeline(
+            device,
+            "brush",
+            BRUSH_WGSL,
+            &[&globals_layout, &draw_layout, &brush_layout],
+            &[Some(wgpu::VertexBufferLayout {
+                array_stride: 20,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &wgpu::vertex_attr_array![
+                    0 => Float32x2,
+                    1 => Float32x2,
+                    2 => Float32
+                ],
+            })],
+            wgpu::PrimitiveTopology::TriangleList,
+            Some(wgpu::CompareFunction::LessEqual),
+        );
+        let grain_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("grain"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
         let image_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("image"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -317,6 +391,9 @@ impl CanvasRenderer {
             image_pipeline,
             image_layout,
             image_sampler,
+            brush_pipeline,
+            brush_layout,
+            grain_sampler,
             strokes: StrokeCache::new(),
             style: CanvasStyle::default(),
         }
@@ -353,7 +430,9 @@ impl CanvasRenderer {
     /// `tessellate` / `tessellate_fill` for new or changed ones) and returns
     /// the draw list, bottom to top: per layer, its items in paint order
     /// (ADR-010).
-    /// Colours get the brush/fill and layer opacity applied.
+    /// Colours get the brush/fill and layer opacity applied. Brushed strokes
+    /// are drawn solid here, since the list carries no library; use
+    /// [`crate::DrawListBuilder`] to draw them with their brush.
     pub fn prepare_render_list<M: MeshSource, F: MeshSource>(
         &mut self,
         device: &wgpu::Device,
@@ -382,6 +461,7 @@ impl CanvasRenderer {
                             transform,
                             layer: Some(layer.layer_id),
                             blend: layer.blend,
+                            brush: None,
                         }
                     }
                     PaintItem::Stroke(stroke) => {
@@ -396,6 +476,7 @@ impl CanvasRenderer {
                             transform,
                             layer: Some(layer.layer_id),
                             blend: layer.blend,
+                            brush: None,
                         }
                     }
                 };
@@ -500,6 +581,7 @@ impl CanvasRenderer {
         );
         self.write_draws(device, queue, frame.strokes);
         self.upload_textures(device, queue);
+        self.upload_brushes(device, queue);
 
         let clear = match chrome {
             Chrome::Editor => wgpu::Color {
@@ -542,21 +624,33 @@ impl CanvasRenderer {
             }
             pass.set_pipeline(&self.stroke_globals.pipeline);
             pass.set_bind_group(0, &self.stroke_globals.bind_group, &[]);
-            let mut drawing_image = false;
+            let mut drawing = Kind::Mesh;
             for (slot, draw) in (range.start as u64..).zip(&frame.strokes[range]) {
-                let is_image = matches!(draw.id, MeshId::Image(_));
-                if is_image {
-                    let Some(texture) = self.strokes.texture(draw.id) else {
+                let kind = match draw.id {
+                    MeshId::Image(_) => Kind::Image,
+                    MeshId::Brushed(_) => Kind::Brush,
+                    MeshId::Stroke(_) | MeshId::Fill(_) => Kind::Mesh,
+                };
+                let texture = match kind {
+                    Kind::Image => self.strokes.texture(draw.id),
+                    Kind::Brush => match draw.brush {
+                        Some(brush) => self.strokes.brush_texture(brush.asset),
+                        None => None,
+                    },
+                    Kind::Mesh => None,
+                };
+                if kind != Kind::Mesh {
+                    let Some(texture) = texture else {
                         continue;
                     };
                     pass.set_bind_group(2, texture, &[]);
                 }
-                if is_image != drawing_image {
-                    drawing_image = is_image;
-                    pass.set_pipeline(if is_image {
-                        &self.image_pipeline
-                    } else {
-                        &self.stroke_globals.pipeline
+                if kind != drawing {
+                    drawing = kind;
+                    pass.set_pipeline(match kind {
+                        Kind::Mesh => &self.stroke_globals.pipeline,
+                        Kind::Image => &self.image_pipeline,
+                        Kind::Brush => &self.brush_pipeline,
                     });
                     pass.set_bind_group(0, &self.stroke_globals.bind_group, &[]);
                 }
@@ -650,45 +744,11 @@ impl CanvasRenderer {
             else {
                 continue;
             };
-            let Some(&(width, height, _)) = decoded.levels.first() else {
+            let Some(view) =
+                upload_texture(device, queue, &decoded, wgpu::TextureFormat::Rgba8UnormSrgb)
+            else {
                 continue;
             };
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("image"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: decoded.levels.len() as u32,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-                view_formats: &[],
-            });
-            for (level, (w, h, pixels)) in decoded.levels.iter().enumerate() {
-                queue.write_texture(
-                    wgpu::TexelCopyTextureInfo {
-                        texture: &texture,
-                        mip_level: level as u32,
-                        origin: wgpu::Origin3d::ZERO,
-                        aspect: wgpu::TextureAspect::All,
-                    },
-                    pixels,
-                    wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(w * 4),
-                        rows_per_image: Some(*h),
-                    },
-                    wgpu::Extent3d {
-                        width: *w,
-                        height: *h,
-                        depth_or_array_layers: 1,
-                    },
-                );
-            }
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
             *slot = ImageTexture::Ready(device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("image"),
                 layout,
@@ -700,6 +760,52 @@ impl CanvasRenderer {
                     wgpu::BindGroupEntry {
                         binding: 1,
                         resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                ],
+            }));
+        }
+    }
+
+    /// Uploads the tip and grain textures of brushes decoded since the last
+    /// render. They hold coverage, not colour, so they are not sRGB.
+    fn upload_brushes(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let (layout, tip_sampler, grain_sampler) =
+            (&self.brush_layout, &self.image_sampler, &self.grain_sampler);
+        for slot in self.strokes.pending_brushes() {
+            let BrushTexture::Pending(decoded) = std::mem::replace(slot, BrushTexture::Failed)
+            else {
+                continue;
+            };
+            let format = wgpu::TextureFormat::Rgba8Unorm;
+            let Some(tip) = upload_texture(device, queue, &decoded.tip, format) else {
+                continue;
+            };
+            let grain = match &decoded.grain {
+                Some(grain) => match upload_texture(device, queue, grain, format) {
+                    Some(view) => view,
+                    None => continue,
+                },
+                None => tip.clone(),
+            };
+            *slot = BrushTexture::Ready(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("brush"),
+                layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&tip),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(tip_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&grain),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::Sampler(grain_sampler),
                     },
                 ],
             }));
@@ -744,7 +850,10 @@ impl CanvasRenderer {
             // Later strokes are nearer, so they pass the depth test over
             // earlier ones; a stroke's own overlapping triangles don't.
             u.float(stroke_depth(i, count));
-            u.floats(&[0.0; 3]);
+            match draw.brush {
+                Some(b) => u.floats(&[b.grain_scale, b.grain_strength, 0.0]),
+                None => u.floats(&[1.0, 0.0, 0.0]),
+            }
             let data = u.finish(STROKE_DRAW_SIZE);
             chunk[..data.len()].copy_from_slice(&data);
         }
@@ -768,7 +877,66 @@ pub(crate) fn image_draw(
         transform,
         layer: Some(layer),
         blend,
+        brush: None,
     }
+}
+
+/// Which pipeline a draw uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    /// Stroke and fill meshes.
+    Mesh,
+    /// Imported pictures.
+    Image,
+    /// Brushed strokes' stamps.
+    Brush,
+}
+
+/// Uploads decoded RGBA8 mip levels as a `format` texture and returns its
+/// view, or `None` if there are no levels.
+fn upload_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    decoded: &DecodedImage,
+    format: wgpu::TextureFormat,
+) -> Option<wgpu::TextureView> {
+    let &(width, height, _) = decoded.levels.first()?;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("image"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: decoded.levels.len() as u32,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for (level, (w, h, pixels)) in decoded.levels.iter().enumerate() {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: level as u32,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w * 4),
+                rows_per_image: Some(*h),
+            },
+            wgpu::Extent3d {
+                width: *w,
+                height: *h,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+    Some(texture.create_view(&wgpu::TextureViewDescriptor::default()))
 }
 
 /// Splits draws into groups composited one at a time: a run of Normal draws
@@ -828,7 +996,7 @@ fn create_pipeline(
     layouts: &[&wgpu::BindGroupLayout],
     buffers: &[Option<wgpu::VertexBufferLayout<'_>>],
     topology: wgpu::PrimitiveTopology,
-    depth_test: bool,
+    depth_test: Option<wgpu::CompareFunction>,
 ) -> wgpu::RenderPipeline {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
@@ -856,12 +1024,8 @@ fn create_pipeline(
         // Strokes test and write depth; the quads ignore it.
         depth_stencil: Some(wgpu::DepthStencilState {
             format: CANVAS_DEPTH_FORMAT,
-            depth_write_enabled: Some(depth_test),
-            depth_compare: Some(if depth_test {
-                wgpu::CompareFunction::Less
-            } else {
-                wgpu::CompareFunction::Always
-            }),
+            depth_write_enabled: Some(depth_test.is_some()),
+            depth_compare: Some(depth_test.unwrap_or(wgpu::CompareFunction::Always)),
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
@@ -1030,6 +1194,7 @@ mod tests {
             transform: Mat4::IDENTITY,
             layer: Some(layer),
             blend,
+            brush: None,
         };
         let n = BlendMode::Normal;
         let draws = [draw(a, n), draw(b, n), draw(b, n)];

@@ -1,5 +1,5 @@
-//! Reading files for File → Import: PNG/JPEG pictures (ADR-015) and
-//! MP3/WAV sounds (ADR-020).
+//! Reading files for File → Import: PNG/JPEG pictures (ADR-015),
+//! MP3/WAV sounds (ADR-020) and `.rustbrush` brushes (ADR-022).
 
 use document::drawing::ImageData;
 use document::{AudioData, AudioFormat};
@@ -15,7 +15,7 @@ pub const EXTENSIONS: &[&str] = &["png", "jpg", "jpeg"];
 pub const AUDIO_EXTENSIONS: &[&str] = &["mp3", "wav"];
 
 /// Every extension the import dialog offers.
-pub const ALL_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "mp3", "wav"];
+pub const ALL_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "mp3", "wav", "rustbrush"];
 
 /// What an imported file is, by its extension.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,6 +24,8 @@ pub enum FileKind {
     Picture,
     /// An MP3 or WAV sound.
     Audio(AudioFormat),
+    /// A `.rustbrush` brush package.
+    Brush,
 }
 
 /// The kind of file at `path`, by its extension (any case); `None` for
@@ -34,6 +36,7 @@ pub fn file_kind(path: &Path) -> Option<FileKind> {
         "png" | "jpg" | "jpeg" => Some(FileKind::Picture),
         "mp3" => Some(FileKind::Audio(AudioFormat::Mp3)),
         "wav" => Some(FileKind::Audio(AudioFormat::Wav)),
+        crate::brushes::EXTENSION => Some(FileKind::Brush),
         _ => None,
     }
 }
@@ -110,7 +113,7 @@ pub fn read_image(path: &Path) -> Result<ImageData, String> {
 
 /// Wraps an encoded PNG/JPEG, reading its size from the header and checking
 /// that the whole picture decodes.
-fn image_data(bytes: Vec<u8>) -> Result<ImageData, String> {
+pub(crate) fn image_data(bytes: Vec<u8>) -> Result<ImageData, String> {
     let reader = image::ImageReader::new(Cursor::new(&bytes))
         .with_guessed_format()
         .map_err(|e| e.to_string())?;

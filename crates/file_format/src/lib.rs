@@ -90,7 +90,12 @@ use std::path::{Path, PathBuf};
 ///   v12 files need no migration. Older builds must reject these files: they
 ///   would fail on the unknown asset kind, or load audio layers as drawing
 ///   layers.
-pub const FORMAT_VERSION: u32 = 13;
+/// - 14: the library may hold `Brush` assets (a tip and optional grain
+///   picture as base64, plus stamp settings), and stroke styles may have a
+///   `brush` asset reference (absent means a solid stroke; ADR-022). v13
+///   files need no migration. Older builds must reject these files: they
+///   would fail on the unknown asset kind, or draw brushed strokes solid.
+pub const FORMAT_VERSION: u32 = 14;
 
 /// File extension for project files (without the dot).
 pub const FILE_EXTENSION: &str = "rusting";
@@ -272,7 +277,33 @@ pub enum ValidationError {
         /// Its name.
         name: String,
     },
-    /// A library picture or sound has no content.
+    /// A stroke is drawn with a library brush that is not in the file.
+    #[error("stroke {stroke} uses library brush {asset}, which is not in the file")]
+    MissingBrushAsset {
+        /// The stroke.
+        stroke: StrokeId,
+        /// The missing asset.
+        asset: AssetId,
+    },
+    /// A stroke is drawn with a library asset that is not a brush.
+    #[error("stroke {stroke} uses library asset {asset} as a brush, which is not a brush")]
+    NotABrushAsset {
+        /// The stroke.
+        stroke: StrokeId,
+        /// The asset.
+        asset: AssetId,
+    },
+    /// A library brush has a setting out of range.
+    #[error("library brush \"{name}\" ({id}): {source}")]
+    BadBrushSettings {
+        /// The asset.
+        id: AssetId,
+        /// Its name.
+        name: String,
+        /// What is wrong.
+        source: document::drawing::BrushSettingsError,
+    },
+    /// A library picture, sound or brush has no content.
     #[error("library asset \"{name}\" ({id}) is empty")]
     EmptyAsset {
         /// The asset.
@@ -799,11 +830,24 @@ pub fn validate(doc: &Document) -> Result<(), ValidationError> {
             .image()
             .is_some_and(document::drawing::ImageData::is_empty)
             || asset.audio().is_some_and(document::AudioData::is_empty)
+            || asset
+                .brush()
+                .is_some_and(|b| b.tip.is_empty() || b.grain.as_ref().is_some_and(|g| g.is_empty()))
         {
             return Err(ValidationError::EmptyAsset {
                 id: asset.id,
                 name: asset.name.clone(),
             });
+        }
+        if let Some(brush) = asset.brush() {
+            brush
+                .settings
+                .validate()
+                .map_err(|source| ValidationError::BadBrushSettings {
+                    id: asset.id,
+                    name: asset.name.clone(),
+                    source,
+                })?;
         }
     }
 
@@ -897,6 +941,23 @@ pub fn validate(doc: &Document) -> Result<(), ValidationError> {
                     stroke: stroke.id,
                     drawing,
                 });
+            }
+            if let Some(asset) = stroke.style.brush {
+                match doc.asset(asset) {
+                    None => {
+                        return Err(ValidationError::MissingBrushAsset {
+                            stroke: stroke.id,
+                            asset,
+                        });
+                    }
+                    Some(a) if a.brush().is_none() => {
+                        return Err(ValidationError::NotABrushAsset {
+                            stroke: stroke.id,
+                            asset,
+                        });
+                    }
+                    Some(_) => {}
+                }
             }
             let what = |field: &str| format!("stroke {} {field}", stroke.id);
             let st = &stroke.style;
@@ -1139,6 +1200,7 @@ mod tests {
                 color: Rgba::new(0.2, 0.4, 0.6, 1.0),
                 width: 3.0,
                 opacity: 0.8,
+                brush: None,
             },
         ));
         v.push_fill(Fill::new(
@@ -1463,6 +1525,99 @@ mod tests {
         assert!(report.is_clean(), "{report:?}");
         // Drawing layers still leave `kind` out.
         assert_eq!(text.matches("\"kind\": {").count(), 2, "{text}");
+    }
+
+    /// `sample()` with a library brush that its first stroke is drawn with,
+    /// and the brush's asset.
+    fn brush_sample() -> (Document, document::Asset) {
+        use document::drawing::{BrushData, BrushSettings, ImageData};
+        use document::{Asset, AssetKind};
+        let mut doc = sample();
+        let brush = Asset::new(
+            "Pencil",
+            AssetKind::Brush(BrushData {
+                tip: ImageData::new(2, 2, vec![0x89, b'P', b'N', b'G']),
+                grain: Some(ImageData::new(4, 4, vec![1, 2, 3])),
+                settings: BrushSettings {
+                    flow: 0.4,
+                    grain_strength: 0.7,
+                    ..BrushSettings::default()
+                },
+            }),
+        );
+        doc.insert_asset(brush.clone());
+        let drawing = *doc.drawings().keys().next().unwrap();
+        let v = doc.drawing_mut(drawing).unwrap().as_vector_mut().unwrap();
+        let id = v.strokes()[0].id;
+        let (index, mut stroke) = v.remove_stroke(id).unwrap();
+        stroke.style.brush = Some(brush.id);
+        v.insert_stroke(index, stroke);
+        (doc, brush)
+    }
+
+    #[test]
+    fn brushes_roundtrip() {
+        let (doc, brush) = brush_sample();
+        let text = to_string(&doc).unwrap();
+        assert!(text.contains("\"Brush\""), "{text}");
+        assert!(text.contains("\"brush\""), "{text}");
+        let loaded = from_str(&text).unwrap();
+        assert_eq!(loaded, doc);
+        assert!(loaded.asset_in_use(brush.id));
+        let (_, report) = from_str_with_report(&text).unwrap();
+        assert!(report.is_clean(), "{report:?}");
+    }
+
+    #[test]
+    fn version_13_files_load_unchanged() {
+        let (doc, _, _) = audio_sample();
+        let v13 = edit_json(&doc, |j| j["format_version"] = 13.into());
+        assert_eq!(from_str(&v13).unwrap(), doc);
+    }
+
+    #[test]
+    fn broken_brushes_are_rejected() {
+        let (doc, brush) = brush_sample();
+        let missing = edit_json(&doc, |j| {
+            j["document"]["assets"]
+                .as_object_mut()
+                .unwrap()
+                .remove(&brush.id.to_string());
+        });
+        assert!(matches!(
+            invalid(&missing),
+            ValidationError::MissingBrushAsset { asset, .. } if asset == brush.id
+        ));
+
+        let (_, picture, _) = library_sample();
+        let mut not_brush = doc.clone();
+        not_brush.insert_asset(picture.clone());
+        let id = brush.id.to_string();
+        let pic = picture.id.to_string();
+        let not_brush = to_string(&not_brush).unwrap().replace(
+            &format!("\"brush\": \"{id}\""),
+            &format!("\"brush\": \"{pic}\""),
+        );
+        assert!(matches!(
+            invalid(&not_brush),
+            ValidationError::NotABrushAsset { asset, .. } if asset == picture.id
+        ));
+
+        let bad = edit_json(&doc, |j| {
+            j["document"]["assets"][&id]["kind"]["Brush"]["settings"]["flow"] = 3.0.into();
+        });
+        assert!(matches!(
+            invalid(&bad),
+            ValidationError::BadBrushSettings { id: a, .. } if a == brush.id
+        ));
+
+        let empty = edit_json(&doc, |j| {
+            j["document"]["assets"][&id]["kind"]["Brush"]["tip"]["width"] = 0.into();
+        });
+        assert!(matches!(
+            invalid(&empty),
+            ValidationError::EmptyAsset { id: a, .. } if a == brush.id
+        ));
     }
 
     #[test]

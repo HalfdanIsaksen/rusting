@@ -325,8 +325,9 @@ impl Document {
 
     /// Whether something the animation shows refers to asset `id`: an image
     /// in a drawing that some keyframe refers to (of the document or of a
-    /// symbol in the library), or an audio layer's sound. Drawings and
-    /// layers kept only for undo don't count.
+    /// symbol in the library), a stroke's brush in such a drawing, or an
+    /// audio layer's sound. Drawings and layers kept only for undo don't
+    /// count.
     pub fn asset_in_use(&self, id: AssetId) -> bool {
         self.used_assets().contains(&id)
     }
@@ -337,7 +338,12 @@ impl Document {
         self.referenced_drawings()
             .into_iter()
             .filter_map(|id| self.drawings.get(&id)?.as_vector())
-            .flat_map(|v| v.images().iter().filter_map(|i| i.asset))
+            .flat_map(|v| {
+                v.images()
+                    .iter()
+                    .filter_map(|i| i.asset)
+                    .chain(v.strokes().iter().filter_map(|s| s.style.brush))
+            })
             .chain(self.audio_layers().map(|(_, clip)| clip.asset))
             .collect()
     }
@@ -519,6 +525,34 @@ mod tests {
         d.asset_mut(id).unwrap().name = "renamed".into();
         assert_eq!(d.remove_asset(id).unwrap().name, "renamed");
         assert!(d.assets().is_empty());
+    }
+
+    #[test]
+    fn a_strokes_brush_is_in_use() {
+        use crate::assets::AssetKind;
+        use drawing::{BrushData, BrushStyle, Stroke, StrokePoint, VectorDrawing};
+        let mut d = doc();
+        let l = d.add_layer("L");
+        let brush = Asset::new("Pencil", AssetKind::Brush(BrushData::default()));
+        let id = brush.id;
+        d.insert_asset(brush);
+        assert!(d.asset(id).unwrap().brush().is_some());
+        assert_eq!(d.asset(id).unwrap().kind.label(), "Brush");
+
+        let mut v = VectorDrawing::new();
+        v.push_stroke(Stroke::new(
+            vec![StrokePoint::new(glam_zero())],
+            BrushStyle {
+                brush: Some(id),
+                ..BrushStyle::default()
+            },
+        ));
+        let drawing = d.add_drawing(DrawingContent::Vector(v));
+        assert!(!d.asset_in_use(id));
+        d.track_mut(l)
+            .unwrap()
+            .set_key(FrameIndex(0), Keyframe::Drawing(drawing));
+        assert!(d.asset_in_use(id));
     }
 
     fn glam_zero() -> animation_core::Vec2 {

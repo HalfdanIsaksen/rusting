@@ -163,6 +163,7 @@ mod tests {
                 color,
                 width: 10.0,
                 opacity: 1.0,
+                brush: None,
             },
         )
     }

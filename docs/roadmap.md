@@ -11,6 +11,7 @@ Each phase lists its acceptance criteria. Phases run in parallel where their cra
 | 6 Document ops, undo, persistence | `feat/document-persistence` | `document`, `scene`, `editor`, `file_format` | ✅ merged |
 | 3–5 UI integration (layers, timeline, toolbar, onion skin) | `feat/ui-integration` | `ui`, `apps/desktop` | after 1 + 2 + 4 + 6 merge |
 | 7 Refinement | — | — | after MVP |
+| Stamp brushes and `.rustbrush` (ADR-022) | `feat/brushes` | `drawing`, `document`, `file_format`, `renderer`, `ui`, `apps/desktop`, `assets` | in review |
 
 ## Phase 1: Window and canvas (`feat/renderer-canvas`)
 1. `renderer::Viewport { canvas_size, zoom, pan, screen_size, scale_factor }` with `screen_to_canvas`, `canvas_to_screen`, and `zoom_about(cursor, factor)`. Pure math, unit-tested: round trips, and the canvas point under the cursor stays fixed through a zoom.
