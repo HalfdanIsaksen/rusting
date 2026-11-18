@@ -34,6 +34,8 @@ const INSTANCE_TINT: Color32 = Color32::from_rgb(70, 150, 190);
 /// Colour of motion tween spans in the frame grid (ADR-019).
 const TWEEN_TINT: Color32 = Color32::from_rgb(140, 110, 200);
 const MAX_FRAMES: u32 = 100_000;
+/// Width of the grab area right of the last frame that sets the length.
+const LENGTH_HANDLE: f32 = 12.0;
 
 /// Draws the timeline panel.
 pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
@@ -431,8 +433,16 @@ fn row_at(rows: &[Row], y: f32) -> Option<LayerId> {
 fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
     let cell = session.timeline.cell_width;
     let count = session.document.frame_count.max(1);
-    let (rect, response) =
-        ui.allocate_exact_size(vec2(count as f32 * cell, height), Sense::click_and_drag());
+    // While the end handle is dragged past the end, the grid grows with it
+    // so the scroll area follows.
+    let length_id = ui.scope_id().with("length_drag");
+    let preview: Option<u32> = ui.data(|d| d.get_temp(length_id));
+    let shown = preview.unwrap_or(count).max(count);
+    let (full, response) = ui.allocate_exact_size(
+        vec2(shown as f32 * cell + LENGTH_HANDLE, height),
+        Sense::click_and_drag(),
+    );
+    let rect = Rect::from_min_size(full.min, vec2(count as f32 * cell, height));
 
     // Zoom with Cmd/Ctrl+scroll or pinch.
     if response.hovered() {
@@ -757,6 +767,8 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
         );
     }
 
+    length_handle(ui, session, full, rect, cell, length_id);
+
     // Keep the playhead in view when it moves (playback, stepping).
     let current = session.current_frame();
     let last_id = ui.scope_id().with("last_playhead");
@@ -771,6 +783,109 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
             Some(egui::Align::Center),
         );
     }
+}
+
+/// The handle at the end of the frames: drag it right to make the
+/// animation longer, or left to make it shorter. The new length is shown
+/// while dragging and set on release, as one undo step.
+fn length_handle(
+    ui: &mut egui::Ui,
+    session: &mut Session,
+    full: Rect,
+    rect: Rect,
+    cell: f32,
+    length_id: egui::Id,
+) {
+    let count = session.document.frame_count.max(1);
+    let area = Rect::from_x_y_ranges(
+        rect.right() - 4.0..=rect.right() + LENGTH_HANDLE,
+        full.y_range(),
+    );
+    let handle = ui
+        .interact(area, length_id.with("handle"), Sense::drag())
+        .on_hover_text("Drag to change the animation length");
+    let length_at = |x: f32| {
+        ((x - rect.left()) / cell)
+            .round()
+            .clamp(1.0, MAX_FRAMES as f32) as u32
+    };
+    let mut preview: Option<u32> = ui.data(|d| d.get_temp(length_id));
+    if handle.dragged()
+        && let Some(pos) = handle.interact_pointer_pos()
+    {
+        let length = length_at(pos.x);
+        preview = Some(length);
+        ui.data_mut(|d| d.insert_temp(length_id, length));
+        session.playback.pause();
+        // Keep the dragged end in view.
+        let y = ui.clip_rect().center().y;
+        ui.scroll_to_rect(
+            Rect::from_x_y_ranges(pos.x - cell..=pos.x + cell, y..=y + 1.0),
+            None,
+        );
+    }
+    if handle.drag_stopped() {
+        ui.data_mut(|d| d.remove::<u32>(length_id));
+        if let Some(length) = preview.take()
+            && length != count
+            && session
+                .execute(Box::new(SetFrameCount::new(length)))
+                .is_ok()
+        {
+            let frame = session.current_frame();
+            session.set_frame(frame);
+            session.set_status(format!("Animation length: {length} frames"));
+        }
+    }
+    if handle.hovered() || handle.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+
+    let visuals = ui.visuals();
+    let painter = ui.painter_at(full);
+    let active = handle.hovered() || handle.dragged();
+    let color = if active {
+        visuals.selection.stroke.color
+    } else {
+        visuals.widgets.noninteractive.fg_stroke.color
+    };
+    let end = preview.unwrap_or(count);
+    let x = rect.left() + end as f32 * cell;
+    if let Some(length) = preview {
+        let span = if length >= count {
+            rect.right()..=x
+        } else {
+            x..=rect.right()
+        };
+        let tint = if length >= count {
+            visuals.selection.bg_fill.gamma_multiply(0.25)
+        } else {
+            Color32::from_rgb(230, 70, 60).gamma_multiply(0.25)
+        };
+        painter.rect_filled(
+            Rect::from_x_y_ranges(span, full.top() + RULER_HEIGHT..=full.bottom()),
+            0.0,
+            tint,
+        );
+        painter.text(
+            Pos2::new(x + 4.0, full.top() + TAG_HEIGHT + NUMBERS_HEIGHT * 0.5),
+            egui::Align2::LEFT_CENTER,
+            format!("{length} frames"),
+            egui::FontId::proportional(10.0),
+            visuals.strong_text_color(),
+        );
+    }
+    painter.vline(
+        x,
+        full.y_range(),
+        Stroke::new(if active { 3.0 } else { 2.0 }, color),
+    );
+    // A grip in the ruler so the handle is easy to find.
+    let grip = Rect::from_center_size(
+        Pos2::new(x + 3.0, full.top() + TAG_HEIGHT + NUMBERS_HEIGHT * 0.5),
+        vec2(6.0, NUMBERS_HEIGHT - 6.0),
+    );
+    painter.rect_filled(grip, 2.0, color);
 }
 
 /// "Create Motion Tween ▸" and "Remove Tween" for the object keys the
@@ -1266,5 +1381,66 @@ mod tests {
         assert_eq!(start(&s), FrameIndex(0));
         let rows = rows(&s.document, &BTreeSet::new());
         assert!(rows.iter().any(|r| r.audio && r.layer() == Some(layer)));
+    }
+
+    /// Drags the end handle from the end of a 24-frame animation (10 px
+    /// cells) to `to_x`, one egui pass per step, and returns the session.
+    fn drag_length_handle(to_x: f32) -> Session {
+        let mut s = Session::new();
+        assert_eq!(s.document.frame_count, 24);
+        let ctx = egui::Context::default();
+        let start = Pos2::new(241.0, 60.0);
+        let end = Pos2::new(to_x, 60.0);
+        let steps = [
+            vec![egui::Event::PointerMoved(start)],
+            vec![egui::Event::PointerButton {
+                pos: start,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            vec![egui::Event::PointerMoved(Pos2::new(
+                (start.x + end.x) / 2.0,
+                60.0,
+            ))],
+            vec![egui::Event::PointerMoved(end)],
+            vec![egui::Event::PointerButton {
+                pos: end,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            vec![],
+        ];
+        for events in steps {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 400.0))),
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| {
+                let count = s.document.frame_count as f32;
+                let rect = Rect::from_min_size(Pos2::ZERO, vec2(count * 10.0, 200.0));
+                let full = rect.with_max_x(rect.right() + LENGTH_HANDLE);
+                let id = ui.id().with("len");
+                length_handle(ui, &mut s, full, rect, 10.0, id);
+            })
+            .drop_without_applying_deltas();
+        }
+        s
+    }
+
+    #[test]
+    fn dragging_the_end_handle_sets_the_length_in_one_undo_step() {
+        let mut s = drag_length_handle(400.0);
+        assert_eq!(s.document.frame_count, 40);
+        assert_eq!(s.history.undo_label(), Some("Set Frame Count"));
+        s.undo();
+        assert_eq!(s.document.frame_count, 24);
+
+        let s = drag_length_handle(100.0);
+        assert_eq!(s.document.frame_count, 10, "dragging left shortens");
+        let s = drag_length_handle(-50.0);
+        assert_eq!(s.document.frame_count, 1, "never below one frame");
     }
 }
