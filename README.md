@@ -56,7 +56,7 @@ Set `RUST_LOG=debug` for more log output.
 | Document | What it covers |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Crate dependency graph, data model, coordinate spaces, frame flow |
-| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-022) |
+| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-023) |
 | [docs/roadmap.md](docs/roadmap.md) | Development phases and their acceptance criteria |
 | [docs/smoke-test.md](docs/smoke-test.md) | Manual end-to-end test checklist |
 | [docs/releasing.md](docs/releasing.md) | How to tag a release and update the Homebrew tap |
@@ -85,7 +85,7 @@ The tool strip runs down the side of the canvas:
 | Paint Bucket | `K` | Fill areas enclosed by strokes, with optional gap closing. Click a stroke to recolour it. Recolouring a fill also recolours the strokes along its edge that had the fill's colour, and keeps its draw order |
 | Eyedropper | `I` | Click the canvas to pick the colour (and opacity) of the topmost stroke or fill on the active layer; a gradient fill gives its colour at that point, and empty canvas gives the background colour. Sets the brush and paint bucket colour. `Alt`+click with the Brush, Paint Bucket, Rectangle or Ellipse picks a colour without switching tools (shapes take it as their stroke or fill colour; an `Alt`+drag still draws from the centre) |
 
-**Merge same colour** (Brush, Rectangle, Ellipse, Paint Bucket; on by default): a new stroke or fill that touches fills of the same colour, opacity and draw order becomes one fill with them, so the shape selects, moves and erases as one item. A new fill also takes in the strokes of its colour that touch it, so fill and outline become one shape; strokes in other colours stay line art and keep bounding bucket fills. Turn it off in Tool Settings to keep items separate.
+**Merge same colour** (Brush, Rectangle, Ellipse, Paint Bucket; on by default): a new stroke or fill that touches fills of the same colour, opacity and draw order becomes one fill with them, so the shape selects, moves and erases as one item. The Paint Bucket only merges with fills: filling an area with the colour of its outline leaves the outline as a stroke, so it stays line art and keeps bounding later fills. Turn it off in Tool Settings to keep items separate.
 
 ### Brushes
 - Tool Settings → **Brush** picks what the Brush tool draws with: **Vector (solid)**, a built-in brush (**Pencil (HB)**, **Soft Pencil (6B)**, **Charcoal**, **Chalk**, **Ink Pen**, **Marker**) or a brush in the project's Library.
@@ -94,7 +94,7 @@ The tool strip runs down the side of the canvas:
 - **Import** a `.rustbrush` file (File → Import…) to add a brush, and right-click a brush in the Library → **Export Brush…** to share one. A `.rustbrush` file is a zip with `brush.json` (name and stamp settings), `tip.png` and an optional `grain.png`.
 - Textured strokes don't merge with same-colour fills, and pen pressure isn't read yet: lines are drawn at full pressure.
 
-**Draw order** (Brush, Rectangle, Ellipse, Text, Paint Bucket): **Behind** puts the new item under everything already in the frame, fills included, **Normal** puts it on top, and **In front** keeps it on top of everything else, including what you draw later. The live preview shows where it lands. Erasing, moving and transforming keep an item's draw order.
+**Draw order** (Brush, Rectangle, Ellipse, Text, Paint Bucket): **Behind** puts the new item under everything already in the frame, fills included, and **Normal** puts it on top. The live preview shows where it lands. Erasing, moving and transforming keep an item's draw order.
 
 ### Canvas
 - Pan with middle-drag or by holding Space, zoom with the wheel or pinch, press `F` to fit.

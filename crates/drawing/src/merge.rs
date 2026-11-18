@@ -135,6 +135,18 @@ impl VectorDrawing {
     /// apply the [`Merge`] by removing its items and inserting its fill where
     /// its first fill was.
     pub fn merge_same_colour(&self, item: ItemId) -> Option<Merge> {
+        self.merge_with(item, true)
+    }
+
+    /// Like [`Self::merge_same_colour`], but existing strokes are never
+    /// absorbed: `item` merges only with fills of its look. The fill bucket
+    /// uses this, so filling an area with the colour of its outline leaves
+    /// the outline as line art (ADR-023).
+    pub fn merge_same_colour_fills(&self, item: ItemId) -> Option<Merge> {
+        self.merge_with(item, false)
+    }
+
+    fn merge_with(&self, item: ItemId, absorb_strokes: bool) -> Option<Merge> {
         let look = match item {
             ItemId::Fill(id) => Look::of_fill(self.fill(id)?)?,
             ItemId::Stroke(id) => Look::of_stroke(self.stroke(id)?)?,
@@ -159,7 +171,9 @@ impl VectorDrawing {
             let wanted = match item {
                 ItemId::Stroke(id) => stroke.id == id,
                 // A new fill absorbs the same-look strokes it touches.
-                ItemId::Fill(_) => Look::of_stroke(stroke).is_some_and(|l| l.matches(&look)),
+                ItemId::Fill(_) => {
+                    absorb_strokes && Look::of_stroke(stroke).is_some_and(|l| l.matches(&look))
+                }
                 ItemId::Image(_) => false,
             };
             if wanted && let Some(bounds) = finite_bounds(stroke.bounds()) {
@@ -570,6 +584,29 @@ mod tests {
         assert!(merge.fill.contains(v(50.0, 75.0)));
         let area = merge.fill.shape().area();
         assert!((area - 10_000.0).abs() < 100.0, "area {area}");
+    }
+
+    #[test]
+    fn fills_only_merge_keeps_the_same_colour_outline_and_joins_fills() {
+        let mut d = VectorDrawing::new();
+        let outline = line(v(0.0, 50.0), v(120.0, 50.0), 6.0, BROWN);
+        let old = square(v(0.0, 0.0), v(100.0, 52.0), BROWN);
+        let new = square(v(0.0, 48.0), v(100.0, 100.0), BROWN);
+        let (old_id, new_id) = (old.id, new.id);
+        d.push_stroke(outline);
+        d.push_fill(old);
+        d.push_fill(new);
+        let merge = d.merge_same_colour_fills(ItemId::Fill(new_id)).unwrap();
+        assert_eq!(merge.fills, [old_id, new_id]);
+        assert!(merge.strokes.is_empty(), "the outline stays a stroke");
+
+        // A lone fill against its same-colour outline merges with nothing.
+        let mut d = VectorDrawing::new();
+        let fill = square(v(0.0, 0.0), v(100.0, 50.0), BROWN);
+        let fill_id = fill.id;
+        d.push_stroke(line(v(0.0, 50.0), v(120.0, 50.0), 6.0, BROWN));
+        d.push_fill(fill);
+        assert_eq!(d.merge_same_colour_fills(ItemId::Fill(fill_id)), None);
     }
 
     #[test]

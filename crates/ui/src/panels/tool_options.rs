@@ -82,7 +82,7 @@ pub(crate) fn gap_choices(ui: &mut egui::Ui, session: &mut Session) -> bool {
     picked
 }
 
-/// The "Draw order" choice: Behind, Normal or In front (ADR-010).
+/// The "Draw order" choice: Behind or Normal (ADR-010).
 fn paint_order(ui: &mut egui::Ui, order: &mut PaintOrder) {
     ui.label("Draw order");
     ui.horizontal_wrapped(|ui| {
