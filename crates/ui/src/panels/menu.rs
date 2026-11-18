@@ -110,7 +110,7 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
             }
             if ui
                 .add(item(ui, "Delete Frames", &shortcuts::DELETE_FRAMES))
-                .on_hover_text("Remove the selected frames (or this frame) on every layer")
+                .on_hover_text("Remove the selected frames (or this frame) on the selected layers, pulling their later keys left")
                 .clicked()
             {
                 session.delete_frames();

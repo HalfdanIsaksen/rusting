@@ -2,10 +2,37 @@
 
 use super::{editable_layer, frame_in_range};
 use crate::{Command, CommandError};
-use animation_core::{DrawingId, FrameIndex, LayerId};
+use animation_core::{DrawingId, FrameIndex, FrameRange, LayerId};
 use document::Document;
 use document::drawing::DrawingContent;
-use document::timeline::Keyframe;
+use document::timeline::{Keyframe, RemovedFrames};
+
+/// The layers of `layers` that frame edits may change: drawing layers that
+/// are not locked. Fails with [`CommandError::LayerLocked`] if none are left.
+fn editable_layers(doc: &Document, layers: &[LayerId]) -> Result<Vec<LayerId>, CommandError> {
+    let editable: Vec<LayerId> = layers
+        .iter()
+        .copied()
+        .filter(|&id| editable_layer(doc, id).is_ok() && doc.track(id).is_some())
+        .collect();
+    if editable.is_empty() {
+        Err(CommandError::LayerLocked)
+    } else {
+        Ok(editable)
+    }
+}
+
+/// Fails unless `range` is a non-empty span inside the animation.
+fn range_in_animation(doc: &Document, range: FrameRange) -> Result<(), CommandError> {
+    if range.is_empty() || range.end.0 > doc.frame_count {
+        Err(CommandError::FrameOutOfRange {
+            frame: range.end,
+            frame_count: doc.frame_count,
+        })
+    } else {
+        Ok(())
+    }
+}
 
 /// Fails with [`CommandError::NoRoomOnLayer`] if shifting the keys of
 /// `layer` at or after `at` one frame right would push one past the end.
@@ -187,6 +214,197 @@ impl Command for InsertLayerFrame {
     }
 }
 
+/// What [`RemoveLayerFrames`] took out of one layer.
+#[derive(Debug)]
+struct LayerRemoval {
+    layer: LayerId,
+    removed: RemovedFrames,
+    /// A removed key whose exposure ran past the range was put back at the
+    /// range start, so the frames after the range keep their picture.
+    carried: bool,
+    /// An empty key was added where the layer's frames now end.
+    ended: Option<FrameIndex>,
+}
+
+/// Removes a range of frames on some layers: keys inside it are dropped and
+/// the layer's later keys move left to close the gap. The layer's frames end
+/// that many frames earlier (an empty key marks the new end); other layers,
+/// the animation length, tags and audio clips are left alone. Locked and
+/// audio layers are skipped.
+#[derive(Debug)]
+pub struct RemoveLayerFrames {
+    layers: Vec<LayerId>,
+    range: FrameRange,
+    removals: Vec<LayerRemoval>,
+}
+
+impl RemoveLayerFrames {
+    /// Creates the command.
+    pub fn new(layers: Vec<LayerId>, range: FrameRange) -> Self {
+        Self {
+            layers,
+            range,
+            removals: Vec::new(),
+        }
+    }
+}
+
+impl Command for RemoveLayerFrames {
+    fn label(&self) -> &str {
+        "Remove Frames"
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        range_in_animation(doc, self.range)?;
+        let layers = editable_layers(doc, &self.layers)?;
+        let FrameRange { start, end } = self.range;
+        let len = self.range.len();
+        let frame_count = doc.frame_count;
+        let tail = FrameIndex(frame_count - len);
+        self.removals.clear();
+        for layer in layers {
+            let Some(track) = doc.track_mut(layer) else {
+                continue;
+            };
+            let held_past = end.0 < frame_count && track.key_at(end).is_none();
+            let removed = track.remove_frames(start, len);
+            let carried = match removed.keys.last() {
+                Some(&(_, key)) if held_past => {
+                    track.set_key(start, key);
+                    true
+                }
+                _ => false,
+            };
+            // The frames pulled in at the end show nothing.
+            let shows_at_tail = track
+                .exposed_key(tail)
+                .is_some_and(|(at, key)| at < tail && *key != Keyframe::Empty);
+            let ended = shows_at_tail.then(|| {
+                track.set_key(tail, Keyframe::Empty);
+                tail
+            });
+            self.removals.push(LayerRemoval {
+                layer,
+                removed,
+                carried,
+                ended,
+            });
+        }
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        for removal in self.removals.drain(..).rev() {
+            let track = doc
+                .track_mut(removal.layer)
+                .ok_or(CommandError::LayerNotFound)?;
+            if let Some(at) = removal.ended {
+                track.remove_key(at);
+            }
+            if removal.carried {
+                track.remove_key(self.range.start);
+            }
+            track.restore_frames(&removal.removed);
+        }
+        Ok(())
+    }
+}
+
+/// Moves the keys inside a range of frames to start at `to`, on some layers
+/// only. Frames are not added or removed, and other layers, tags and audio
+/// clips stay where they are. Locked and audio layers are skipped.
+///
+/// Fails with [`CommandError::KeyframeExists`] if a key outside the range
+/// sits where a moved key would land, so a move never replaces a drawing.
+#[derive(Debug)]
+pub struct MoveLayerFrames {
+    layers: Vec<LayerId>,
+    range: FrameRange,
+    to: FrameIndex,
+    /// The layers actually moved, kept for undo.
+    moved: Vec<LayerId>,
+}
+
+impl MoveLayerFrames {
+    /// Creates the command.
+    pub fn new(layers: Vec<LayerId>, range: FrameRange, to: FrameIndex) -> Self {
+        Self {
+            layers,
+            range,
+            to,
+            moved: Vec::new(),
+        }
+    }
+
+    /// Where the range lands.
+    pub fn target(&self) -> FrameRange {
+        FrameRange::new(
+            self.to,
+            FrameIndex(self.to.0.saturating_add(self.range.len())),
+        )
+    }
+
+    /// The first key outside the range, on the layers that move, that
+    /// blocks the move, if any.
+    pub fn blocked_by(&self, doc: &Document) -> Option<FrameIndex> {
+        let target = self.target();
+        self.layers
+            .iter()
+            .filter(|&&id| doc.layers().is_editable(id))
+            .filter_map(|&id| doc.track(id))
+            .find_map(|track| {
+                track
+                    .keys()
+                    .map(|(f, _)| f)
+                    .find(|f| target.contains(*f) && !self.range.contains(*f))
+            })
+    }
+}
+
+/// Moves the keys of `layers` inside `range` to start at `to`. The caller
+/// has checked that nothing is in the way.
+fn move_keys(doc: &mut Document, layers: &[LayerId], range: FrameRange, to: FrameIndex) {
+    for &layer in layers {
+        let Some(track) = doc.track_mut(layer) else {
+            continue;
+        };
+        let moved: Vec<(FrameIndex, Keyframe)> = track
+            .keys()
+            .filter(|(f, _)| range.contains(*f))
+            .map(|(f, k)| (f, *k))
+            .collect();
+        for &(f, _) in &moved {
+            track.remove_key(f);
+        }
+        for (f, key) in moved {
+            track.set_key(FrameIndex(f.0 - range.start.0 + to.0), key);
+        }
+    }
+}
+
+impl Command for MoveLayerFrames {
+    fn label(&self) -> &str {
+        "Move Frames"
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        range_in_animation(doc, self.range)?;
+        range_in_animation(doc, self.target())?;
+        let layers = editable_layers(doc, &self.layers)?;
+        if let Some(frame) = self.blocked_by(doc) {
+            return Err(CommandError::KeyframeExists(frame));
+        }
+        move_keys(doc, &layers, self.range, self.to);
+        self.moved = layers;
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        move_keys(doc, &self.moved, self.target(), self.range.start);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,5 +542,95 @@ mod tests {
         let before = d.clone();
         roundtrip(&mut d, Box::new(InsertLayerFrame::new(b, FrameIndex(5))));
         assert_eq!(d, before);
+    }
+
+    fn range(start: u32, end: u32) -> FrameRange {
+        FrameRange::new(FrameIndex(start), FrameIndex(end))
+    }
+
+    #[test]
+    fn remove_pulls_one_layers_keys_left_and_keeps_the_length() {
+        let (mut d, a, b) = sample();
+        // a: 0, 3, empty 6. Removing 1..3 pulls 3 → 1 and 6 → 4.
+        roundtrip(
+            &mut d,
+            Box::new(RemoveLayerFrames::new(vec![a], range(1, 3))),
+        );
+        assert_eq!(key_frames(&d, a), [0, 1, 4]);
+        assert_eq!(key_frames(&d, b), [2], "other layers are untouched");
+        assert_eq!(d.frame_count, 24);
+    }
+
+    #[test]
+    fn remove_ends_a_held_layer_earlier() {
+        let (mut d, _, b) = sample();
+        // b's drawing at 2 is held to the end; removing 5..9 ends it at 20.
+        roundtrip(
+            &mut d,
+            Box::new(RemoveLayerFrames::new(vec![b], range(5, 9))),
+        );
+        assert_eq!(key_frames(&d, b), [2, 20]);
+        assert_eq!(
+            d.track(b).unwrap().key_at(FrameIndex(20)),
+            Some(&Keyframe::Empty)
+        );
+    }
+
+    #[test]
+    fn remove_keeps_the_picture_after_the_range() {
+        let (mut d, a, _) = sample();
+        let shown = d.drawing_at(a, FrameIndex(5));
+        // Removing 3..5 drops the key at 3, but 5 showed it: it moves to 3.
+        roundtrip(
+            &mut d,
+            Box::new(RemoveLayerFrames::new(vec![a], range(3, 5))),
+        );
+        assert_eq!(d.drawing_at(a, FrameIndex(3)), shown);
+        assert_eq!(key_frames(&d, a), [0, 3, 4]);
+    }
+
+    #[test]
+    fn remove_skips_locked_layers_and_refuses_if_all_are() {
+        let (mut d, a, b) = sample();
+        d.layer_mut(a).unwrap().locked = true;
+        roundtrip(
+            &mut d,
+            Box::new(RemoveLayerFrames::new(vec![a, b], range(0, 1))),
+        );
+        assert_eq!(key_frames(&d, a), [0, 3, 6]);
+        assert_eq!(key_frames(&d, b), [1, 23]);
+        assert_eq!(
+            RemoveLayerFrames::new(vec![a], range(0, 1)).apply(&mut d),
+            Err(CommandError::LayerLocked)
+        );
+    }
+
+    #[test]
+    fn move_shifts_only_the_given_layers() {
+        let (mut d, a, b) = sample();
+        roundtrip(
+            &mut d,
+            Box::new(MoveLayerFrames::new(vec![b], range(2, 3), FrameIndex(5))),
+        );
+        assert_eq!(key_frames(&d, b), [5]);
+        assert_eq!(key_frames(&d, a), [0, 3, 6]);
+    }
+
+    #[test]
+    fn move_is_blocked_only_by_keys_on_the_moving_layers() {
+        let (mut d, a, b) = sample();
+        // b's key at 2 moving to 3 would hit a's key at 3, but a is not moving.
+        let cmd = MoveLayerFrames::new(vec![b], range(2, 3), FrameIndex(3));
+        assert_eq!(cmd.blocked_by(&d), None);
+        let mut cmd = MoveLayerFrames::new(vec![a], range(3, 4), FrameIndex(6));
+        assert_eq!(
+            cmd.apply(&mut d),
+            Err(CommandError::KeyframeExists(FrameIndex(6)))
+        );
+        let mut past = MoveLayerFrames::new(vec![a], range(3, 4), FrameIndex(24));
+        assert!(matches!(
+            past.apply(&mut d),
+            Err(CommandError::FrameOutOfRange { .. })
+        ));
     }
 }

@@ -20,7 +20,7 @@ pub use fill::{AddFill, RemoveFill, ReplaceFill};
 pub use frames::{DuplicateFrame, InsertFrames, MoveFrames, RemoveFrames};
 pub use groups::{GroupLayers, MoveGroup, SetGroup, UngroupLayers};
 pub use image::{AddImage, RemoveImage};
-pub use layer_frames::{DuplicateLayerFrame, InsertLayerFrame};
+pub use layer_frames::{DuplicateLayerFrame, InsertLayerFrame, MoveLayerFrames, RemoveLayerFrames};
 pub use layers::DuplicateLayer;
 pub use merge::MergeSameColour;
 pub use opacity::SetOpacity;

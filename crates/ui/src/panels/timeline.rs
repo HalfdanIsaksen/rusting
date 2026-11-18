@@ -14,8 +14,8 @@ use document::drawing::DrawingContent;
 use document::scene::BlendMode;
 use document::timeline::Keyframe;
 use editor::commands::{
-    AddKeyframe, ClearFrame, KeyframeKind, MoveFrames, MoveKeyframe, RemoveKeyframe, SetAudioClip,
-    SetFps, SetFrameCount,
+    AddKeyframe, ClearFrame, KeyframeKind, MoveKeyframe, MoveLayerFrames, RemoveKeyframe,
+    SetAudioClip, SetFps, SetFrameCount,
 };
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, vec2};
 use std::collections::BTreeSet;
@@ -483,8 +483,11 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
     // key (the drop happens on release), or drag an audio clip to move its
     // start (live, one undo step).
     let selection = session.frame_selection();
+    // The frame selection covers the selected layers' rows.
+    let selected_layers = session.selected_layers();
     let in_selection = |pos: Pos2| {
-        pos.y - rect.top() >= RULER_HEIGHT && selection.is_some_and(|r| r.contains(frame_at(pos.x)))
+        selection.is_some_and(|r| r.contains(frame_at(pos.x)))
+            && row_at(rows, pos.y - rect.top()).is_some_and(|l| selected_layers.contains(&l))
     };
     let shift = ui.input(|i| i.modifiers.shift);
     let selection_drag_id = ui.scope_id().with("selection_drag");
@@ -669,23 +672,28 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
                 session.set_frame(frame);
             }
         } else if pressed && shift {
+            // Shift+click: a block from the playhead and active layer.
             session.select_frames_to(frame);
+            if let Some(row) = row_at(rows, pos.y - rect.top()) {
+                session.select_layer_range(row);
+            }
         } else if pressed && in_selection(pos) {
             // Maybe the start of a selection move; a click clears it below.
+            if let Some(row) = row_at(rows, pos.y - rect.top()) {
+                session.set_active_layer(row);
+            }
         } else if pressed {
             session.clear_frame_selection();
             session.set_frame(frame);
-        } else if response.dragged() {
-            session.select_frames_to(frame);
-        }
-        if pressed
-            && !in_ruler
-            && let Some(row) = row_at(rows, pos.y - rect.top())
-        {
-            if session.is_layer_selected(row) {
-                session.set_active_layer(row);
-            } else {
+            if let Some(row) = row_at(rows, pos.y - rect.top()) {
                 session.select_layer(row);
+            }
+        } else if response.dragged() {
+            // Dragging selects a block: frames from the playhead and layers
+            // from the active one (where the drag started) to the pointer.
+            session.select_frames_to(frame);
+            if let Some(row) = row_at(rows, pos.y - rect.top()) {
+                session.select_layer_range(row);
             }
         }
     }
@@ -713,7 +721,7 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
         && let Some(range) = selection
         && let Some(to) = selection_to
     {
-        let blocked = MoveFrames::new(range, to)
+        let blocked = MoveLayerFrames::new(session.selected_layers(), range, to)
             .blocked_by(&session.document)
             .is_some();
         let color = if blocked {
@@ -722,15 +730,15 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
             ui.visuals().selection.stroke.color
         };
         let x = rect.left() + to.0 as f32 * cell;
-        ui.painter_at(rect).rect_stroke(
-            Rect::from_x_y_ranges(
-                x..=x + range.len() as f32 * cell,
-                rect.top() + RULER_HEIGHT..=rect.bottom(),
-            ),
-            2.0,
-            Stroke::new(2.0, color),
-            StrokeKind::Inside,
-        );
+        let painter = ui.painter_at(rect);
+        for top in selected_row_tops(session, rows, rect) {
+            painter.rect_stroke(
+                Rect::from_x_y_ranges(x..=x + range.len() as f32 * cell, top..=top + ROW_HEIGHT),
+                2.0,
+                Stroke::new(2.0, color),
+                StrokeKind::Inside,
+            );
+        }
     }
 
     // An object dragged from the library: outline the cell it would land
@@ -783,6 +791,18 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
             Some(egui::Align::Center),
         );
     }
+}
+
+/// The top of each selected layer's row in the frame grid.
+fn selected_row_tops<'a>(
+    session: &'a Session,
+    rows: &'a [Row],
+    rect: Rect,
+) -> impl Iterator<Item = f32> + 'a {
+    rows.iter().enumerate().filter_map(move |(i, row)| {
+        let selected = row.layer().is_some_and(|l| session.is_layer_selected(l));
+        selected.then(|| rect.top() + RULER_HEIGHT + i as f32 * ROW_HEIGHT)
+    })
 }
 
 /// The handle at the end of the frames: drag it right to make the
@@ -1296,17 +1316,25 @@ fn paint_frames(ui: &egui::Ui, session: &Session, rows: &[Row], rect: Rect, cell
     // Selected frames.
     if let Some(sel) = session.frame_selection() {
         let span = col_x(sel.start.0)..=col_x(sel.end.0.min(count));
+        // Mark the frames in the ruler, and the block on each selected row.
         painter.rect_filled(
-            Rect::from_x_y_ranges(span.clone(), rect.top() + RULER_HEIGHT..=rect.bottom()),
+            Rect::from_x_y_ranges(
+                span.clone(),
+                rect.top() + TAG_HEIGHT..=rect.top() + RULER_HEIGHT,
+            ),
             0.0,
             accent.gamma_multiply(0.25),
         );
-        painter.rect_stroke(
-            Rect::from_x_y_ranges(span, rect.top()..=rect.bottom()),
-            0.0,
-            Stroke::new(1.5, visuals.selection.stroke.color),
-            StrokeKind::Inside,
-        );
+        for top in selected_row_tops(session, rows, rect) {
+            let block = Rect::from_x_y_ranges(span.clone(), top..=top + ROW_HEIGHT);
+            painter.rect_filled(block, 0.0, accent.gamma_multiply(0.25));
+            painter.rect_stroke(
+                block,
+                0.0,
+                Stroke::new(1.5, visuals.selection.stroke.color),
+                StrokeKind::Inside,
+            );
+        }
     }
 
     // Playhead.
