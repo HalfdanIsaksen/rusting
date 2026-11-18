@@ -111,6 +111,9 @@ pub struct PanelLayout {
     tree: Tree<Pane>,
     /// The default layout still needs sizing to the real area.
     fit_default: bool,
+    /// A restored layout still needs its panes grown to their default
+    /// size, so every panel shows its contents at launch.
+    fit_restored: bool,
     /// Area size and hidden panes when the tree was last shown.
     last: Option<(egui::Vec2, [bool; 5])>,
 }
@@ -122,6 +125,7 @@ impl Default for PanelLayout {
         Self {
             tree: default_tree(NOMINAL),
             fit_default: true,
+            fit_restored: false,
             last: None,
         }
     }
@@ -218,6 +222,7 @@ impl PanelLayout {
         Some(Self {
             tree,
             fit_default: false,
+            fit_restored: true,
             last: None,
         })
     }
@@ -240,6 +245,22 @@ impl PanelLayout {
             && let (Some(root), Some(canvas)) = (self.tree.root, self.tile(Pane::Canvas))
         {
             keep_sizes(&mut self.tree.tiles, root, rect, canvas);
+        } else if self.fit_restored
+            && self.last.is_some()
+            && let Some(canvas) = self.tile(Pane::Canvas)
+        {
+            // The area kept its size since last frame, so the panes' rects
+            // from last frame are the real ones.
+            for pane in Pane::ALL {
+                if pane != Pane::Canvas
+                    && let Some(tile) = self.tile(pane)
+                    && self.tree.is_visible_in_layout(tile)
+                {
+                    let (dir, _, size) = pane.home();
+                    grow_to(&mut self.tree.tiles, tile, dir, size, canvas);
+                }
+            }
+            self.fit_restored = false;
         }
         self.last = Some((rect.size(), hidden));
 
@@ -322,6 +343,56 @@ fn add_pane(tree: &mut Tree<Pane>, pane: Pane) {
         Linear::new_binary(dir, [root, tab], 1.0 - fraction)
     };
     tree.root = Some(tree.tiles.insert_container(linear));
+}
+
+/// Makes `tile` at least `min` points long along `dir`, taking the room from
+/// the canvas side of the nearest split in that direction, while the canvas
+/// stays at least [`MIN_CANVAS`]. Uses the tiles' rects from last frame.
+fn grow_to(tiles: &mut Tiles<Pane>, tile: TileId, dir: LinearDir, min: f32, canvas: TileId) {
+    let along = |r: egui::Rect| match dir {
+        LinearDir::Horizontal => r.width(),
+        LinearDir::Vertical => r.height(),
+    };
+    let mut child = tile;
+    while let Some(parent) = tiles.parent_of(child) {
+        let Some(Tile::Container(Container::Linear(linear))) = tiles.get(parent) else {
+            child = parent;
+            continue;
+        };
+        if linear.dir != dir {
+            child = parent;
+            continue;
+        }
+        if contains(tiles, child, canvas) {
+            return;
+        }
+        let Some(flex) = linear
+            .children
+            .iter()
+            .copied()
+            .find(|&c| tiles.is_visible_in_layout(c) && contains(tiles, c, canvas))
+        else {
+            return;
+        };
+        let (Some(size), Some(flex_size)) =
+            (tiles.rect(child).map(along), tiles.rect(flex).map(along))
+        else {
+            return;
+        };
+        let give = (min - size).min(flex_size - MIN_CANVAS);
+        if give <= 0.0 || size <= 0.0 || flex_size <= 0.0 {
+            return;
+        }
+        // Shares stand for sizes, so scaling these two keeps the others.
+        let (share, flex_share) = (linear.shares[child], linear.shares[flex]);
+        if let Some(Tile::Container(Container::Linear(linear))) = tiles.get_mut(parent) {
+            linear.shares.set_share(child, share * (size + give) / size);
+            linear
+                .shares
+                .set_share(flex, flex_share * (flex_size - give) / flex_size);
+        }
+        return;
+    }
 }
 
 /// Whether `target` is `id` or inside it.
@@ -779,6 +850,44 @@ mod tests {
             assert_eq!(count, 1, "{pane:?}");
             assert!(layout.is_visible(pane), "{pane:?}");
         }
+    }
+
+    #[test]
+    fn restored_layout_grows_small_panels_to_their_default_size() {
+        // Timeline under the canvas only, squeezed, and a narrow right column.
+        const SQUEEZED: &str = r#"{"version": 1, "root": {"kind": "row", "children": [
+            {"share": 0.23, "node": {"kind": "tabs", "children": [{"kind": "pane", "pane": "Toolbar", "visible": true}], "active": 0}},
+            {"share": 2.47, "node": {"kind": "column", "children": [
+                {"share": 1.66, "node": {"kind": "tabs", "children": [{"kind": "pane", "pane": "Canvas", "visible": true}], "active": 0}},
+                {"share": 0.34, "node": {"kind": "tabs", "children": [{"kind": "pane", "pane": "Timeline", "visible": true}], "active": 0}}]}},
+            {"share": 0.30, "node": {"kind": "column", "children": [
+                {"share": 1.0, "node": {"kind": "tabs", "children": [{"kind": "pane", "pane": "ToolSettings", "visible": true}], "active": 0}},
+                {"share": 1.0, "node": {"kind": "tabs", "children": [{"kind": "pane", "pane": "Library", "visible": true}], "active": 0}}]}}]}}"#;
+        let ctx = egui::Context::default();
+        let mut s = Session::new();
+        assert!(s.restore_panel_layout(SQUEEZED));
+        settle(&ctx, &mut s, WINDOW);
+        let canvas = frame(&ctx, &mut s, WINDOW).expect("the canvas is drawn");
+        let timeline = rect(&s, Pane::Timeline);
+        let settings = rect(&s, Pane::ToolSettings);
+        // The pane's rect leaves out its tab bar.
+        assert!(
+            timeline.height() >= TIMELINE_HEIGHT - TAB_BAR_HEIGHT - 1.0,
+            "{timeline:?}"
+        );
+        assert!(
+            settings.width() >= TOOL_SETTINGS_WIDTH - 1.0,
+            "{settings:?}"
+        );
+        assert!(
+            canvas.height() > 300.0 && canvas.width() > 500.0,
+            "{canvas:?}"
+        );
+
+        // Grown once: later frames leave the layout alone.
+        let before = s.panels.to_json();
+        frame(&ctx, &mut s, WINDOW);
+        assert_eq!(s.panels.to_json(), before);
     }
 
     #[test]
