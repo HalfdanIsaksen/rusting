@@ -96,14 +96,14 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
             ui.separator();
             if ui
                 .add(item(ui, "Duplicate Frame", &shortcuts::DUPLICATE_FRAME))
-                .on_hover_text("Insert a copy of this frame right after it, on every layer")
+                .on_hover_text("Copy this frame to the next one, on the active layer")
                 .clicked()
             {
                 session.duplicate_frame();
             }
             if ui
                 .add(item(ui, "Insert Frame", &shortcuts::INSERT_FRAME))
-                .on_hover_text("Insert a blank frame after this one, on every layer")
+                .on_hover_text("Hold this frame one frame longer on the active layer, moving its later keys right")
                 .clicked()
             {
                 session.insert_frame();

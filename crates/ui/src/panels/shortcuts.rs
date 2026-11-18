@@ -483,13 +483,13 @@ mod tests {
         let count = s.document.frame_count;
         s.set_frame(FrameIndex(2));
         press(&mut s, INSERT_FRAME);
-        assert_eq!(s.document.frame_count, count + 1);
+        assert_eq!(s.document.frame_count, count, "inserting keeps the length");
         assert_eq!(s.current_frame(), FrameIndex(3));
         press(&mut s, DELETE_FRAMES);
-        assert_eq!(s.document.frame_count, count);
+        assert_eq!(s.document.frame_count, count - 1);
         s.select_frames_to(FrameIndex(0));
         press(&mut s, KeyboardShortcut::new(Modifiers::NONE, Key::Delete));
-        assert_eq!(s.document.frame_count, count - 4);
+        assert_eq!(s.document.frame_count, count - 5);
         assert_eq!(s.frame_selection(), None);
     }
 
@@ -498,10 +498,27 @@ mod tests {
         let mut s = Session::new();
         let count = s.document.frame_count;
         s.set_frame(FrameIndex(2));
+        let layer = s.state.active_layer.unwrap();
         press(&mut s, DUPLICATE_FRAME);
-        assert_eq!(s.document.frame_count, count + 1);
+        assert_eq!(
+            s.document.frame_count, count,
+            "duplicating keeps the length"
+        );
         assert_eq!(s.current_frame(), FrameIndex(3));
+        assert!(
+            s.document
+                .track(layer)
+                .unwrap()
+                .key_at(FrameIndex(3))
+                .is_some()
+        );
         press(&mut s, UNDO);
-        assert_eq!(s.document.frame_count, count);
+        assert!(
+            s.document
+                .track(layer)
+                .unwrap()
+                .key_at(FrameIndex(3))
+                .is_none()
+        );
     }
 }

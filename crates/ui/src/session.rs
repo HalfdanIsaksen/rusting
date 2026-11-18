@@ -12,7 +12,7 @@ use crate::tools::ToolController;
 use document::animation_core::{FrameIndex, FrameRange, GroupId, LayerId};
 use document::{CanvasAnchor, CanvasSize, Document, FrameTag, NewDocumentSettings, SettingsError};
 use editor::commands::{
-    DuplicateFrame, InsertFrames, MoveFrames, RemoveFrames, ResizeCanvas, SetTags,
+    DuplicateLayerFrame, InsertLayerFrame, MoveFrames, RemoveFrames, ResizeCanvas, SetTags,
 };
 use editor::{Command, CommandError, EditorState, History};
 use std::collections::BTreeSet;
@@ -420,15 +420,20 @@ impl Session {
         self.set_frame(FrameIndex(u32::try_from(frame).unwrap_or(0)));
     }
 
-    /// Duplicates the frame under the playhead on every layer (one undo
-    /// step) and moves the playhead onto the copy.
+    /// Duplicates the frame under the playhead on the active layer only:
+    /// the next frame gets a copy, and the playhead moves onto it. The
+    /// animation keeps its length.
     pub fn duplicate_frame(&mut self) {
         if self.tools.is_active() {
             return;
         }
+        let Some(layer) = self.state.active_layer else {
+            self.set_status("Select a layer to duplicate its frame");
+            return;
+        };
         self.tools.cancel();
         self.playback.pause();
-        let command = DuplicateFrame::new(self.current_frame());
+        let command = DuplicateLayerFrame::new(layer, self.current_frame());
         let new_frame = command.new_frame();
         if self.execute(Box::new(command)).is_ok() {
             self.set_frame(new_frame);
@@ -439,17 +444,22 @@ impl Session {
         }
     }
 
-    /// Inserts a blank frame right after the playhead on every layer and
-    /// moves to it. The drawing at the playhead is held one frame longer.
+    /// Inserts a blank frame right after the playhead on the active layer
+    /// and moves to it. The drawing at the playhead is held one frame
+    /// longer; the animation keeps its length.
     pub fn insert_frame(&mut self) {
         if self.tools.is_active() {
             return;
         }
+        let Some(layer) = self.state.active_layer else {
+            self.set_status("Select a layer to insert a frame on");
+            return;
+        };
         self.tools.cancel();
         self.playback.pause();
         let new_frame = FrameIndex(self.current_frame().0 + 1);
         if self
-            .execute(Box::new(InsertFrames::new(new_frame, 1)))
+            .execute(Box::new(InsertLayerFrame::new(layer, new_frame)))
             .is_ok()
         {
             self.set_frame(new_frame);

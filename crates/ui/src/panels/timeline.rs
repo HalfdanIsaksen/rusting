@@ -209,15 +209,10 @@ fn keys_and_onion(ui: &mut egui::Ui, session: &mut Session) {
             let _ = session.execute(Box::new(AddKeyframe::new(id, frame, KeyframeKind::Empty)));
         }
         let duplicate_tip = format!(
-            "Duplicate frame ({}): insert a copy of this frame right after it, on every layer",
+            "Duplicate frame ({}): copy this frame to the next one, on the active layer",
             ui.ctx().format_shortcut(&shortcuts::DUPLICATE_FRAME)
         );
-        if icon_button(
-            ui,
-            icons::duplicate,
-            !session.playback.is_playing(),
-            &duplicate_tip,
-        ) {
+        if icon_button(ui, icons::duplicate, editable, &duplicate_tip) {
             session.duplicate_frame();
         }
         let drawn = editable
