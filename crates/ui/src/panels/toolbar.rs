@@ -1,4 +1,6 @@
-//! The tool strip: a narrow column of icon buttons, two per row, in groups.
+//! The tool strip: a narrow column of icon buttons in groups. The buttons
+//! reflow to as many per row as the panel's width fits (two by default) and
+//! stay centred when the panel is resized.
 //!
 //! The strip only picks the tool. Per-tool settings live in the tool settings
 //! panel ([`super::tool_options`]); tools with extra options show a corner
@@ -163,14 +165,18 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
     let busy = session.tools.is_active();
     ui.spacing_mut().item_spacing = egui::vec2(GAP, GAP);
     ui.add_space(MARGIN);
+    let width = ui.available_width();
+    let columns = columns_for(width);
+    let indent = ((width - grid_width(columns)) / 2.0).max(0.0);
     // Tool switching is locked while a gesture is in progress.
     ui.add_enabled_ui(!busy, |ui| {
         for (index, group) in TOOLS.chunk_by(|a, b| a.group == b.group).enumerate() {
             if index > 0 {
                 ui.add(egui::Separator::default().spacing(8.0));
             }
-            for row in group.chunks(2) {
+            for row in group.chunks(columns) {
                 ui.horizontal(|ui| {
+                    ui.add_space(indent);
                     for entry in row {
                         tool_button(ui, session, entry);
                     }
@@ -178,6 +184,16 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
             }
         }
     });
+}
+
+/// How many buttons fit side by side in `width` points; at least one.
+fn columns_for(width: f32) -> usize {
+    (((width + GAP) / (BUTTON + GAP)).floor() as usize).max(1)
+}
+
+/// Width of a row of `columns` buttons.
+fn grid_width(columns: usize) -> f32 {
+    columns as f32 * (BUTTON + GAP) - GAP
 }
 
 /// One square icon button, with its tooltip and options popup.
@@ -257,6 +273,21 @@ fn tool_button(ui: &mut egui::Ui, session: &mut Session, entry: &ToolEntry) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn buttons_reflow_to_the_panel_width() {
+        // The default strip, minus the pane's side margins, fits two per row.
+        assert_eq!(columns_for(WIDTH - 2.0 * MARGIN), 2);
+        // Narrower: one column. Never zero, even when nothing fits.
+        assert_eq!(columns_for(BUTTON + 5.0), 1);
+        assert_eq!(columns_for(0.0), 1);
+        // Wider: more columns, and the row fits the width it was given.
+        for width in [80.0, 100.0, 140.0, 300.0] {
+            let n = columns_for(width);
+            assert!(grid_width(n) <= width, "{width}: {n}");
+            assert!(grid_width(n + 1) > width, "{width}: {n}");
+        }
+    }
 
     #[test]
     fn tool_list_is_well_formed() {
