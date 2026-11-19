@@ -10,6 +10,7 @@ mod export;
 mod icon;
 mod import;
 mod layout_file;
+mod open_files;
 mod shell;
 
 use document::animation_core::Rgba;
@@ -183,6 +184,21 @@ impl App {
             preview: None,
         });
         Ok(())
+    }
+
+    /// Opens the project files the system asked to open (see [`open_files`]),
+    /// asking first if that would lose unsaved changes. Only the last one
+    /// opens: the app shows one project at a time.
+    fn open_requested_files(&mut self) {
+        let Some(path) = open_files::take().pop() else {
+            return;
+        };
+        self.shell
+            .session
+            .request(ui::DiscardAction::OpenFile(path));
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
     }
 
     fn redraw(&mut self, event_loop: &ActiveEventLoop) {
@@ -784,7 +800,13 @@ impl ApplicationHandler for App {
             tracing::error!(%err, "startup failed");
             self.fatal = Some(err);
             event_loop.exit();
+            return;
         }
+        self.open_requested_files();
+    }
+
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, (): ()) {
+        self.open_requested_files();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -847,6 +869,8 @@ fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
+    // Finder's double-click and the Dock hand files over separately.
+    open_files::install(event_loop.create_proxy());
     // `rusting path/to/file.rusting` opens that project.
     let open = std::env::args_os().nth(1).map(PathBuf::from);
     let mut app = App::new(open.as_deref());

@@ -62,12 +62,15 @@ pub enum ExportKind {
 }
 
 /// An action that throws away the current document.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DiscardAction {
     /// Start a new document.
     New,
     /// Open another document.
     Open,
+    /// Open this project file (one the operating system handed the app, for
+    /// example from a double-click in Finder).
+    OpenFile(PathBuf),
     /// Quit the application.
     Quit,
 }
@@ -802,6 +805,9 @@ impl Session {
                 self.show_start_menu(StartMenu::new(settings, true));
             }
             DiscardAction::Open => self.requests.push(Request::OpenDialog),
+            DiscardAction::OpenFile(path) => {
+                self.open_path(&path);
+            }
             DiscardAction::Quit => self.requests.push(Request::Quit),
         }
     }
@@ -1337,6 +1343,35 @@ mod tests {
         assert!(!s.open_path(&path));
         assert!(matches!(s.dialog(), Some(Dialog::Error { .. })));
         assert_eq!(s.document, before);
+    }
+
+    #[test]
+    fn opening_a_file_from_the_system_asks_before_discarding() {
+        let path = temp_path("from-finder.rusting");
+        let mut saved = Session::new();
+        saved.execute(Box::new(AddLayer::new("Saved"))).unwrap();
+        assert!(saved.save_to(&path));
+
+        // Nothing to lose: it opens right away, over the start menu too.
+        let mut s = Session::new();
+        s.show_start_menu(StartMenu::new(Default::default(), false));
+        s.request(DiscardAction::OpenFile(path.clone()));
+        assert!(s.start_menu().is_none());
+        assert_eq!(s.path.as_deref(), Some(path.as_path()));
+
+        // Unsaved changes: it asks, and opens once they are discarded.
+        let mut s = Session::new();
+        s.execute(Box::new(AddLayer::new("X"))).unwrap();
+        s.request(DiscardAction::OpenFile(path.clone()));
+        assert_eq!(
+            s.dialog(),
+            Some(&Dialog::ConfirmDiscard(DiscardAction::OpenFile(
+                path.clone()
+            )))
+        );
+        assert_eq!(s.path, None);
+        s.perform(DiscardAction::OpenFile(path.clone()));
+        assert_eq!(s.path.as_deref(), Some(path.as_path()));
     }
 
     #[test]
