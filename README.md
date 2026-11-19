@@ -144,6 +144,7 @@ The tool strip runs down the side of the canvas:
 
 ### Files and export
 - Save and open versioned `.rusting` project files.
+- macOS app: `.rusting` files show the Rusting icon in Finder, and double-clicking one (or dropping it on the Dock icon) opens it, asking first if the open project has unsaved changes.
 - Undo/redo for every edit (up to 500 steps).
 - Export the current frame as PNG/JPG, an image sequence, or an H.264 video as MP4 or MOV (QuickTime).
 - **Export GIF**: the frame range as a looping animated GIF at the document frame rate, for animations up to 15 seconds. A longer range is refused with a message to export it as a video or image sequence instead.

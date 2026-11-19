@@ -26,7 +26,7 @@ pub fn show(ctx: &egui::Context, session: &mut Session) {
                 ui.add_space(6.0);
                 let what = match action {
                     DiscardAction::New => "Starting a new document",
-                    DiscardAction::Open => "Opening another document",
+                    DiscardAction::Open | DiscardAction::OpenFile(_) => "Opening another document",
                     DiscardAction::Quit => "Quitting",
                 };
                 ui.label(format!(
@@ -36,7 +36,7 @@ pub fn show(ctx: &egui::Context, session: &mut Session) {
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     if ui.button("Discard changes").clicked() {
-                        discard = Some(*action);
+                        discard = Some(action.clone());
                     }
                     if ui.button("Cancel").clicked() {
                         close = true;
