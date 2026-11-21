@@ -44,6 +44,10 @@ pub enum Request {
     /// Show a save-file dialog and write library brush `AssetId` there as a
     /// `.rustbrush` file (ADR-022).
     ExportBrushDialog(document::animation_core::AssetId),
+    /// Render [`Session::take_brush_capture`]'s artwork, turn it into a
+    /// brush picture and hand it to [`Session::finish_brush_capture`]
+    /// (ADR-024).
+    CaptureBrushPicture,
 }
 
 /// What File → Export writes.
@@ -242,6 +246,8 @@ pub struct Session {
     /// Cleared when another document is opened, since items can refer to
     /// its library.
     pub(crate) clipboard: Option<editor::commands::CopiedItems>,
+    /// Artwork waiting for the host to render into a brush picture.
+    pub(crate) brush_capture: Option<crate::brush_editor::BrushCapture>,
     /// Layers selected in the timeline besides the active one.
     layer_selection: BTreeSet<LayerId>,
     /// Frames selected in the timeline, if any.
@@ -285,6 +291,7 @@ impl Session {
             space_panned: false,
             resize_canvas: None,
             clipboard: None,
+            brush_capture: None,
             layer_selection: BTreeSet::new(),
             frame_selection: None,
             status: None,

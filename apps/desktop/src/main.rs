@@ -5,8 +5,6 @@
 //! shows in the canvas pane (ADR-002, ADR-021). Frames are drawn only on demand.
 
 mod audio;
-// Wired up by the Brush Editor in the following commits.
-#[allow(dead_code)]
 mod brush_pictures;
 mod brushes;
 mod export;
@@ -368,6 +366,13 @@ impl App {
             && let Err(err) = shell.export.start(settings, &path, &shell.session)
         {
             shell.session.show_error("Export failed", err);
+        }
+        // Brush pictures from artwork (ADR-024).
+        if let Some(capture) = shell.session.take_brush_capture() {
+            let offscreen = offscreen.get_or_insert_with(|| OffscreenRenderer::new(gpu.device()));
+            let picture = brush_pictures::render(gpu.device(), gpu.queue(), offscreen, &capture);
+            shell.session.finish_brush_capture(capture.target, picture);
+            window.request_redraw();
         }
         if shell.export.is_running() {
             let offscreen = offscreen.get_or_insert_with(|| OffscreenRenderer::new(gpu.device()));
@@ -740,7 +745,8 @@ fn handle_request(shell: &mut Shell, request: ui::Request, event_loop: &ActiveEv
                 }
             }
         }
-        ui::Request::Export(_) => {}
+        // Export and brush captures need the GPU; the main loop runs them.
+        ui::Request::Export(_) | ui::Request::CaptureBrushPicture => {}
     }
 }
 

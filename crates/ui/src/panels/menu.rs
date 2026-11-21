@@ -62,6 +62,26 @@ pub fn canvas_menu(ui: &mut egui::Ui, session: &mut Session) {
     {
         session.delete_selection();
     }
+    ui.separator();
+    create_brush_item(ui, session);
+}
+
+/// Create Brush from Selection, for the Edit menu and the canvas's
+/// right-click menu (ADR-024).
+fn create_brush_item(ui: &mut egui::Ui, session: &mut Session) {
+    if ui
+        .add_enabled(
+            session.can_create_brush(),
+            Button::new("Create Brush from Selection"),
+        )
+        .on_hover_text(
+            "Make the selected strokes, fills and pictures the tip of a new brush in the \
+             Library (dark marks paint)",
+        )
+        .clicked()
+    {
+        session.create_brush_from_selection();
+    }
 }
 
 /// Draws the menu bar.
@@ -176,6 +196,7 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
                     session.convert_layers_to_object();
                 }
             }
+            create_brush_item(ui, session);
         });
 
         ui.menu_button("Canvas", |ui| {

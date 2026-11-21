@@ -12,15 +12,50 @@
 
 use document::drawing::ImageData;
 use image::{GrayImage, Luma};
+use renderer::OffscreenRenderer;
 use std::io::Cursor;
+use ui::BrushCapture;
+
+/// The longest side artwork is rendered at for a brush picture, in pixels.
+const CAPTURE_SIDE: f32 = 2048.0;
+
+/// Renders a capture's artwork and turns it into the brush picture its
+/// target asks for.
+pub fn render(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    offscreen: &mut OffscreenRenderer,
+    capture: &BrushCapture,
+) -> Result<ImageData, String> {
+    let canvas = capture.document.canvas;
+    let longest = canvas.width.max(canvas.height).max(1) as f32;
+    let scale = (CAPTURE_SIDE / longest).clamp(0.25, 4.0);
+    let image = crate::export::render_frame(
+        device,
+        queue,
+        offscreen,
+        &capture.document,
+        capture.frame,
+        scale,
+        None,
+    )
+    .map_err(|e| e.to_string())?;
+    if capture.target.is_grain() {
+        grain_from_rgba(image.width, image.height, &image.pixels)
+    } else {
+        tip_from_rgba(image.width, image.height, &image.pixels)
+    }
+}
 
 /// The largest side of a tip made from artwork, in pixels.
 pub const TIP_SIDE: u32 = 256;
 
 /// The side of a generated tip, in pixels.
+#[allow(dead_code)] // TODO(brush-editor): used by the Brush Editor window.
 const GENERATED_TIP: u32 = 128;
 
 /// The side of a generated grain, in pixels.
+#[allow(dead_code)] // TODO(brush-editor): used by the Brush Editor window.
 const GENERATED_GRAIN: u32 = 256;
 
 /// The largest side of a grain made from artwork (the `.rustbrush` limit).
@@ -177,6 +212,7 @@ pub fn grain_from_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<ImageData
 }
 
 /// Decodes a PNG/JPEG brush picture to straight-alpha RGBA.
+#[allow(dead_code)] // TODO(brush-editor): used by the Brush Editor window.
 pub fn decode(data: &ImageData) -> Result<(u32, u32, Vec<u8>), String> {
     let img = image::load_from_memory(&data.bytes)
         .map_err(|e| e.to_string())?
@@ -187,6 +223,7 @@ pub fn decode(data: &ImageData) -> Result<(u32, u32, Vec<u8>), String> {
 /// A generated tip: an ellipse `aspect` times as tall as it is wide
 /// (`0.05..=1.0`; 1 is round), solid inside `hardness` (`0.0..=1.0`) of its
 /// radius and soft beyond.
+#[allow(dead_code)] // TODO(brush-editor): used by the Brush Editor window.
 pub fn ellipse_tip(hardness: f32, aspect: f32) -> ImageData {
     let hard = hardness.clamp(0.0, 0.98) * FADE_START;
     let aspect = aspect.clamp(0.05, 1.0);
@@ -203,6 +240,7 @@ pub fn ellipse_tip(hardness: f32, aspect: f32) -> ImageData {
 }
 
 /// A hash of a lattice point to `0.0..1.0`.
+#[allow(dead_code)] // TODO(brush-editor): used by the Brush Editor window.
 fn hash(x: i64, y: i64, seed: u64) -> f32 {
     let mut z = (x as u64)
         .wrapping_mul(0x9E37_79B9_7F4A_7C15)
@@ -216,6 +254,7 @@ fn hash(x: i64, y: i64, seed: u64) -> f32 {
 
 /// Value noise with `cells` lattice cells across `size` pixels, wrapping at
 /// the edges so it tiles.
+#[allow(dead_code)] // TODO(brush-editor): used by the Brush Editor window.
 fn value_noise(x: f32, y: f32, size: u32, cells: u32, seed: u64) -> f32 {
     let scale = cells as f32 / size as f32;
     let (fx, fy) = (x * scale, y * scale);
@@ -230,6 +269,7 @@ fn value_noise(x: f32, y: f32, size: u32, cells: u32, seed: u64) -> f32 {
 
 /// A generated, tiling paper grain. `coarseness` (`0.0..=1.0`) sets the size
 /// of the paper's tooth, from fine to coarse; `seed` picks the pattern.
+#[allow(dead_code)] // TODO(brush-editor): used by the Brush Editor window.
 pub fn noise_grain(coarseness: f32, seed: u64) -> ImageData {
     let size = GENERATED_GRAIN;
     // 128 cells across (fine) down to 8 (coarse), a power of two so it tiles.
@@ -329,6 +369,32 @@ mod tests {
         let grain = gray(&grain_from_rgba(50, 40, &rgba).unwrap());
         assert_eq!(grain.dimensions(), (20, 20));
         assert_eq!(grain.get_pixel(5, 5).0[0], 0, "dark marks are pits");
+    }
+
+    #[test]
+    fn a_selected_stroke_renders_into_a_tip() {
+        let Ok(gpu) = pollster::block_on(renderer::headless_device()) else {
+            eprintln!("skipped: no GPU adapter");
+            return;
+        };
+        let mut session = ui::Session::new();
+        session.state.tool = editor::Tool::Brush;
+        session.state.brush.width = 30.0;
+        session.pointer_down(document::animation_core::Vec2::new(100.0, 100.0), 1.0);
+        session.pointer_move(document::animation_core::Vec2::new(300.0, 200.0));
+        session.pointer_up();
+        session.state.tool = editor::Tool::Select;
+        session.select_all();
+        session.create_brush_from_selection();
+        let capture = session.take_brush_capture().expect("a capture");
+        let mut offscreen = OffscreenRenderer::new(&gpu.0);
+        let data = render(&gpu.0, &gpu.1, &mut offscreen, &capture).expect("a tip");
+        let tip = gray(&data);
+        assert_faded(&tip);
+        let c = tip.width() / 2;
+        assert!(tip.get_pixel(c, c).0[0] > 200, "the stroke's middle paints");
+        session.finish_brush_capture(capture.target, Ok(data));
+        assert!(session.brush().is_some());
     }
 
     #[test]
