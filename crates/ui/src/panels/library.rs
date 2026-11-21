@@ -148,6 +148,8 @@ struct Renaming {
 enum Action {
     Place(Entry),
     ExportBrush(AssetId),
+    EditBrush(AssetId),
+    DuplicateBrush(AssetId),
     Delete(Entry),
     Rename(Entry, String),
 }
@@ -213,6 +215,10 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
 
     match action {
         Some(Action::ExportBrush(id)) => session.export_brush(id),
+        Some(Action::EditBrush(id)) => {
+            session.open_brush_editor(id);
+        }
+        Some(Action::DuplicateBrush(id)) => session.duplicate_brush(id),
         Some(Action::Place(Entry::Asset(id))) => {
             if session
                 .document
@@ -351,6 +357,26 @@ fn row(ui: &mut egui::Ui, section: &Section, r: &Row, renaming: &mut Renaming) -
         if ui.button(place).on_hover_text(place_hint).clicked() {
             action = Some(Action::Place(r.entry));
             ui.close();
+        }
+        if let Entry::Asset(id) = r.entry
+            && r.is_brush
+        {
+            if ui
+                .button("Edit Brush…")
+                .on_hover_text("Change its tip, paper grain and settings in the Brush Editor")
+                .clicked()
+            {
+                action = Some(Action::EditBrush(id));
+                ui.close();
+            }
+            if ui
+                .button("Duplicate")
+                .on_hover_text("Add a copy to the library, to change without touching this one")
+                .clicked()
+            {
+                action = Some(Action::DuplicateBrush(id));
+                ui.close();
+            }
         }
         if let Entry::Asset(id) = r.entry
             && r.is_brush

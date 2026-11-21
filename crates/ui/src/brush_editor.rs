@@ -285,6 +285,20 @@ impl Session {
         true
     }
 
+    /// Adds a copy of library or built-in brush `id`, named "<name> copy",
+    /// picks it for the Brush tool and opens it in the Brush Editor.
+    pub fn duplicate_brush(&mut self, id: AssetId) {
+        let Some((name, data)) = self.brush_source(id) else {
+            return;
+        };
+        let name = format!("{name} copy");
+        if let Some(copy) = self.add_brush(&name, data) {
+            self.use_brush(copy);
+            self.open_brush_editor(copy);
+            self.set_status(format!("Added {name} to the Library"));
+        }
+    }
+
     /// Closes the Brush Editor, dropping unapplied changes.
     pub fn close_brush_editor(&mut self) {
         self.brush_editor = None;
@@ -578,6 +592,20 @@ mod tests {
         assert_eq!(copy.name, "Chalk copy");
         assert_eq!(copy.brush().unwrap().settings.flow, 0.4);
         assert_eq!(s.brush(), Some(copy.id));
+    }
+
+    #[test]
+    fn duplicating_adds_a_copy_and_edits_it() {
+        let mut s = Session::new();
+        let id = s.import_brush("Mine", preset().data).unwrap();
+        s.duplicate_brush(id);
+        let copy = s.brush().unwrap();
+        assert_ne!(copy, id);
+        assert_eq!(s.document.asset(copy).unwrap().name, "Mine copy");
+        assert_eq!(s.brush_editor.as_ref().unwrap().asset, copy);
+        s.undo();
+        assert!(s.document.asset(copy).is_none());
+        assert!(s.document.asset(id).is_some());
     }
 
     #[test]
