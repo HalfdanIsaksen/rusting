@@ -10,7 +10,10 @@ use egui::{Slider, vec2};
 const THUMB: f32 = 56.0;
 
 /// Size of the scratchpad, in points.
-pub const SCRATCHPAD: egui::Vec2 = vec2(300.0, 110.0);
+const SCRATCHPAD: egui::Vec2 = vec2(
+    crate::brush_editor::SCRATCHPAD_SIZE[0],
+    crate::brush_editor::SCRATCHPAD_SIZE[1],
+);
 
 /// What the user asked for in the window, done once it is drawn.
 enum Action {

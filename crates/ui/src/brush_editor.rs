@@ -18,6 +18,10 @@ use document::{Asset, AssetKind, Document};
 use editor::Command;
 use editor::commands::{AddAsset, Batch, CopiedItems, RenameAsset, SetBrush, paste_items};
 
+/// Size of the Brush Editor's scratchpad, in points. The host renders it
+/// as a document of this many units.
+pub const SCRATCHPAD_SIZE: [f32; 2] = [300.0, 110.0];
+
 /// What a new picture becomes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BrushPictureTarget {

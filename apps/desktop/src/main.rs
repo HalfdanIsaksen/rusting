@@ -6,6 +6,7 @@
 
 mod audio;
 mod brush_pictures;
+mod brush_view;
 mod brushes;
 mod export;
 mod icon;
@@ -45,6 +46,8 @@ struct Graphics {
     offscreen: Option<OffscreenRenderer>,
     /// Renders the View → Preview image; created when it first opens.
     preview: Option<PreviewGraphics>,
+    /// The Brush Editor's tip, grain and scratchpad pictures.
+    brush_view: brush_view::BrushEditorView,
 }
 
 /// The preview window's own small canvas. It has its own mesh cache and
@@ -183,6 +186,7 @@ impl App {
             last_canvas: None,
             offscreen: None,
             preview: None,
+            brush_view: brush_view::BrushEditorView::default(),
         });
         Ok(())
     }
@@ -238,6 +242,7 @@ impl App {
             last_canvas,
             offscreen,
             preview,
+            brush_view,
         } = graphics;
 
         // 2. Size the canvas texture to the panel and gather what to draw.
@@ -374,6 +379,15 @@ impl App {
             {
                 shell.session.finish_brush_capture(capture.target, picture);
             }
+            window.request_redraw();
+        }
+        if brush_view.update(
+            &self.egui_ctx,
+            &mut shell.session,
+            gpu.device(),
+            gpu.queue(),
+            offscreen,
+        ) {
             window.request_redraw();
         }
         if shell.export.is_running() {
