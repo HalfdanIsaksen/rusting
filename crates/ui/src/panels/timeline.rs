@@ -627,6 +627,20 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
                 {
                     start_tag_rename(ui, session, index);
                 }
+                let cell = ui
+                    .data(|d| d.get_temp::<Option<(LayerId, FrameIndex)>>(menu_cell_id))
+                    .flatten();
+                if let Some((layer, frame)) = cell
+                    && ui
+                        .add_enabled(session.can_paste(), egui::Button::new("Paste"))
+                        .on_hover_text(
+                            "Paste the copied canvas items on this frame and layer, where \
+                             they were",
+                        )
+                        .clicked()
+                {
+                    session.paste_at(layer, frame);
+                }
                 ui.separator();
                 if ui
                     .button("Convert to Object")
@@ -638,9 +652,6 @@ fn frames(ui: &mut egui::Ui, session: &mut Session, rows: &[Row], height: f32) {
                 {
                     session.convert_layers_to_object();
                 }
-                let cell = ui
-                    .data(|d| d.get_temp::<Option<(LayerId, FrameIndex)>>(menu_cell_id))
-                    .flatten();
                 tween_menu(ui, session, cell);
             }
         }

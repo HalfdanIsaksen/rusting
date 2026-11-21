@@ -1,13 +1,13 @@
 //! Selection commands: moving, transforming and deleting selected strokes,
 //! fills and images.
 
-use super::{Batch, RemoveStroke, editable_layer, vector_mut};
-use crate::commands::{RemoveFill, RemoveImage};
+use super::{AddStroke, Batch, RemoveStroke, editable_layer, vector_mut};
+use crate::commands::{AddFill, AddImage, RemoveFill, RemoveImage};
 use crate::{Command, CommandError};
-use animation_core::{DrawingId, FrameIndex, LayerId, Vec2};
+use animation_core::{DrawingId, FillId, FrameIndex, ImageId, LayerId, StrokeId, Vec2};
 use document::Document;
 use document::drawing::select::Affine2;
-use document::drawing::{Fill, Image, ItemId, Stroke};
+use document::drawing::{Fill, Image, ItemId, Stroke, VectorDrawing};
 
 /// Moves strokes and fills of the drawing a layer shows at a frame by one
 /// offset, keeping their IDs and stacking order.
@@ -246,6 +246,91 @@ pub fn remove_items(layer: LayerId, frame: FrameIndex, items: &[ItemId]) -> Batc
     Batch::new("Delete", commands)
 }
 
+/// Copies of strokes, fills and pictures taken from a drawing, for
+/// pasting them elsewhere (Edit → Copy / Paste).
+///
+/// Each list keeps the source drawing's stacking order, so pasted items
+/// stack the same way among themselves.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CopiedItems {
+    /// Copied strokes, bottom to top.
+    pub strokes: Vec<Stroke>,
+    /// Copied fills, bottom to top.
+    pub fills: Vec<Fill>,
+    /// Copied pictures, bottom to top.
+    pub images: Vec<Image>,
+}
+
+impl CopiedItems {
+    /// Copies `items` out of `drawing`, in its stacking order. Items the
+    /// drawing doesn't have are skipped.
+    pub fn from_drawing(drawing: &VectorDrawing, items: &[ItemId]) -> Self {
+        Self {
+            strokes: drawing
+                .strokes()
+                .iter()
+                .filter(|s| items.contains(&ItemId::Stroke(s.id)))
+                .cloned()
+                .collect(),
+            fills: drawing
+                .fills()
+                .iter()
+                .filter(|f| items.contains(&ItemId::Fill(f.id)))
+                .cloned()
+                .collect(),
+            images: drawing
+                .images()
+                .iter()
+                .filter(|i| items.contains(&ItemId::Image(i.id)))
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// Whether nothing was copied.
+    pub fn is_empty(&self) -> bool {
+        self.strokes.is_empty() && self.fills.is_empty() && self.images.is_empty()
+    }
+
+    /// Number of copied items.
+    pub fn len(&self) -> usize {
+        self.strokes.len() + self.fills.len() + self.images.len()
+    }
+}
+
+/// One undo step, labelled "Paste", that adds fresh copies of `copied` to
+/// the drawing a layer shows at a frame, at the same coordinates and with
+/// the same draw order (Back/Normal/Front). Like drawing, a frame that shows
+/// nothing gets a new drawing key. Returns the command and the IDs of the
+/// new items, to select them.
+pub fn paste_items(
+    layer: LayerId,
+    frame: FrameIndex,
+    copied: &CopiedItems,
+) -> (Batch, Vec<ItemId>) {
+    let mut commands: Vec<Box<dyn Command>> = Vec::with_capacity(copied.len());
+    let mut ids = Vec::with_capacity(copied.len());
+    for image in &copied.images {
+        let mut image = image.clone();
+        image.id = ImageId::new();
+        ids.push(ItemId::Image(image.id));
+        commands.push(Box::new(AddImage::new(layer, frame, image)));
+    }
+    for fill in &copied.fills {
+        let mut fill = fill.clone();
+        fill.id = FillId::new();
+        ids.push(ItemId::Fill(fill.id));
+        commands.push(Box::new(AddFill::new(layer, frame, fill)));
+    }
+    for stroke in &copied.strokes {
+        let mut stroke = stroke.clone();
+        stroke.id = StrokeId::new();
+        ids.push(ItemId::Stroke(stroke.id));
+        commands.push(Box::new(AddStroke::new(layer, frame, stroke)));
+    }
+    (Batch::new("Paste", commands), ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -473,6 +558,37 @@ mod tests {
         assert_eq!(drawing(&doc, layer).all_items(), vec![b]);
         assert_eq!(h.undo_len(), undo_len + 1);
         assert_eq!(h.undo_label(), Some("Delete"));
+        h.undo(&mut doc).unwrap();
+        assert_eq!(doc, before);
+    }
+
+    #[test]
+    fn paste_adds_fresh_copies_in_place_on_another_layer_and_undo_removes_them() {
+        let (mut doc, mut h, layer, a, _b, fill) = setup();
+        let copied = CopiedItems::from_drawing(drawing(&doc, layer), &[fill, a]);
+        assert_eq!(copied.len(), 2);
+        let other = doc.add_layer("Other");
+        let before = doc.clone();
+        let (command, ids) = paste_items(other, FrameIndex(3), &copied);
+        h.execute(&mut doc, Box::new(command)).unwrap();
+        assert_eq!(h.undo_label(), Some("Paste"));
+        let id = doc.drawing_at(other, FrameIndex(3)).unwrap();
+        let pasted = doc.drawing(id).unwrap().as_vector().unwrap();
+        assert_eq!(pasted.all_items().len(), 2);
+        assert!(!ids.contains(&a) && !ids.contains(&fill));
+        // Same geometry, new IDs.
+        let src = drawing(&doc, layer);
+        assert_eq!(
+            pasted.strokes()[0].points,
+            src.stroke(match a {
+                ItemId::Stroke(s) => s,
+                _ => unreachable!(),
+            })
+            .unwrap()
+            .points
+        );
+        assert_eq!(pasted.fills()[0].shape(), src.fills()[0].shape());
+        assert!(ids.iter().all(|i| pasted.contains_item(*i)));
         h.undo(&mut doc).unwrap();
         assert_eq!(doc, before);
     }
