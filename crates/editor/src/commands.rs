@@ -13,7 +13,7 @@ mod merge;
 mod opacity;
 mod select;
 mod symbols;
-pub use assets::{AddAsset, RemoveAsset, RenameAsset};
+pub use assets::{AddAsset, RemoveAsset, RenameAsset, SetBrush};
 pub use audio::{AddAudioLayer, SetAudioClip};
 pub use canvas::ResizeCanvas;
 pub use fill::{AddFill, RemoveFill, ReplaceFill};

@@ -1,8 +1,10 @@
-//! Library commands: adding, removing and renaming assets (ADR-017).
+//! Library commands: adding, removing, renaming assets (ADR-017) and
+//! editing brushes (ADR-024).
 
 use crate::{Command, CommandError};
 use animation_core::AssetId;
-use document::{Asset, Document};
+use document::drawing::BrushData;
+use document::{Asset, AssetKind, Document};
 
 /// Adds an asset to the library. Undo removes it again.
 #[derive(Debug)]
@@ -118,6 +120,54 @@ impl Command for RenameAsset {
     }
 }
 
+/// Replaces a library brush's tip, grain and settings (the Brush Editor's
+/// Apply). Every stroke drawn with the brush takes the new look. Settings are
+/// forced into range. Refused with [`CommandError::NotABrush`] for another
+/// kind of asset.
+#[derive(Debug)]
+pub struct SetBrush {
+    id: AssetId,
+    data: BrushData,
+    old: Option<BrushData>,
+}
+
+impl SetBrush {
+    /// Creates the command.
+    pub fn new(id: AssetId, mut data: BrushData) -> Self {
+        data.settings = data.settings.clamped();
+        Self {
+            id,
+            data,
+            old: None,
+        }
+    }
+}
+
+impl Command for SetBrush {
+    fn label(&self) -> &str {
+        "Edit Brush"
+    }
+
+    fn apply(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        let asset = doc.asset_mut(self.id).ok_or(CommandError::AssetNotFound)?;
+        let AssetKind::Brush(brush) = &mut asset.kind else {
+            return Err(CommandError::NotABrush);
+        };
+        self.old = Some(std::mem::replace(brush, self.data.clone()));
+        Ok(())
+    }
+
+    fn undo(&mut self, doc: &mut Document) -> Result<(), CommandError> {
+        let old = self.old.take().ok_or(CommandError::AssetNotFound)?;
+        let asset = doc.asset_mut(self.id).ok_or(CommandError::AssetNotFound)?;
+        let AssetKind::Brush(brush) = &mut asset.kind else {
+            return Err(CommandError::NotABrush);
+        };
+        *brush = old;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,6 +245,61 @@ mod tests {
             .unwrap();
         assert_eq!(d.asset(id).unwrap().name, "Sky");
         h.undo(&mut d).unwrap();
+        assert_eq!(d, original);
+    }
+
+    fn brush() -> Asset {
+        Asset::new(
+            "Chalk",
+            AssetKind::Brush(BrushData {
+                tip: ImageData::new(2, 2, vec![1, 2, 3]),
+                grain: None,
+                settings: Default::default(),
+            }),
+        )
+    }
+
+    #[test]
+    fn set_brush_undoes_to_the_original() {
+        let (mut d, _) = doc();
+        let a = brush();
+        let id = a.id;
+        d.insert_asset(a);
+        let original = d.clone();
+        let mut h = History::new();
+        let mut data = d.asset(id).unwrap().brush().unwrap().clone();
+        data.settings.spacing = 0.5;
+        data.settings.scatter = 7.0; // out of range: clamped
+        data.grain = Some(ImageData::new(1, 1, vec![9]));
+        h.execute(&mut d, Box::new(SetBrush::new(id, data)))
+            .unwrap();
+        let set = d.asset(id).unwrap().brush().unwrap();
+        assert_eq!(set.settings.spacing, 0.5);
+        assert_eq!(set.settings.scatter, 1.0);
+        assert!(set.grain.is_some());
+        h.undo(&mut d).unwrap();
+        assert_eq!(d, original);
+        h.redo(&mut d).unwrap();
+        assert_eq!(d.asset(id).unwrap().brush().unwrap().settings.spacing, 0.5);
+    }
+
+    #[test]
+    fn set_brush_refuses_other_assets() {
+        let (mut d, _) = doc();
+        let a = asset();
+        let id = a.id;
+        d.insert_asset(a);
+        let original = d.clone();
+        let mut h = History::new();
+        let data = brush().brush().unwrap().clone();
+        let err = h
+            .execute(&mut d, Box::new(SetBrush::new(id, data.clone())))
+            .unwrap_err();
+        assert_eq!(err, CommandError::NotABrush);
+        let err = h
+            .execute(&mut d, Box::new(SetBrush::new(AssetId::new(), data)))
+            .unwrap_err();
+        assert_eq!(err, CommandError::AssetNotFound);
         assert_eq!(d, original);
     }
 
