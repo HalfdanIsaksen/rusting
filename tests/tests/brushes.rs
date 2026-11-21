@@ -1,11 +1,12 @@
 //! Brushed strokes (ADR-022) through editor commands: a brush joins the
 //! library with its first stroke in one undo step, the project file keeps
-//! it, and it can't be deleted while a stroke uses it.
+//! it, and it can't be deleted while a stroke uses it. Editing a brush
+//! (ADR-024) restyles its strokes in one undo step and is saved.
 
 use document::animation_core::{AssetId, FrameIndex, Vec2};
 use document::drawing::{BrushData, BrushSettings, BrushStyle, ImageData, Stroke, StrokePoint};
 use document::{Asset, AssetKind, CanvasSize, Document};
-use editor::commands::{AddAsset, AddLayer, AddStroke, Batch, RemoveAsset};
+use editor::commands::{AddAsset, AddLayer, AddStroke, Batch, RemoveAsset, RenameAsset, SetBrush};
 use editor::{Command, CommandError, History};
 
 fn brush() -> Asset {
@@ -80,4 +81,59 @@ fn a_brush_joins_the_library_with_its_first_stroke_and_survives_saving() {
     // Undo takes stroke and brush out together.
     history.undo(&mut doc).unwrap();
     assert!(doc.asset(pencil.id).is_none());
+}
+
+#[test]
+fn an_edited_brush_restyles_its_strokes_and_survives_saving() {
+    let mut doc = Document::new(
+        "Edited brush",
+        CanvasSize {
+            width: 320,
+            height: 240,
+        },
+    );
+    let mut history = History::new();
+    let add = AddLayer::new("Ink");
+    let layer = add.layer_id();
+    history.execute(&mut doc, Box::new(add)).unwrap();
+    let ink = brush();
+    let commands: Vec<Box<dyn Command>> = vec![
+        Box::new(AddAsset::new(ink.clone())),
+        Box::new(AddStroke::new(layer, FrameIndex(0), stroke(ink.id, 10.0))),
+    ];
+    history
+        .execute(&mut doc, Box::new(Batch::new("Add Stroke", commands)))
+        .unwrap();
+    let before = doc.clone();
+
+    // The Brush Editor's Apply: new tip, grain and settings, and a new name,
+    // as one undo step.
+    let mut edited = ink.brush().unwrap().clone();
+    edited.tip = ImageData::new(2, 2, vec![0x89, b'P', b'N', b'G', 1]);
+    edited.grain = Some(ImageData::new(2, 2, vec![0x89, b'P', b'N', b'G', 2]));
+    edited.settings.scatter = 0.4;
+    edited.settings.follow_direction = true;
+    let commands: Vec<Box<dyn Command>> = vec![
+        Box::new(SetBrush::new(ink.id, edited.clone())),
+        Box::new(RenameAsset::new(ink.id, "Scratchy ink")),
+    ];
+    history
+        .execute(&mut doc, Box::new(Batch::new("Edit Brush", commands)))
+        .unwrap();
+    let asset = doc.asset(ink.id).unwrap();
+    assert_eq!(asset.name, "Scratchy ink");
+    assert_eq!(asset.brush(), Some(&edited));
+    // The stroke still points at the brush, so it draws with the new look.
+    assert!(doc.asset_in_use(ink.id));
+
+    let dir = std::env::temp_dir().join(format!("rusting-edited-brush-{}", doc.id));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("edited.rusting");
+    file_format::save(&doc, &path).unwrap();
+    let loaded = file_format::load(&path).unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+    assert_eq!(loaded, doc);
+
+    history.undo(&mut doc).unwrap();
+    assert_eq!(doc, before);
 }
