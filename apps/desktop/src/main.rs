@@ -4,6 +4,10 @@
 //! panels, and the renderer draws the canvas into its own texture, which egui
 //! shows in the canvas pane (ADR-002, ADR-021). Frames are drawn only on demand.
 
+// A windowed app on Windows: no console window opens next to it. Its stderr
+// goes nowhere then, so startup failures are also shown in a message box.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 mod audio;
 mod brushes;
 mod export;
@@ -866,6 +870,7 @@ fn main() -> std::process::ExitCode {
         Ok(event_loop) => event_loop,
         Err(err) => {
             tracing::error!(%err, "could not create event loop");
+            report_startup_failure(&format!("could not create the event loop: {err}"));
             return std::process::ExitCode::FAILURE;
         }
     };
@@ -880,9 +885,24 @@ fn main() -> std::process::ExitCode {
     }
     match app.fatal {
         Some(err) => {
-            eprintln!("Rusting failed to start: {err}");
+            report_startup_failure(&err);
             std::process::ExitCode::FAILURE
         }
         None => std::process::ExitCode::SUCCESS,
+    }
+}
+
+/// Tells the user why Rusting could not start: on stderr, and on Windows,
+/// where a windowed app has no console, in a message box as well.
+fn report_startup_failure(err: &str) {
+    eprintln!("Rusting failed to start: {err}");
+    #[cfg(windows)]
+    {
+        let _ = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title("Rusting failed to start")
+            .set_description(err)
+            .set_buttons(rfd::MessageButtons::Ok)
+            .show();
     }
 }

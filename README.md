@@ -47,7 +47,7 @@ Set `RUST_LOG=debug` for more log output.
 | `crates/renderer` | wgpu device, surface, canvas and stroke rendering, offscreen rendering for export |
 | `crates/ui` | The editing session and its egui panels |
 | `apps/desktop` | The executable: window, event loop, file dialogs, export wiring |
-| `assets` | WGSL shaders, the built-in brushes, the app logo and the macOS app icon |
+| `assets` | WGSL shaders, the built-in brushes, the app logo and the macOS and Windows app icons |
 | `tests` | Cross-crate integration tests (`integration_tests` crate) |
 | `Formula`, `scripts` | The Homebrew formula, the script that regenerates it on release, and the macOS DMG script |
 
@@ -128,6 +128,7 @@ The tool strip runs down the side of the canvas:
 ### Look
 - Uses the colours of the Rusting website (warm dark browns with an orange accent). The light or dark palette follows the operating system setting.
 - The app icon (window, taskbar and Dock) and the start menu show the website's logo: an orange brush stroke with an amber dot. Its source is `assets/logo.svg`.
+- On Windows, `rusting.exe` carries the logo as its file icon, so Explorer and shortcuts show it, and the app opens without a console window. If it can't start, a message box says why.
 
 ### Panels
 - The tool strip, Tool Settings, Library, timeline and canvas are dockable panels. Drag a panel by its tab onto another panel to put it beside, above or below it, or behind it as another tab, for example the Library under Tool Settings in one column. Drag the line between two panels to resize them.

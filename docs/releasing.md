@@ -97,7 +97,10 @@ Pass `--no-notarize` to only sign. The DMG lands in `dist/`.
 
 `assets/Rusting.icns` is made from `assets/logo.svg`. Regenerate it with
 `rsvg-convert` (`brew install librsvg`), `sips` and `iconutil` when the logo
-changes. The Developer ID certificate is valid for five years; renew it in
+changes. `assets/Rusting.ico` (the Windows exe icon, embedded by
+`apps/desktop/build.rs`) is also made from it: render 16, 24, 32, 48, 64, 128
+and 256 px PNGs with `rsvg-convert` and pack them into one `.ico` with PNG
+entries. The Developer ID certificate is valid for five years; renew it in
 the Apple Developer account and replace the two certificate secrets.
 
 ## Rules
