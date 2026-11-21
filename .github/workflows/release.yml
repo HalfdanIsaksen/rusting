@@ -2,7 +2,7 @@ name: Release
 
 # Push a tag like v0.2.0 (matching the version in Cargo.toml) to build the
 # app for macOS, Windows and Linux, publish a GitHub Release, and update the
-# Homebrew formula in Formula/rusting.rb. The release text comes from
+# Homebrew formula in Formula/rusting.rb and the winget package. The release text comes from
 # release-notes.md, which is reset afterwards. See docs/releasing.md.
 on:
   push:
@@ -130,7 +130,7 @@ jobs:
           path: dist/*
 
   release:
-    name: Publish release and Homebrew formula
+    name: Publish release, Homebrew formula and winget manifests
     needs: [check-version, build]
     runs-on: ubuntu-latest
     env:
@@ -160,3 +160,39 @@ jobs:
           git add Formula/rusting.rb release-notes.md
           git commit -m "Homebrew: rusting ${VERSION}, reset release notes [skip ci]"
           git push origin HEAD:main
+      - name: Write winget manifests
+        run: |
+          sha="$(sha256sum "dist/rusting-${VERSION}-x86_64-pc-windows-msvc.zip" | cut -d' ' -f1)"
+          scripts/winget-manifest.sh "${VERSION}" "${sha}" winget
+      - uses: actions/upload-artifact@v4
+        with:
+          name: winget-manifests
+          path: winget/
+
+  # Opens a pull request on microsoft/winget-pkgs with the new manifests
+  # (ADR-024). Runs after the release is public, because winget's validation
+  # downloads the zip. Needs the WINGET_TOKEN secret (docs/releasing.md); a
+  # failure here leaves the GitHub Release and Homebrew formula in place.
+  winget:
+    name: Submit to winget
+    needs: [check-version, release]
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.check-version.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: winget-manifests
+          path: winget
+      - name: Submit with wingetcreate
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        shell: pwsh
+        run: |
+          if (-not $env:WINGET_TOKEN) {
+            Write-Output "::warning::WINGET_TOKEN is not set, so the winget package was not updated (see docs/releasing.md)"
+            exit 0
+          }
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          .\wingetcreate.exe submit --token $env:WINGET_TOKEN --prtitle "New version: HalfdanIsaksen.Rusting version $env:VERSION" "winget\HalfdanIsaksen.Rusting\$env:VERSION"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

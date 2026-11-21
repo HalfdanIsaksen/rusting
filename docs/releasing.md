@@ -1,7 +1,9 @@
 # Releasing
 
 This repository is also the Homebrew tap: `Formula/rusting.rb` lives here, so
-users tap the repo URL directly (see the README's Install section).
+users tap the repo URL directly (see the README's Install section). Windows
+users install with winget from the `HalfdanIsaksen.Rusting` package in
+`microsoft/winget-pkgs` (ADR-024).
 
 ## Make a release
 
@@ -32,9 +34,14 @@ The `Release` workflow (`.github/workflows/release.yml`) then:
   `.zip` on Windows) and `SHA256SUMS.txt`,
 - regenerates `Formula/rusting.rb` with the new URLs and checksums
   (`scripts/homebrew-formula.sh`), resets `release-notes.md` to
-  `scripts/release-notes-template.md`, and commits both to `main`.
+  `scripts/release-notes-template.md`, and commits both to `main`,
+- writes the winget manifests for the Windows zip
+  (`scripts/winget-manifest.sh`) and opens a pull request with them on
+  `microsoft/winget-pkgs` (see [winget](#winget)).
 
-Users get the new version with `brew update && brew upgrade rusting`.
+Users get the new version with `brew update && brew upgrade rusting`, and on
+Windows with `winget upgrade HalfdanIsaksen.Rusting` once Microsoft has merged
+the winget pull request (usually within a day or two).
 
 ## Release notes
 
@@ -100,18 +107,53 @@ Pass `--no-notarize` to only sign. The DMG lands in `dist/`.
 changes. The Developer ID certificate is valid for five years; renew it in
 the Apple Developer account and replace the two certificate secrets.
 
+## winget
+
+winget's default source is Microsoft's community repository,
+`microsoft/winget-pkgs`, so unlike Homebrew there is no tap here. Each release, the `winget`
+job in the release workflow submits `HalfdanIsaksen.Rusting` there with
+[wingetcreate](https://github.com/microsoft/winget-create): it forks
+`winget-pkgs` into the token owner's GitHub account, pushes the manifests and
+opens a pull request. Microsoft's bots validate it (download, checksum,
+install in a sandbox) and merge it. The first submission of the package is
+also reviewed by a moderator, so it can take longer.
+
+The job needs one repository secret:
+
+| Secret | Value |
+|---|---|
+| `WINGET_TOKEN` | A GitHub personal access token (classic) with the `public_repo` scope, from the account that should own the `winget-pkgs` fork and the pull requests |
+
+Without the secret the job prints a warning and skips the submission; the
+GitHub Release and the Homebrew formula are not affected. If the job fails,
+or to submit by hand, generate the manifests and submit them from Windows:
+
+```bash
+scripts/winget-manifest.sh <version> <sha256 of the windows zip>
+```
+
+```bash
+wingetcreate submit --token <token> dist/winget/HalfdanIsaksen.Rusting/<version>
+```
+
+Check the manifests first with `winget validate --manifest <folder>`, and
+test the install with `winget install --manifest <folder>` (needs
+`winget settings --enable LocalManifestFiles`). The package installs
+`rusting.exe` as a portable app with the `rusting` command, and depends on
+the Visual C++ runtime (`Microsoft.VCRedist.2015+.x64`), which winget installs
+when it is missing.
+
 ## Rules
 
 - Never move or delete a published tag or replace release files. Homebrew
   checks each download against its SHA-256, so changed files break installs.
 - Keep the file names in the same `rusting-<version>-<target>` shape. The
-  formula script and any future winget or Homebrew automation rely on them.
-- Do not edit `Formula/rusting.rb` by hand; change the script instead.
+  formula and winget scripts rely on them.
+- Do not edit `Formula/rusting.rb` or the winget manifests by hand; change
+  the scripts instead.
 
 ## Later
 
-- **winget:** the Windows zip is ready for a winget manifest
-  (`HalfdanIsaksen.Rusting`), submitted to `microsoft/winget-pkgs`.
 - **Homebrew cask:** the notarized DMG can back a cask, and is required for
   the official `homebrew/cask` repository.
 - **Signed Windows build:** Authenticode signing (for example Azure Artifact

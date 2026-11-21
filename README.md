@@ -17,7 +17,15 @@ Then run `rusting`. `brew upgrade rusting` updates it.
 
 macOS, as an app: download `rusting-<version>-universal-apple-darwin.dmg` from [Releases](https://github.com/HalfdanIsaksen/rusting/releases) (from 0.1.8), open it and drag Rusting to Applications. The app is signed and notarized by Apple.
 
-Windows and Linux: download the zip or tarball from [Releases](https://github.com/HalfdanIsaksen/rusting/releases).
+Windows, with winget (from 0.2.2):
+
+```bash
+winget install HalfdanIsaksen.Rusting
+```
+
+Then open a new terminal and run `rusting`. `winget upgrade HalfdanIsaksen.Rusting` updates it.
+
+Windows and Linux, by hand: download the zip or tarball from [Releases](https://github.com/HalfdanIsaksen/rusting/releases).
 
 ## Build and run
 
@@ -49,14 +57,14 @@ Set `RUST_LOG=debug` for more log output.
 | `apps/desktop` | The executable: window, event loop, file dialogs, export wiring |
 | `assets` | WGSL shaders, the built-in brushes, the app logo and the macOS app icon |
 | `tests` | Cross-crate integration tests (`integration_tests` crate) |
-| `Formula`, `scripts` | The Homebrew formula, the script that regenerates it on release, and the macOS DMG script |
+| `Formula`, `scripts` | The Homebrew formula, the scripts that regenerate it and the winget manifests on release, and the macOS DMG script |
 
 ## Documentation
 
 | Document | What it covers |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Crate dependency graph, data model, coordinate spaces, frame flow |
-| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-023) |
+| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-024) |
 | [docs/roadmap.md](docs/roadmap.md) | Development phases and their acceptance criteria |
 | [docs/smoke-test.md](docs/smoke-test.md) | Manual end-to-end test checklist |
 | [docs/releasing.md](docs/releasing.md) | How to tag a release and update the Homebrew tap |
@@ -143,6 +151,7 @@ The tool strip runs down the side of the canvas:
 - Lists the keyboard shortcuts.
 
 ### Files and export
+- Install with Homebrew on macOS (`brew install HalfdanIsaksen/rusting/rusting`) or winget on Windows (`winget install HalfdanIsaksen.Rusting`).
 - Save and open versioned `.rusting` project files.
 - macOS app: `.rusting` files show the Rusting icon in Finder, and double-clicking one (or dropping it on the Dock icon) opens it, asking first if the open project has unsaved changes.
 - Undo/redo for every edit (up to 500 steps).
