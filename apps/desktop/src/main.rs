@@ -5,6 +5,9 @@
 //! shows in the canvas pane (ADR-002, ADR-021). Frames are drawn only on demand.
 
 mod audio;
+// Wired up by the Brush Editor in the following commits.
+#[allow(dead_code)]
+mod brush_pictures;
 mod brushes;
 mod export;
 mod icon;
