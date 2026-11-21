@@ -20,6 +20,50 @@ fn toggle(ui: &mut egui::Ui, text: &str, on: &mut bool, shortcut: Option<&Keyboa
     ));
 }
 
+/// Copy, Cut and Paste of canvas items, for the Edit menu and the canvas's
+/// right-click menu. Copy and Cut also put
+/// [`crate::clipboard::CLIPBOARD_MARKER`] on the system clipboard, so
+/// Cmd/Ctrl+V pastes too.
+pub fn clipboard_items(ui: &mut egui::Ui, session: &mut Session) {
+    let can_copy = session.can_copy();
+    if ui
+        .add_enabled(can_copy, item(ui, "Cut", &shortcuts::CUT))
+        .clicked()
+        && session.cut_selection()
+    {
+        ui.ctx()
+            .copy_text(crate::clipboard::CLIPBOARD_MARKER.to_owned());
+    }
+    if ui
+        .add_enabled(can_copy, item(ui, "Copy", &shortcuts::COPY))
+        .clicked()
+        && session.copy_selection()
+    {
+        ui.ctx()
+            .copy_text(crate::clipboard::CLIPBOARD_MARKER.to_owned());
+    }
+    if ui
+        .add_enabled(session.can_paste(), item(ui, "Paste", &shortcuts::PASTE))
+        .on_hover_text("Paste the copied items on this frame, where they were")
+        .clicked()
+    {
+        session.paste();
+    }
+}
+
+/// The canvas's right-click menu: Cut, Copy, Paste and Delete for the
+/// selected items. The host opens it on the canvas response.
+pub fn canvas_menu(ui: &mut egui::Ui, session: &mut Session) {
+    clipboard_items(ui, session);
+    ui.separator();
+    if ui
+        .add_enabled(session.can_copy(), Button::new("Delete"))
+        .clicked()
+    {
+        session.delete_selection();
+    }
+}
+
 /// Draws the menu bar.
 pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
     egui::MenuBar::new().ui(ui, |ui| {
@@ -93,6 +137,8 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
             {
                 session.redo();
             }
+            ui.separator();
+            clipboard_items(ui, session);
             ui.separator();
             if ui
                 .add(item(ui, "Duplicate Frame", &shortcuts::DUPLICATE_FRAME))
@@ -197,6 +243,7 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
                 ("Space", "Play / pause (hold and drag to pan)"),
                 ("← / →", "Previous / next frame"),
                 ("↑ / ↓", "Previous / next key"),
+                ("Cmd/Ctrl+C / X / V", "Copy / cut / paste the selection, in place"),
                 ("Cmd/Ctrl+D", "Duplicate frame"),
                 ("Middle-drag", "Pan the canvas"),
                 ("Wheel / pinch", "Zoom about the cursor"),

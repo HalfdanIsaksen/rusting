@@ -24,7 +24,7 @@ pub use layer_frames::{DuplicateLayerFrame, InsertLayerFrame, MoveLayerFrames, R
 pub use layers::DuplicateLayer;
 pub use merge::MergeSameColour;
 pub use opacity::SetOpacity;
-pub use select::{TransformItems, TranslateItems, remove_items};
+pub use select::{CopiedItems, TransformItems, TranslateItems, paste_items, remove_items};
 pub use symbols::{
     ConvertItemsToSymbol, ConvertToSymbol, InstanceProps, PlaceInstance, RemoveSymbol,
     RenameSymbol, SetInstanceProps, SetInstanceTransform, SetTween,
@@ -913,6 +913,12 @@ impl Batch {
             label: label.into(),
             commands,
         }
+    }
+
+    /// Replaces the undo label.
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = label.into();
+        self
     }
 
     /// Whether the batch holds no commands.

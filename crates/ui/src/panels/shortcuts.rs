@@ -31,6 +31,13 @@ pub const DELETE_FRAMES: KeyboardShortcut = KeyboardShortcut::new(Modifiers::SHI
 /// Turn the canvas selection (or the selected layers and frames) into an
 /// object (F8, as in Flash and Animate).
 pub const CONVERT_TO_OBJECT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F8);
+/// Copy the canvas selection. The keys reach the app as an
+/// [`egui::Event::Copy`]; the constant is for menu labels.
+pub const COPY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::C);
+/// Cut the canvas selection (an [`egui::Event::Cut`]).
+pub const CUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::X);
+/// Paste copied items in place (an [`egui::Event::Paste`]).
+pub const PASTE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::V);
 /// Quit.
 pub const QUIT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Q);
 
@@ -111,6 +118,7 @@ pub fn handle(ctx: &egui::Context, session: &mut Session) {
     if ctx.input_mut(|i| i.consume_shortcut(&DUPLICATE_FRAME)) {
         session.duplicate_frame();
     }
+    clipboard_events(ctx, session);
     // Shift+F5 first: egui ignores an extra Shift when matching F5.
     let (delete_frames, insert_frame) = ctx.input_mut(|i| {
         (
@@ -304,6 +312,51 @@ fn type_on_canvas(ctx: &egui::Context, session: &mut Session) {
     });
 }
 
+/// Cmd/Ctrl+C, X and V arrive as clipboard events, not key presses: copy,
+/// cut or paste canvas items (see [`crate::clipboard`]). A paste of text
+/// some other app put on the clipboard is ignored.
+fn clipboard_events(ctx: &egui::Context, session: &mut Session) {
+    #[derive(PartialEq)]
+    enum Action {
+        Copy,
+        Cut,
+        Paste,
+    }
+    let mut actions = Vec::new();
+    ctx.input_mut(|i| {
+        i.events.retain(|event| {
+            let action = match event {
+                egui::Event::Copy => Action::Copy,
+                egui::Event::Cut => Action::Cut,
+                egui::Event::Paste(text) if text.trim() == crate::clipboard::CLIPBOARD_MARKER => {
+                    Action::Paste
+                }
+                _ => return true,
+            };
+            actions.push(action);
+            false
+        });
+    });
+    if session.tools.is_active() {
+        return;
+    }
+    for action in actions {
+        match action {
+            Action::Copy => {
+                if session.copy_selection() {
+                    ctx.copy_text(crate::clipboard::CLIPBOARD_MARKER.to_owned());
+                }
+            }
+            Action::Cut => {
+                if session.cut_selection() {
+                    ctx.copy_text(crate::clipboard::CLIPBOARD_MARKER.to_owned());
+                }
+            }
+            Action::Paste => session.paste(),
+        }
+    }
+}
+
 /// Space is also "hold to pan" on the canvas: toggle playback on release,
 /// unless the canvas used it for panning.
 fn finish_space(session: &mut Session, space_down: bool, space_up: bool, gesture: bool) {
@@ -463,6 +516,37 @@ mod tests {
     }
 
     #[test]
+    fn copy_and_paste_events_paste_on_another_frame() {
+        let mut s = Session::new();
+        let layer = s.state.active_layer.unwrap();
+        s.state.tool = Tool::Brush;
+        s.pointer_down(document::animation_core::Vec2::new(5.0, 5.0), 1.0);
+        s.pointer_move(document::animation_core::Vec2::new(40.0, 30.0));
+        s.pointer_up();
+        s.state.tool = Tool::Select;
+        s.select_all();
+        send(&mut s, vec![egui::Event::Copy]);
+        s.execute(Box::new(editor::commands::AddKeyframe::new(
+            layer,
+            FrameIndex(3),
+            editor::commands::KeyframeKind::Empty,
+        )))
+        .unwrap();
+        s.set_frame(FrameIndex(3));
+        // Text from another app is not a paste of canvas items.
+        send(&mut s, vec![egui::Event::Paste("hello".into())]);
+        assert!(s.tools.selection().is_empty());
+        send(
+            &mut s,
+            vec![egui::Event::Paste(
+                crate::clipboard::CLIPBOARD_MARKER.into(),
+            )],
+        );
+        assert_eq!(s.tools.selection().len(), 1);
+        assert_eq!(s.tools.selection_at(), Some((layer, FrameIndex(3))));
+    }
+
+    #[test]
     fn view_shortcuts_do_not_clash() {
         let all = [
             NEW, OPEN, SAVE, SAVE_AS, UNDO, REDO, REDO_ALT, SELECT_ALL, QUIT,
@@ -473,6 +557,9 @@ mod tests {
             TOGGLE_TOOL_SETTINGS,
             TOGGLE_LIBRARY,
             DUPLICATE_FRAME,
+            COPY,
+            CUT,
+            PASTE,
         ] {
             assert!(all.iter().all(|s| s.logical_key != view.logical_key));
         }

@@ -16,6 +16,7 @@ pub mod toolbar;
 
 use crate::session::Session;
 
+pub use menu::canvas_menu;
 pub use preview::window as preview_window;
 
 /// Draws the whole editor for one frame, or the start menu while it is up.

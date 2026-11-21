@@ -1862,7 +1862,7 @@ fn straight_line(start: Vec2, end: Vec2) -> Vec<StrokePoint> {
 }
 
 /// The vector drawing `layer` shows at `frame`.
-fn vector_at(
+pub(crate) fn vector_at(
     doc: &document::Document,
     layer: LayerId,
     frame: FrameIndex,

@@ -238,6 +238,10 @@ pub struct Session {
     pub space_panned: bool,
     /// The open "Resize Canvas" dialog, if any.
     pub resize_canvas: Option<ResizeCanvasDialog>,
+    /// Canvas items copied with Edit → Copy or Cut (see [`crate::clipboard`]).
+    /// Cleared when another document is opened, since items can refer to
+    /// its library.
+    pub(crate) clipboard: Option<editor::commands::CopiedItems>,
     /// Layers selected in the timeline besides the active one.
     layer_selection: BTreeSet<LayerId>,
     /// Frames selected in the timeline, if any.
@@ -280,6 +284,7 @@ impl Session {
             panels: PanelLayout::default(),
             space_panned: false,
             resize_canvas: None,
+            clipboard: None,
             layer_selection: BTreeSet::new(),
             frame_selection: None,
             status: None,
@@ -304,6 +309,7 @@ impl Session {
         self.playback_watch.reset();
         self.preview.reset(&document);
         self.document = document;
+        self.clipboard = None;
         self.history.clear();
         self.path = path;
         self.tools.cancel();

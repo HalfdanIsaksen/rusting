@@ -149,6 +149,10 @@ fn canvas(
         session.space_panned = true;
     }
     handle_tool_input(ui, &response, rect, viewport, session, panning);
+    // Right-click: Cut, Copy, Paste and Delete for the selection.
+    if !session.tools.is_typing() {
+        response.context_menu(|ui| ui::canvas_menu(ui, session));
+    }
 
     ui.painter().image(
         canvas_texture,

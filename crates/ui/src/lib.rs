@@ -11,6 +11,7 @@
 //! [`ToolController::preview`].
 
 pub mod brushes;
+pub mod clipboard;
 pub mod eyedropper;
 pub mod icons;
 pub mod import;
@@ -32,7 +33,7 @@ pub use objects::{InstanceAt, TweenAt, TweenTargets};
 pub use onion::{OnionDrawing, OnionSkin};
 pub use paint_order::PaintOrder;
 pub use panels::library::{AssetDrag, ObjectDrag};
-pub use panels::{preview_window, show};
+pub use panels::{canvas_menu, preview_window, show};
 pub use playback::{Playback, PlaybackEvent};
 pub use preview::Preview;
 pub use session::{DiscardAction, ExportKind, Request, Session, StartMenu, ViewSettings};
