@@ -428,6 +428,31 @@ fn brush_picker(ui: &mut egui::Ui, session: &mut Session) {
     if let Some(id) = picked {
         session.set_brush(id);
     }
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(current.is_some(), egui::Button::new("✏ Edit…"))
+            .on_hover_text(
+                "Open this brush in the Brush Editor: tip, paper grain and stamp settings",
+            )
+            .clicked()
+            && let Some(id) = current
+        {
+            session.open_brush_editor(id);
+        }
+        if ui
+            .add_enabled(
+                session.can_create_brush(),
+                egui::Button::new("New from Selection"),
+            )
+            .on_hover_text(
+                "Make the strokes, fills and pictures selected on the canvas the tip of a new \
+                 brush (dark marks paint)",
+            )
+            .clicked()
+        {
+            session.create_brush_from_selection();
+        }
+    });
 }
 
 fn brush_size(ui: &mut egui::Ui, session: &mut Session) {

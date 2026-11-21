@@ -5,6 +5,8 @@
 //! shows in the canvas pane (ADR-002, ADR-021). Frames are drawn only on demand.
 
 mod audio;
+mod brush_pictures;
+mod brush_view;
 mod brushes;
 mod export;
 mod icon;
@@ -44,6 +46,8 @@ struct Graphics {
     offscreen: Option<OffscreenRenderer>,
     /// Renders the View → Preview image; created when it first opens.
     preview: Option<PreviewGraphics>,
+    /// The Brush Editor's tip, grain and scratchpad pictures.
+    brush_view: brush_view::BrushEditorView,
 }
 
 /// The preview window's own small canvas. It has its own mesh cache and
@@ -182,6 +186,7 @@ impl App {
             last_canvas: None,
             offscreen: None,
             preview: None,
+            brush_view: brush_view::BrushEditorView::default(),
         });
         Ok(())
     }
@@ -237,6 +242,7 @@ impl App {
             last_canvas,
             offscreen,
             preview,
+            brush_view,
         } = graphics;
 
         // 2. Size the canvas texture to the panel and gather what to draw.
@@ -365,6 +371,24 @@ impl App {
             && let Err(err) = shell.export.start(settings, &path, &shell.session)
         {
             shell.session.show_error("Export failed", err);
+        }
+        // Brush pictures from artwork (ADR-024).
+        if let Some(capture) = shell.session.take_brush_capture() {
+            if let Some(picture) =
+                brush_pictures::make(gpu.device(), gpu.queue(), offscreen, &capture)
+            {
+                shell.session.finish_brush_capture(capture.target, picture);
+            }
+            window.request_redraw();
+        }
+        if brush_view.update(
+            &self.egui_ctx,
+            &mut shell.session,
+            gpu.device(),
+            gpu.queue(),
+            offscreen,
+        ) {
+            window.request_redraw();
         }
         if shell.export.is_running() {
             let offscreen = offscreen.get_or_insert_with(|| OffscreenRenderer::new(gpu.device()));
@@ -737,7 +761,8 @@ fn handle_request(shell: &mut Shell, request: ui::Request, event_loop: &ActiveEv
                 }
             }
         }
-        ui::Request::Export(_) => {}
+        // Export and brush captures need the GPU; the main loop runs them.
+        ui::Request::Export(_) | ui::Request::CaptureBrushPicture => {}
     }
 }
 

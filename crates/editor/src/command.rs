@@ -50,6 +50,9 @@ pub enum CommandError {
     /// The library already has an asset with this ID.
     #[error("the library already has this asset")]
     AssetExists,
+    /// The asset exists but is not a brush.
+    #[error("this library item is not a brush")]
+    NotABrush,
     /// The asset is placed somewhere in the animation, so it can't be removed.
     #[error("\"{0}\" is used in the animation; delete its placed copies first")]
     AssetInUse(String),

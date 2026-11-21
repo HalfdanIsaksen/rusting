@@ -10,7 +10,7 @@
 
 use crate::mesh::{MeshSource, valid_index_count};
 use animation_core::{AssetId, FillId, ImageId, StrokeId};
-use drawing::{BrushData, Fill, Image, Stamp, Stroke};
+use drawing::{BrushData, BrushSettings, Fill, Image, Stamp, Stroke};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use wgpu::util::DeviceExt;
@@ -42,6 +42,16 @@ impl StrokeKey {
             point.pos.y.to_bits().hash(&mut hasher);
             point.pressure.to_bits().hash(&mut hasher);
         }
+        Self(hasher.finish())
+    }
+
+    /// Fingerprint of a brushed stroke's stamps: its geometry inputs (as
+    /// [`Self::of`]) and every setting of the brush it is stamped with, so
+    /// editing a brush's settings rebuilds the strokes drawn with it.
+    pub fn of_brushed(stroke: &Stroke, settings: &BrushSettings) -> Self {
+        let mut hasher = DefaultHasher::new();
+        Self::of(stroke).0.hash(&mut hasher);
+        hash_settings(settings, &mut hasher);
         Self(hasher.finish())
     }
 
@@ -354,7 +364,7 @@ impl StrokeCache {
         brush: &BrushData,
     ) {
         let id = MeshId::Brushed(stroke.id);
-        let key = StrokeKey::of(stroke);
+        let key = StrokeKey::of_brushed(stroke, &brush.settings);
         if !self.cache.touch(id, key) {
             let mesh = StampMesh::new(&drawing::stamps(stroke, &brush.settings));
             let index_bytes: Vec<u8> = mesh.indices.iter().flat_map(|i| i.to_le_bytes()).collect();
@@ -516,10 +526,47 @@ pub(crate) fn decode_image(bytes: &[u8], max_size: u32) -> Option<DecodedImage> 
     Some(DecodedImage { levels })
 }
 
-/// Fingerprint of a brush's pictures and settings. Brush bytes are never
-/// edited in place, so the shared buffers' addresses identify them.
+/// Hashes every field of `settings`. The destructuring is exhaustive, so a
+/// new setting must be added here.
+fn hash_settings(settings: &BrushSettings, hasher: &mut impl Hasher) {
+    let BrushSettings {
+        spacing,
+        flow,
+        opacity_pressure,
+        angle,
+        angle_jitter,
+        follow_direction,
+        size_jitter,
+        opacity_jitter,
+        scatter,
+        grain_scale,
+        grain_strength,
+    } = *settings;
+    for v in [
+        spacing,
+        flow,
+        opacity_pressure,
+        angle,
+        angle_jitter,
+        size_jitter,
+        opacity_jitter,
+        scatter,
+        grain_scale,
+        grain_strength,
+    ] {
+        v.to_bits().hash(hasher);
+    }
+    follow_direction.hash(hasher);
+}
+
+/// Fingerprint of a brush's pictures. Brush bytes are never edited in place
+/// (a new tip or grain is a new buffer, and undo keeps the old one alive), so
+/// the shared buffers' addresses identify them. The settings are part of
+/// each stroke's key instead ([`StrokeKey::of_brushed`]); the shader reads
+/// the grain settings per draw, not from the cached textures.
 fn brush_key(brush: &BrushData) -> StrokeKey {
     let mut hasher = DefaultHasher::new();
+    brush.grain.is_some().hash(&mut hasher);
     for data in std::iter::once(&brush.tip).chain(&brush.grain) {
         data.width.hash(&mut hasher);
         data.height.hash(&mut hasher);
@@ -621,6 +668,32 @@ mod tests {
         let mut brushed = a.clone();
         brushed.style.brush = Some(AssetId::new());
         assert_ne!(StrokeKey::of(&a), StrokeKey::of(&brushed));
+    }
+
+    #[test]
+    fn brush_settings_change_the_brushed_key() {
+        let a = stroke(&[(0.0, 0.0), (1.0, 1.0)], 2.0);
+        let settings = BrushSettings::default();
+        assert_eq!(
+            StrokeKey::of_brushed(&a, &settings),
+            StrokeKey::of_brushed(&a.clone(), &settings)
+        );
+        let spaced = BrushSettings {
+            spacing: 0.5,
+            ..settings
+        };
+        assert_ne!(
+            StrokeKey::of_brushed(&a, &settings),
+            StrokeKey::of_brushed(&a, &spaced)
+        );
+        let turned = BrushSettings {
+            follow_direction: true,
+            ..settings
+        };
+        assert_ne!(
+            StrokeKey::of_brushed(&a, &settings),
+            StrokeKey::of_brushed(&a, &turned)
+        );
     }
 
     #[test]

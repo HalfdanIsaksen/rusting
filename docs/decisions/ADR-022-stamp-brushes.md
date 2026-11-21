@@ -54,7 +54,7 @@ Animators expect a pencil with a paper feel. Tools such as Toon Boom get it from
 
 ## Consequences
 - **No tablet pressure yet.** Live input records pressure 1.0, so pressure-to-opacity and pressure-to-size only matter for imported data. The presets are tuned to look right at full pressure. Capturing pen pressure is a follow-up.
-- **No brush editor.** Settings come from `brush.json`. Changing a library brush's settings would restyle every stroke that uses it; that needs an undoable `SetBrushSettings` and UI.
+- **No brush editor.** Settings come from `brush.json`. Changing a library brush's settings would restyle every stroke that uses it; that needs an undoable `SetBrushSettings` and UI. *(Done in ADR-024: the Brush Editor and `SetBrush`.)*
 - **No per-stroke opacity cap.** Stroke and layer opacity scale each stamp, so a translucent brushed stroke darkens where its own stamps overlap. Capping it would need each stroke rendered to its own target.
 - The grain follows the layer and object transform, not the canvas, so it moves with an object that moves.
 - Rectangle and Ellipse outlines stay solid.

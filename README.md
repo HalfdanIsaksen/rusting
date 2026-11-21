@@ -56,7 +56,7 @@ Set `RUST_LOG=debug` for more log output.
 | Document | What it covers |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Crate dependency graph, data model, coordinate spaces, frame flow |
-| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-023) |
+| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-024) |
 | [docs/roadmap.md](docs/roadmap.md) | Development phases and their acceptance criteria |
 | [docs/smoke-test.md](docs/smoke-test.md) | Manual end-to-end test checklist |
 | [docs/releasing.md](docs/releasing.md) | How to tag a release and update the Homebrew tap |
@@ -94,6 +94,12 @@ The tool strip runs down the side of the canvas:
 - Textured brushes stamp a tip picture along the line on a paper grain, for a drawn-on-paper look. Overlapping passes build up darker, and the paper's dips stay white. The stroke is still a vector line: it selects, moves, transforms, erases, recolours and exports like any other.
 - The first stroke drawn with a built-in brush adds the brush to the Library, so the project file keeps it and opens anywhere.
 - **Import** a `.rustbrush` file (File → Import…) to add a brush, and right-click a brush in the Library → **Export Brush…** to share one. A `.rustbrush` file is a zip with `brush.json` (name and stamp settings), `tip.png` and an optional `grain.png`.
+- **Create Brush from Selection** (Edit menu, the canvas's right-click menu, or **New from Selection** under the brush picker): select strokes, fills or pictures you drew and they become the tip of a new brush in the Library, picked and opened in the Brush Editor. Dark marks paint. The tip is centred and fades out at its edge.
+- **Brush Editor** (**✏ Edit…** under the brush picker, or right-click a brush in the Library → **Edit Brush…**): a window to change a brush's name, tip, paper grain and stamp settings, with a scratchpad that draws a test stroke as you drag the sliders.
+  - Settings: spacing, flow, angle, follow stroke direction, angle and size jitter, scatter, opacity jitter, pressure → opacity, grain scale and grain strength.
+  - **Change Tip** / **Change Grain**: from the canvas selection, from a layer at the current frame (draw the tip on one layer and the paper on another), from a PNG or JPEG picture, or generated: a round or flat tip with a hardness setting, or a paper grain with a coarseness setting. A grain can also be removed.
+  - **Apply** saves the changes as one undo step, and every stroke drawn with the brush takes the new look. **Revert** throws the changes away. A built-in brush is never changed: **Save as Copy** adds your version to the Library.
+  - Right-click a brush in the Library → **Duplicate** to make a copy to change.
 - Textured strokes don't merge with same-colour fills, and pen pressure isn't read yet: lines are drawn at full pressure.
 
 **Draw order** (Brush, Rectangle, Ellipse, Text, Paint Bucket): **Behind** puts the new item under everything already in the frame, fills included, and **Normal** puts it on top. The live preview shows where it lands. Erasing, moving and transforming keep an item's draw order.
@@ -152,7 +158,7 @@ The tool strip runs down the side of the canvas:
 - **Export GIF**: the frame range as a looping animated GIF at the document frame rate, for animations up to 15 seconds. A longer range is refused with a message to export it as a video or image sequence instead.
 - **Export Sprite Sheet**: every frame tag becomes its own row of frames in one PNG/JPG image. Without tags, the chosen frame range goes on one row.
 - **Import** (File → Import…, below Export): pick one or more PNG or JPEG pictures, MP3 or WAV sounds (see Audio layers), or `.rustbrush` brushes (see Brushes). Each picture goes onto the current layer and frame, centred on the canvas and shrunk to fit if it is larger, and is selected so you can move it right away. Pictures move, scale, rotate and delete with the selection tools like any other item, paint under the strokes and fills you draw on top of them (handy for tracing), show in the preview and in every export, and are saved inside the project file. Each imported picture is also added to the Library.
-- **Library** (a panel, by default on the right of the canvas): lists every imported file, under Images and Audio, by file name, the project's brushes under Brushes (right-click → Use Brush or Export Brush…), and every object under Objects. Drag a picture onto the canvas to place another copy where you drop it, or right-click it → Place on Canvas to put one in the centre. Drag a sound onto the timeline's frames to start a new audio layer at that frame, or right-click it → Add to Timeline to start one at the current frame. Double-click a row to rename it. Right-click → Delete removes it from the library, but only once nothing uses it (a frame, an object or an audio layer). The project file stores each library picture and sound once, however many times it is placed, and keeps unused library pictures and sounds.
+- **Library** (a panel, by default on the right of the canvas): lists every imported file, under Images and Audio, by file name, the project's brushes under Brushes (right-click → Use Brush, Edit Brush…, Duplicate or Export Brush…), and every object under Objects. Drag a picture onto the canvas to place another copy where you drop it, or right-click it → Place on Canvas to put one in the centre. Drag a sound onto the timeline's frames to start a new audio layer at that frame, or right-click it → Add to Timeline to start one at the current frame. Double-click a row to rename it. Right-click → Delete removes it from the library, but only once nothing uses it (a frame, an object or an audio layer). The project file stores each library picture and sound once, however many times it is placed, and keeps unused library pictures and sounds.
 
 ## Contributing workflow
 
