@@ -101,7 +101,7 @@ impl Session {
         out
     }
 
-    fn is_preset(&self, id: AssetId) -> bool {
+    pub(crate) fn is_preset(&self, id: AssetId) -> bool {
         self.tools.brush_presets.iter().any(|p| p.id == id)
     }
 
@@ -129,6 +129,7 @@ impl Session {
         {
             self.state.brush.brush = None;
         }
+        self.check_brush_editor();
     }
 
     /// The command that adds preset `brush` to the library, if a stroke

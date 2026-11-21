@@ -248,6 +248,8 @@ pub struct Session {
     pub(crate) clipboard: Option<editor::commands::CopiedItems>,
     /// Artwork waiting for the host to render into a brush picture.
     pub(crate) brush_capture: Option<crate::brush_editor::BrushCapture>,
+    /// The Brush Editor window, while open (ADR-024).
+    pub brush_editor: Option<crate::brush_editor::BrushEditor>,
     /// Layers selected in the timeline besides the active one.
     layer_selection: BTreeSet<LayerId>,
     /// Frames selected in the timeline, if any.
@@ -292,6 +294,7 @@ impl Session {
             resize_canvas: None,
             clipboard: None,
             brush_capture: None,
+            brush_editor: None,
             layer_selection: BTreeSet::new(),
             frame_selection: None,
             status: None,

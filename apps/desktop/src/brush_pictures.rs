@@ -14,48 +14,76 @@ use document::drawing::ImageData;
 use image::{GrayImage, Luma};
 use renderer::OffscreenRenderer;
 use std::io::Cursor;
-use ui::BrushCapture;
+use ui::{BrushCapture, BrushPictureSource};
 
 /// The longest side artwork is rendered at for a brush picture, in pixels.
 const CAPTURE_SIDE: f32 = 2048.0;
 
-/// Renders a capture's artwork and turns it into the brush picture its
-/// target asks for.
-pub fn render(
+/// Makes the brush picture `capture` asks for: renders its artwork, asks
+/// for a picture file, or generates one. `None` if the user cancelled the
+/// file dialog.
+pub fn make(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    offscreen: &mut Option<OffscreenRenderer>,
+    capture: &BrushCapture,
+) -> Option<Result<ImageData, String>> {
+    let grain = capture.target.is_grain();
+    let from_pixels = |w: u32, h: u32, rgba: &[u8]| {
+        if grain {
+            grain_from_rgba(w, h, rgba)
+        } else {
+            tip_from_rgba(w, h, rgba)
+        }
+    };
+    Some(match &capture.source {
+        BrushPictureSource::Artwork { document, frame } => {
+            let offscreen = offscreen.get_or_insert_with(|| OffscreenRenderer::new(device));
+            render(device, queue, offscreen, document, *frame)
+                .and_then(|(w, h, rgba)| from_pixels(w, h, &rgba))
+        }
+        BrushPictureSource::File => {
+            let path = rfd::FileDialog::new()
+                .set_title(if grain {
+                    "Paper Grain Picture"
+                } else {
+                    "Brush Tip Picture"
+                })
+                .add_filter("Images (PNG, JPEG)", crate::import::EXTENSIONS)
+                .pick_file()?;
+            crate::import::read_image(&path)
+                .and_then(|data| decode(&data))
+                .and_then(|(w, h, rgba)| from_pixels(w, h, &rgba))
+        }
+        BrushPictureSource::Ellipse { hardness, aspect } => Ok(ellipse_tip(*hardness, *aspect)),
+        BrushPictureSource::Noise { coarseness, seed } => Ok(noise_grain(*coarseness, *seed)),
+    })
+}
+
+/// Renders `frame` of `document` with no background, its longest side
+/// about [`CAPTURE_SIDE`] pixels.
+fn render(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     offscreen: &mut OffscreenRenderer,
-    capture: &BrushCapture,
-) -> Result<ImageData, String> {
-    let canvas = capture.document.canvas;
+    document: &document::Document,
+    frame: document::animation_core::FrameIndex,
+) -> Result<(u32, u32, Vec<u8>), String> {
+    let canvas = document.canvas;
     let longest = canvas.width.max(canvas.height).max(1) as f32;
     let scale = (CAPTURE_SIDE / longest).clamp(0.25, 4.0);
-    let image = crate::export::render_frame(
-        device,
-        queue,
-        offscreen,
-        &capture.document,
-        capture.frame,
-        scale,
-        None,
-    )
-    .map_err(|e| e.to_string())?;
-    if capture.target.is_grain() {
-        grain_from_rgba(image.width, image.height, &image.pixels)
-    } else {
-        tip_from_rgba(image.width, image.height, &image.pixels)
-    }
+    let image = crate::export::render_frame(device, queue, offscreen, document, frame, scale, None)
+        .map_err(|e| e.to_string())?;
+    Ok((image.width, image.height, image.pixels))
 }
 
 /// The largest side of a tip made from artwork, in pixels.
 pub const TIP_SIDE: u32 = 256;
 
 /// The side of a generated tip, in pixels.
-#[allow(dead_code)] // TODO(brush-editor): used by the Brush Editor window.
 const GENERATED_TIP: u32 = 128;
 
 /// The side of a generated grain, in pixels.
-#[allow(dead_code)] // TODO(brush-editor): used by the Brush Editor window.
 const GENERATED_GRAIN: u32 = 256;
 
 /// The largest side of a grain made from artwork (the `.rustbrush` limit).
@@ -212,7 +240,6 @@ pub fn grain_from_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<ImageData
 }
 
 /// Decodes a PNG/JPEG brush picture to straight-alpha RGBA.
-#[allow(dead_code)] // TODO(brush-editor): used by the Brush Editor window.
 pub fn decode(data: &ImageData) -> Result<(u32, u32, Vec<u8>), String> {
     let img = image::load_from_memory(&data.bytes)
         .map_err(|e| e.to_string())?
@@ -223,7 +250,6 @@ pub fn decode(data: &ImageData) -> Result<(u32, u32, Vec<u8>), String> {
 /// A generated tip: an ellipse `aspect` times as tall as it is wide
 /// (`0.05..=1.0`; 1 is round), solid inside `hardness` (`0.0..=1.0`) of its
 /// radius and soft beyond.
-#[allow(dead_code)] // TODO(brush-editor): used by the Brush Editor window.
 pub fn ellipse_tip(hardness: f32, aspect: f32) -> ImageData {
     let hard = hardness.clamp(0.0, 0.98) * FADE_START;
     let aspect = aspect.clamp(0.05, 1.0);
@@ -240,7 +266,6 @@ pub fn ellipse_tip(hardness: f32, aspect: f32) -> ImageData {
 }
 
 /// A hash of a lattice point to `0.0..1.0`.
-#[allow(dead_code)] // TODO(brush-editor): used by the Brush Editor window.
 fn hash(x: i64, y: i64, seed: u64) -> f32 {
     let mut z = (x as u64)
         .wrapping_mul(0x9E37_79B9_7F4A_7C15)
@@ -254,7 +279,6 @@ fn hash(x: i64, y: i64, seed: u64) -> f32 {
 
 /// Value noise with `cells` lattice cells across `size` pixels, wrapping at
 /// the edges so it tiles.
-#[allow(dead_code)] // TODO(brush-editor): used by the Brush Editor window.
 fn value_noise(x: f32, y: f32, size: u32, cells: u32, seed: u64) -> f32 {
     let scale = cells as f32 / size as f32;
     let (fx, fy) = (x * scale, y * scale);
@@ -269,7 +293,6 @@ fn value_noise(x: f32, y: f32, size: u32, cells: u32, seed: u64) -> f32 {
 
 /// A generated, tiling paper grain. `coarseness` (`0.0..=1.0`) sets the size
 /// of the paper's tooth, from fine to coarse; `seed` picks the pattern.
-#[allow(dead_code)] // TODO(brush-editor): used by the Brush Editor window.
 pub fn noise_grain(coarseness: f32, seed: u64) -> ImageData {
     let size = GENERATED_GRAIN;
     // 128 cells across (fine) down to 8 (coarse), a power of two so it tiles.
@@ -387,8 +410,10 @@ mod tests {
         session.select_all();
         session.create_brush_from_selection();
         let capture = session.take_brush_capture().expect("a capture");
-        let mut offscreen = OffscreenRenderer::new(&gpu.0);
-        let data = render(&gpu.0, &gpu.1, &mut offscreen, &capture).expect("a tip");
+        let mut offscreen = None;
+        let data = make(&gpu.0, &gpu.1, &mut offscreen, &capture)
+            .expect("no dialog")
+            .expect("a tip");
         let tip = gray(&data);
         assert_faded(&tip);
         let c = tip.width() / 2;

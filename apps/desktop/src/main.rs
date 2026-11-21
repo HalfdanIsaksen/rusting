@@ -369,9 +369,11 @@ impl App {
         }
         // Brush pictures from artwork (ADR-024).
         if let Some(capture) = shell.session.take_brush_capture() {
-            let offscreen = offscreen.get_or_insert_with(|| OffscreenRenderer::new(gpu.device()));
-            let picture = brush_pictures::render(gpu.device(), gpu.queue(), offscreen, &capture);
-            shell.session.finish_brush_capture(capture.target, picture);
+            if let Some(picture) =
+                brush_pictures::make(gpu.device(), gpu.queue(), offscreen, &capture)
+            {
+                shell.session.finish_brush_capture(capture.target, picture);
+            }
             window.request_redraw();
         }
         if shell.export.is_running() {

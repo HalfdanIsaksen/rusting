@@ -1,5 +1,6 @@
 //! The egui panels around the canvas.
 
+mod brush_editor;
 mod dialogs;
 pub mod dock;
 mod layers;
@@ -49,6 +50,7 @@ pub fn show(
     egui::CentralPanel::no_frame().show(ui, |ui| layout.show(ui, session, canvas));
     session.panels = layout;
 
+    brush_editor::show(ui.ctx(), session);
     dialogs::show(ui.ctx(), session);
     resize_canvas::show(ui.ctx(), session);
 }
