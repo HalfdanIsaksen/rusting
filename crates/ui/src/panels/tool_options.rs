@@ -45,21 +45,26 @@ const FILL_HINT: &str = "Fills the area enclosed by lines, with the brush colour
                          Click a fill to recolour it.";
 
 /// Eraser mode choices as selectable labels, laid out in the current
-/// direction. Disabled while a gesture is in progress. Returns whether the
-/// user picked one.
+/// direction. They ignore clicks while a gesture is in progress, without
+/// greying out (that would flash on every stroke). Returns whether the user
+/// picked one.
 pub(crate) fn eraser_mode_choices(ui: &mut egui::Ui, session: &mut Session) -> bool {
     let busy = session.tools.is_active();
-    ui.add_enabled_ui(!busy, |ui| {
-        let mode = &mut session.tools.eraser_mode;
-        let partial = ui
-            .selectable_value(mode, EraserMode::Partial, "Partial eraser")
-            .on_hover_text(PARTIAL_HINT);
-        let stroke = ui
-            .selectable_value(mode, EraserMode::Stroke, "Stroke eraser")
-            .on_hover_text(STROKE_HINT);
-        partial.clicked() || stroke.clicked()
-    })
-    .inner
+    let mut picked = false;
+    for (mode, label, hint) in [
+        (EraserMode::Partial, "Partial eraser", PARTIAL_HINT),
+        (EraserMode::Stroke, "Stroke eraser", STROKE_HINT),
+    ] {
+        let clicked = ui
+            .selectable_label(session.tools.eraser_mode == mode, label)
+            .on_hover_text(hint)
+            .clicked();
+        if clicked && !busy {
+            session.tools.eraser_mode = mode;
+            picked = true;
+        }
+    }
+    picked
 }
 
 /// Normal or gradient fill as selectable labels. Returns whether the user
