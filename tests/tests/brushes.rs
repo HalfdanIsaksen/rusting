@@ -137,3 +137,60 @@ fn an_edited_brush_restyles_its_strokes_and_survives_saving() {
     history.undo(&mut doc).unwrap();
     assert_eq!(doc, before);
 }
+
+/// A pen stroke (ADR-025) keeps its pressure through saving, and a textured
+/// brush draws it with smaller, and with pressure → opacity lighter, stamps
+/// where it was pressed lightly.
+#[test]
+fn pen_pressure_survives_saving_and_thins_the_stamps() {
+    let mut doc = Document::new(
+        "Pen",
+        CanvasSize {
+            width: 320,
+            height: 240,
+        },
+    );
+    let mut history = History::new();
+    let add = AddLayer::new("Ink");
+    let layer = add.layer_id();
+    history.execute(&mut doc, Box::new(add)).unwrap();
+
+    let mut pencil = brush();
+    let AssetKind::Brush(data) = &mut pencil.kind else {
+        unreachable!()
+    };
+    data.settings.opacity_pressure = 1.0;
+    let settings = data.settings.clamped();
+    let mut pen = stroke(pencil.id, 10.0);
+    pen.style.width = 20.0;
+    pen.points[0].pressure = 0.2;
+    pen.points[1].pressure = 1.0;
+    let commands: Vec<Box<dyn Command>> = vec![
+        Box::new(AddAsset::new(pencil.clone())),
+        Box::new(AddStroke::new(layer, FrameIndex(0), pen.clone())),
+    ];
+    history
+        .execute(&mut doc, Box::new(Batch::new("Add Stroke", commands)))
+        .unwrap();
+
+    let dir = std::env::temp_dir().join(format!("rusting-pen-{}", doc.id));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("pen.rusting");
+    file_format::save(&doc, &path).unwrap();
+    let loaded = file_format::load(&path).unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+    assert_eq!(loaded, doc);
+    let drawing = loaded
+        .drawing(loaded.drawing_at(layer, FrameIndex(0)).unwrap())
+        .unwrap()
+        .as_vector()
+        .unwrap();
+    let saved = &drawing.strokes()[0];
+    assert_eq!(saved.points[0].pressure, 0.2);
+    assert_eq!(saved.points[1].pressure, 1.0);
+
+    let stamps = document::drawing::stamps(saved, &settings);
+    let (first, last) = (stamps.first().unwrap(), stamps.last().unwrap());
+    assert!(first.size < last.size * 0.5, "{first:?} vs {last:?}");
+    assert!(first.opacity < last.opacity, "{first:?} vs {last:?}");
+}

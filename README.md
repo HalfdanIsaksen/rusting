@@ -56,7 +56,7 @@ Set `RUST_LOG=debug` for more log output.
 | Document | What it covers |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Crate dependency graph, data model, coordinate spaces, frame flow |
-| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-024) |
+| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-025) |
 | [docs/roadmap.md](docs/roadmap.md) | Development phases and their acceptance criteria |
 | [docs/smoke-test.md](docs/smoke-test.md) | Manual end-to-end test checklist |
 | [docs/releasing.md](docs/releasing.md) | How to tag a release and update the Homebrew tap |
@@ -77,7 +77,7 @@ The tool strip runs down the side of the canvas:
 | Selection | `V` | Select strokes, fills and imported pictures (click, or drag a box from anywhere), then move or delete them |
 | Lasso | `L` | Select strokes, fills and pictures by drawing a loop around them |
 | Transform | `Q` | Scale and rotate the selection with box handles |
-| Brush | `B` | Vector strokes with size, opacity, colour, a 0–100% smoothing slider and a draw order (see below). Pick the brush in Tool Settings: **Vector (solid)** or a textured brush (see Brushes below). Hold `Shift` to draw a straight line |
+| Brush | `B` | Vector strokes with size, opacity, colour, a 0–100% smoothing slider, pen pressure (see Pen pressure below) and a draw order (see below). Pick the brush in Tool Settings: **Vector (solid)** or a textured brush (see Brushes below). Hold `Shift` to draw a straight line |
 | Rectangle | `R` | Drag out a rectangle with a stroke and a fill. Set stroke width, stroke colour and fill colour (or turn either off) in Tool Settings. The fill can be solid or a gradient into a second colour, running left to right, top to bottom or diagonally. `Shift` makes a square, `Alt` draws from the centre. Draw order applies to both fill and stroke |
 | Ellipse | `O` | Like Rectangle, for ellipses; `Shift` makes a circle |
 | Text | `T` | Click the canvas and type, with a live preview and caret. `Enter` starts a new line, `Backspace` deletes, `Esc` cancels; `Cmd/Ctrl+Enter`, a click elsewhere or another tool finishes. Set font size, colour, opacity and draw order in Tool Settings. The text becomes vector shapes (one fill per text block, letters keep their holes), so it selects, moves, transforms, erases and exports like any fill, but can't be edited as text afterwards. Tool and canvas shortcuts are off while you type. Font: Ubuntu Light |
@@ -100,7 +100,9 @@ The tool strip runs down the side of the canvas:
   - **Change Tip** / **Change Grain**: from the canvas selection, from a layer at the current frame (draw the tip on one layer and the paper on another), from a PNG or JPEG picture, or generated: a round or flat tip with a hardness setting, or a paper grain with a coarseness setting. A grain can also be removed.
   - **Apply** saves the changes as one undo step, and every stroke drawn with the brush takes the new look. **Revert** throws the changes away. A built-in brush is never changed: **Save as Copy** adds your version to the Library.
   - Right-click a brush in the Library → **Duplicate** to make a copy to change.
-- Textured strokes don't merge with same-colour fills, and pen pressure isn't read yet: lines are drawn at full pressure.
+- Textured strokes don't merge with same-colour fills.
+
+**Pen pressure** (drawing tablets, Windows and macOS): with a pen, the Brush draws a thinner line where you press lighter. Textured brushes draw smaller stamps, and lighter ones if their **Pressure → opacity** setting (Brush Editor) is above 0. Tool Settings → **Pen pressure** (on by default) turns it off, so the pen draws at full size like a mouse. A mouse always draws at full size. On Linux, pen pressure isn't read yet.
 
 **Draw order** (Brush, Rectangle, Ellipse, Text, Paint Bucket): **Behind** puts the new item under everything already in the frame, fills included, and **Normal** puts it on top. The live preview shows where it lands. Erasing, moving and transforming keep an item's draw order.
 

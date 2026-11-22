@@ -23,6 +23,7 @@ Arrows point from a dependency to its dependents. Rules:
 - `export` (PNG/JPEG/MP4 encoding, ADR-008) depends on no workspace crate and no GPU. Only `apps/desktop` uses it: it renders frames with `renderer::OffscreenRenderer` and hands them to `export::ExportWorker`.
 - `renderer` takes anything wgpu can turn into a surface. It does not know about winit.
 - Audio decoding and output (`rodio`, ADR-020) live in `apps/desktop` only. Core crates store sound files and their peaks but never decode them.
+- Pen pressure (ADR-025) reaches the canvas as egui touch events with a force. On macOS, `apps/desktop/src/pen.rs` reads it from AppKit and adds those touches itself. `ui` only receives the pressure (`ToolController::set_pressure`).
 - Brush pictures made from artwork, files or generators, and the Brush Editor's scratchpad (ADR-024), are rendered and encoded in `apps/desktop`. `ui` only describes what to make (`BrushCapture`) and receives the finished `ImageData`.
 
 ## Shared types (owned by `animation_core`)

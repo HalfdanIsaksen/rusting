@@ -302,9 +302,7 @@ fn settings(ui: &mut egui::Ui, editor: &mut BrushEditor) -> bool {
                 .changed();
             changed |= ui
                 .add(percent(&mut s.opacity_pressure, "Pressure → opacity"))
-                .on_hover_text(
-                    "How much light pressure lowers opacity (pen pressure isn't read yet)",
-                )
+                .on_hover_text("How much light pen pressure lowers opacity")
                 .changed();
         });
     egui::CollapsingHeader::new("Paper grain")

@@ -221,6 +221,8 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
             brush_picker(ui, session);
             brush_size(ui, session);
             brush_smoothing(ui, session);
+            ui.checkbox(&mut session.tools.pen_pressure, "Pen pressure")
+                .on_hover_text(PRESSURE_HINT);
             ui.separator();
             paint_order(ui, &mut session.tools.brush_order);
             if session.brush().is_some() {
@@ -466,6 +468,10 @@ fn brush_size(ui: &mut egui::Ui, session: &mut Session) {
 
 const SMOOTHING_HINT: &str = "Irons out wobble from your hand or tablet. 0 keeps the line \
                               exactly as drawn; higher values give smoother, rounder curves.";
+
+const PRESSURE_HINT: &str = "With a drawing tablet, pressing lighter draws a thinner line \
+                             (and a lighter one, with a textured brush's Pressure → opacity). \
+                             Off: the pen draws at full size like a mouse.";
 
 fn brush_smoothing(ui: &mut egui::Ui, session: &mut Session) {
     ui.label("Smoothing").on_hover_text(SMOOTHING_HINT);
