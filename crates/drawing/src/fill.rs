@@ -12,8 +12,8 @@
 //! 2. Close gaps: every cell within the gap radius of ink also blocks the
 //!    flood ([`GapClosing`]).
 //! 3. Flood fill from the click. Reaching the edge of the grid means the area
-//!    is not enclosed. The canvas edge closes an area like a line, unless the
-//!    area reaches all four edges (the open background).
+//!    is not enclosed. Cells outside the canvas count as a line, so the
+//!    canvas edge closes an area (an empty canvas fills completely).
 //! 4. Grow the result back by the gap radius, and further under the lines
 //!    (ink cells only) so there is no halo between fill and line.
 //! 5. Trace the boundary (marching squares) and simplify (Douglas–Peucker).
@@ -213,8 +213,6 @@ impl Fill {
 pub enum FillError {
     /// The click is outside the canvas.
     OutsideCanvas,
-    /// The drawing has no strokes to bound an area.
-    NothingToFill,
     /// The click is on a line.
     OnLine,
     /// The area around the click is not enclosed: it leaks out past the line
@@ -226,7 +224,6 @@ impl fmt::Display for FillError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::OutsideCanvas => "click inside the canvas to fill",
-            Self::NothingToFill => "nothing to fill — draw a closed shape first",
             Self::OnLine => "click inside an area, not on a line",
             Self::NotClosed => "area not closed — try a larger gap setting",
         })
@@ -239,7 +236,7 @@ impl std::error::Error for FillError {}
 /// coordinates), closing gaps up to the size `gap` allows.
 ///
 /// `canvas_size` is the document size; clicks outside `0..canvas_size` are
-/// rejected. The result's contours tuck under the surrounding lines by about
+/// rejected, and the canvas edge bounds the area like a line. The result's contours tuck under the surrounding lines by about
 /// half a line width, so fill and line meet with no gap.
 pub fn fill_region(
     drawing: &VectorDrawing,
@@ -260,19 +257,18 @@ pub fn fill_region(
         .iter()
         .filter(|s| s.style.width.is_finite() && s.style.width > 0.0)
         .collect();
-    let Some((lo, hi)) = strokes
+    let bounds = strokes
         .iter()
         .filter_map(|s| s.bounds())
         .filter(|(lo, hi)| lo.is_finite() && hi.is_finite())
-        .reduce(|(a0, a1), (b0, b1)| (a0.min(b0), a1.max(b1)))
-    else {
-        return Err(FillError::NothingToFill);
-    };
+        .reduce(|(a0, a1), (b0, b1)| (a0.min(b0), a1.max(b1)));
     // First on a grid over the strokes alone (finest cells), then, if the
     // area leaks out of it, over the whole canvas: the canvas edge closes an
-    // area like a line does.
-    let inside_strokes = point.cmpge(lo).all() && point.cmple(hi).all();
-    if inside_strokes {
+    // area like a line does, so an empty canvas fills completely.
+    if let Some((lo, hi)) = bounds
+        && point.cmpge(lo).all()
+        && point.cmple(hi).all()
+    {
         match fill_on_grid(&strokes, point, gap, canvas_size, lo, hi) {
             Err(FillError::NotClosed) => {}
             result => return result,
@@ -282,8 +278,7 @@ pub fn fill_region(
 }
 
 /// [`fill_region`] on a grid over `lo..hi` (padded). Cells outside the
-/// canvas are a wall, like ink but never filled. An area that reaches all
-/// four canvas edges is the open background, not an enclosed area.
+/// canvas are a wall, like ink but never filled.
 fn fill_on_grid(
     strokes: &[&Stroke],
     point: Vec2,
@@ -349,9 +344,6 @@ fn fill_on_grid(
     };
 
     let region = flood(&grid, start, |i| !blocked[i]).ok_or(FillError::NotClosed)?;
-    if touches_every_edge(&grid, &region, canvas_size, gap_radius + 2.0 * cell) {
-        return Err(FillError::NotClosed);
-    }
 
     // Grow back over the gap margin. This rounds off corners and drops
     // narrow parts (a morphological opening), so put back every pocket of
@@ -382,22 +374,6 @@ fn fill_on_grid(
         return Err(FillError::NotClosed);
     }
     Ok(FillShape { contours })
-}
-
-/// Whether `region` comes within `reach` of all four canvas edges.
-fn touches_every_edge(grid: &Grid, region: &[bool], canvas_size: Vec2, reach: f32) -> bool {
-    let mut touched = [false; 4];
-    for (i, _) in region.iter().enumerate().filter(|(_, r)| **r) {
-        let c = grid.center(i % grid.w, i / grid.w);
-        touched[0] |= c.x <= reach;
-        touched[1] |= c.y <= reach;
-        touched[2] |= c.x >= canvas_size.x - reach;
-        touched[3] |= c.y >= canvas_size.y - reach;
-        if touched.iter().all(|&t| t) {
-            return true;
-        }
-    }
-    false
 }
 
 /// The working raster: `w * h` square cells of side `cell`, the first one's
@@ -879,6 +855,13 @@ mod tests {
         polyline(&points, width)
     }
 
+    /// The fill leaked out of the line art and filled the background, up to
+    /// the canvas corner.
+    fn assert_background(result: Result<FillShape, FillError>) {
+        let shape = result.unwrap();
+        assert!(shape.contains(Vec2::splat(2.0)), "{:?}", shape.bounds());
+    }
+
     fn assert_inside(shape: &FillShape, lo: Vec2, hi: Vec2) {
         let (min, max) = shape.bounds().unwrap();
         assert!(min.cmpge(lo).all() && max.cmple(hi).all(), "{min} {max}");
@@ -909,10 +892,7 @@ mod tests {
     fn small_gap_needs_small_setting() {
         let d = square_with_gap(5.0);
         let click = Vec2::new(150.0, 150.0);
-        assert_eq!(
-            fill_region(&d, click, GapClosing::None, CANVAS),
-            Err(FillError::NotClosed)
-        );
+        assert_background(fill_region(&d, click, GapClosing::None, CANVAS));
         let shape = fill_region(&d, click, GapClosing::Small, CANVAS).unwrap();
         assert!(shape.contains(click));
         // Fills the square, not the outside, and barely bulges out of the gap.
@@ -924,10 +904,7 @@ mod tests {
     fn medium_gap_needs_medium_setting() {
         let d = square_with_gap(14.0);
         let click = Vec2::new(150.0, 150.0);
-        assert_eq!(
-            fill_region(&d, click, GapClosing::Small, CANVAS),
-            Err(FillError::NotClosed)
-        );
+        assert_background(fill_region(&d, click, GapClosing::Small, CANVAS));
         let shape = fill_region(&d, click, GapClosing::Medium, CANVAS).unwrap();
         assert!(shape.contains(click));
         assert_inside(&shape, Vec2::splat(97.0), Vec2::splat(203.0));
@@ -973,10 +950,7 @@ mod tests {
         let open = box_with_tube(180.0, 220.0, 180.0, 220.0, false);
         let click = Vec2::new(200.0, 300.0);
         for gap in GapClosing::ALL {
-            assert_eq!(
-                fill_region(&open, click, gap, CANVAS),
-                Err(FillError::NotClosed)
-            );
+            assert_background(fill_region(&open, click, gap, CANVAS));
         }
         // Capped, it fills the box and the whole tube, and nothing beside it.
         let capped = box_with_tube(180.0, 220.0, 180.0, 220.0, true);
@@ -1014,20 +988,14 @@ mod tests {
             assert!(!shape.contains(p), "{p}");
         }
         // Without gap closing it leaks out through the neck.
-        assert_eq!(
-            fill_region(&flared, click, GapClosing::None, CANVAS),
-            Err(FillError::NotClosed)
-        );
+        assert_background(fill_region(&flared, click, GapClosing::None, CANVAS));
     }
 
     #[test]
     fn click_outside_shape_or_on_line_or_canvas_fails() {
         let d = square_with_gap(0.0);
         for gap in GapClosing::ALL {
-            assert_eq!(
-                fill_region(&d, Vec2::new(250.0, 150.0), gap, CANVAS),
-                Err(FillError::NotClosed)
-            );
+            assert_background(fill_region(&d, Vec2::new(250.0, 150.0), gap, CANVAS));
             assert_eq!(
                 fill_region(&d, Vec2::new(150.0, 100.5), gap, CANVAS),
                 Err(FillError::OnLine)
@@ -1039,13 +1007,19 @@ mod tests {
         }
         // Inside the bounds of an open shape: leaks around it.
         let open = drawing(vec![polyline(&[(100.0, 100.0), (200.0, 200.0)], 4.0)]);
-        assert_eq!(
-            fill_region(&open, Vec2::new(170.0, 130.0), GapClosing::Medium, CANVAS),
-            Err(FillError::NotClosed)
-        );
-        assert_eq!(
-            fill_region(&VectorDrawing::new(), Vec2::ONE, GapClosing::None, CANVAS),
-            Err(FillError::NothingToFill)
+        assert_background(fill_region(
+            &open,
+            Vec2::new(170.0, 130.0),
+            GapClosing::Medium,
+            CANVAS,
+        ));
+        // Nothing drawn: the canvas edge alone bounds the whole canvas.
+        let all = fill_region(&VectorDrawing::new(), Vec2::ONE, GapClosing::None, CANVAS).unwrap();
+        assert!(all.contains(Vec2::splat(0.5)) && all.contains(Vec2::splat(399.5)));
+        assert!(
+            (399.0 * 399.0..=403.0 * 403.0).contains(&all.area()),
+            "{}",
+            all.area()
         );
     }
 
@@ -1078,10 +1052,12 @@ mod tests {
         assert!(!shape.contains(Vec2::new(50.0, 50.0)));
         assert!(!shape.contains(Vec2::new(200.0, 200.0)));
         // Outside the wedge, the area reaches every edge: the background.
-        assert_eq!(
-            fill_region(&wedge, Vec2::new(50.0, 300.0), GapClosing::None, CANVAS),
-            Err(FillError::NotClosed)
-        );
+        assert_background(fill_region(
+            &wedge,
+            Vec2::new(50.0, 300.0),
+            GapClosing::None,
+            CANVAS,
+        ));
     }
 
     #[test]
@@ -1089,10 +1065,7 @@ mod tests {
         // Stops 3 units (cap to edge) short of each side.
         let short = drawing(vec![polyline(&[(5.0, 200.0), (395.0, 200.0)], 4.0)]);
         let click = Vec2::new(200.0, 300.0);
-        assert_eq!(
-            fill_region(&short, click, GapClosing::None, CANVAS),
-            Err(FillError::NotClosed)
-        );
+        assert_background(fill_region(&short, click, GapClosing::None, CANVAS));
         let shape = fill_region(&short, click, GapClosing::Small, CANVAS).unwrap();
         assert!(shape.contains(Vec2::new(1.0, 398.0)));
         assert!(!shape.contains(Vec2::new(200.0, 150.0)));
