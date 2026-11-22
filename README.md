@@ -91,7 +91,7 @@ The tool strip runs down the side of the canvas:
 
 ### Brushes
 - Tool Settings → **Brush** picks what the Brush tool draws with: **Vector (solid)**, a built-in brush (**Pencil (HB)**, **Soft Pencil (6B)**, **Charcoal**, **Chalk**, **Ink Pen**, **Marker**) or a brush in the project's Library.
-- Textured brushes stamp a tip picture along the line on a paper grain, for a drawn-on-paper look. Overlapping passes build up darker, and the paper's dips stay white. The stroke is still a vector line: it selects, moves, transforms, erases, recolours and exports like any other.
+- Textured brushes stamp a tip picture along the line on a paper grain, for a drawn-on-paper look. Overlapping stamps of one stroke build up darker while the paper's dips stay white, and drawing another stroke over it fills those dips. The stroke is still a vector line: it selects, moves, transforms, erases, recolours and exports like any other.
 - The first stroke drawn with a built-in brush adds the brush to the Library, so the project file keeps it and opens anywhere.
 - **Import** a `.rustbrush` file (File → Import…) to add a brush, and right-click a brush in the Library → **Export Brush…** to share one. A `.rustbrush` file is a zip with `brush.json` (name and stamp settings), `tip.png` and an optional `grain.png`.
 - **Create Brush from Selection** (Edit menu, the canvas's right-click menu, or **New from Selection** under the brush picker): select strokes, fills or pictures you drew and they become the tip of a new brush in the Library, picked and opened in the Brush Editor. Dark marks paint. The tip is centred and fades out at its edge.

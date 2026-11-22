@@ -1,12 +1,15 @@
 // Brushed strokes (ADR-022): one quad per stamp of the brush tip, in layer
 // coordinates. Each vertex carries the tip texture coordinates and the
 // stamp's opacity. The paper grain is sampled in layer coordinates, so it
-// stays fixed to the paper while strokes move over it.
+// moves with the stroke's layer, shifted by a per-stroke offset
+// (`draw.grain_seed`): a stroke drawn over another fills the paper dips the
+// first one left, as a second pass of charcoal does.
 //
 // Shares `Globals` and `Draw` with stroke.wgsl. `draw.color` is the stroke
 // colour with stroke and layer opacity; `draw.grain_scale` is layer units
 // per grain pixel and `draw.grain_strength` the grain strength (0 = no grain; 1 = only
-// the brighter half of the grain takes paint).
+// the brighter half of the grain takes paint), and `draw.grain_seed` this
+// stroke's grain offset as a fraction of the grain picture.
 //
 // All stamps of a stroke share one depth and the pipeline tests with
 // LessEqual, so overlapping stamps build up like graphite, while later
@@ -24,6 +27,7 @@ struct Draw {
     depth: f32,
     grain_scale: f32,
     grain_strength: f32,
+    grain_seed: f32,
 };
 
 struct VertexOut {
@@ -60,10 +64,12 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let t = textureSample(tip, tip_sampler, in.uv);
     let coverage = t.r * t.a;
     let size = vec2<f32>(textureDimensions(grain, 0));
-    let g = textureSample(grain, grain_sampler, in.local / (max(draw.grain_scale, 1e-3) * size)).r;
+    let offset = fract(vec2<f32>(draw.grain_seed, draw.grain_seed * 7.31 + 0.37));
+    let g = textureSample(grain, grain_sampler, in.local / (max(draw.grain_scale, 1e-3) * size) + offset).r;
     // Height mode: the paper takes paint only where the grain is above a
-    // threshold that rises with the strength. Valleys below it stay empty
-    // however many stamps pass over them, so the grain survives build-up.
+    // threshold that rises with the strength. Within one stroke, valleys
+    // below it stay empty however many stamps pass over them, so the grain
+    // survives build-up; another stroke has its grain elsewhere.
     let strength = clamp(draw.grain_strength, 0.0, 1.0);
     let paper = smoothstep(strength - 0.5, strength, g);
     let alpha = coverage * in.opacity * paper * draw.color.a;

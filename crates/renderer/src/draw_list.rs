@@ -123,6 +123,7 @@ impl<'a> DrawListBuilder<'a> {
                     asset,
                     grain_scale: data.settings.grain_scale,
                     grain_strength,
+                    grain_seed: crate::canvas::grain_seed(stroke.id),
                 }),
             });
             return;
