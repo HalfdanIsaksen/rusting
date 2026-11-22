@@ -168,22 +168,19 @@ pub fn panel(ui: &mut egui::Ui, session: &mut Session) {
     let width = ui.available_width();
     let columns = columns_for(width);
     let indent = ((width - grid_width(columns)) / 2.0).max(0.0);
-    // Tool switching is locked while a gesture is in progress.
-    ui.add_enabled_ui(!busy, |ui| {
-        for (index, group) in TOOLS.chunk_by(|a, b| a.group == b.group).enumerate() {
-            if index > 0 {
-                ui.add(egui::Separator::default().spacing(8.0));
-            }
-            for row in group.chunks(columns) {
-                ui.horizontal(|ui| {
-                    ui.add_space(indent);
-                    for entry in row {
-                        tool_button(ui, session, entry);
-                    }
-                });
-            }
+    for (index, group) in TOOLS.chunk_by(|a, b| a.group == b.group).enumerate() {
+        if index > 0 {
+            ui.add(egui::Separator::default().spacing(8.0));
         }
-    });
+        for row in group.chunks(columns) {
+            ui.horizontal(|ui| {
+                ui.add_space(indent);
+                for entry in row {
+                    tool_button(ui, session, entry, busy);
+                }
+            });
+        }
+    }
 }
 
 /// How many buttons fit side by side in `width` points; at least one.
@@ -197,8 +194,17 @@ fn grid_width(columns: usize) -> f32 {
 }
 
 /// One square icon button, with its tooltip and options popup.
-fn tool_button(ui: &mut egui::Ui, session: &mut Session, entry: &ToolEntry) {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(BUTTON, BUTTON), egui::Sense::click());
+///
+/// While a gesture is in progress (`busy`) the button ignores clicks, so the
+/// tool can't change mid-stroke, but it keeps its look: greying the strip out
+/// would make it flash on every stroke.
+fn tool_button(ui: &mut egui::Ui, session: &mut Session, entry: &ToolEntry, busy: bool) {
+    let sense = if busy {
+        egui::Sense::hover()
+    } else {
+        egui::Sense::click()
+    };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(BUTTON, BUTTON), sense);
     let selected = session.state.tool == entry.tool;
     let tooltip = format!("{} ({})", entry.name, entry.shortcut);
 
