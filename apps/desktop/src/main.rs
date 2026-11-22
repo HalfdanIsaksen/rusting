@@ -272,6 +272,13 @@ impl App {
                 );
             }
             let draws = collect_draws(gpu.device(), canvas, shell);
+            // Build the next frames' meshes before they are due (after the
+            // current frame's, so the generation below covers both).
+            let playing = shell.session.playback.is_playing();
+            canvas.keep_unused_meshes(playing);
+            if playing {
+                prepare_upcoming(gpu.device(), canvas, &shell.session);
+            }
             CanvasState {
                 viewport,
                 size: canvas.target().size(),
@@ -641,6 +648,28 @@ fn collect_draws(
         });
     }
     draws.finish()
+}
+
+/// Most time one redraw spends building meshes for frames still to come.
+const PREPARE_BUDGET: Duration = Duration::from_millis(6);
+
+/// Builds the meshes of the frames playback shows in the next second, so a
+/// drawing is ready when its frame comes up. Built on demand instead, a
+/// detailed drawing stalls its frame and the clock skips the frames after
+/// it. Stops once [`PREPARE_BUDGET`] is spent; the next redraw carries on.
+/// Frames already prepared only cost a cache lookup per item.
+fn prepare_upcoming(device: &wgpu::Device, canvas: &mut CanvasRenderer, session: &ui::Session) {
+    let started = Instant::now();
+    let doc = &session.document;
+    let ahead = doc.fps.as_f64().ceil().max(1.0) as usize;
+    let mut draws =
+        DrawListBuilder::new(device, canvas.stroke_cache_mut()).with_assets(doc.assets());
+    for frame in session.playback.upcoming(session.current_frame(), ahead) {
+        if started.elapsed() >= PREPARE_BUDGET {
+            break;
+        }
+        draws.render_list(&doc.evaluate(frame));
+    }
 }
 
 /// Adds every item of `drawing` in paint order, unchanged.

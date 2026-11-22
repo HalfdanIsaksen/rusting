@@ -98,6 +98,34 @@ impl<T: TimeSource> Playback<T> {
         self.clock.seek(frame);
     }
 
+    /// The frames playback shows after `frame`, in order, at most `count`:
+    /// through the end of the play range, then from its start again when
+    /// looping. Never `frame` itself. Empty while paused.
+    pub fn upcoming(&self, frame: FrameIndex, count: usize) -> Vec<FrameIndex> {
+        let range = self.clock.range();
+        let (start, end) = (range.start.0, range.end.0);
+        if !self.is_playing() || start >= end {
+            return Vec::new();
+        }
+        let len = (end - start) as usize;
+        let mut out = Vec::new();
+        let mut next = frame.0;
+        while out.len() < count.min(len) {
+            next = next.saturating_add(1);
+            if next < start || next >= end {
+                if !self.looping() {
+                    break;
+                }
+                next = start;
+            }
+            if next == frame.0 {
+                break;
+            }
+            out.push(FrameIndex(next));
+        }
+        out
+    }
+
     /// The frame to show now, or `None` when paused.
     pub fn tick(&mut self) -> Option<FrameIndex> {
         if !self.clock.is_playing() {
@@ -246,6 +274,31 @@ mod tests {
         p.sync(&d);
         time.advance(Duration::from_millis(500));
         assert_eq!(p.tick(), Some(FrameIndex(8)));
+    }
+
+    #[test]
+    fn upcoming_frames_follow_the_play_range() {
+        let time = ManualTimeSource::new();
+        let mut d = doc(12, 6);
+        let mut p = Playback::with_time(time.clone(), &d);
+        let frames = |v: &[u32]| v.iter().map(|&f| FrameIndex(f)).collect::<Vec<_>>();
+        assert!(p.upcoming(FrameIndex(0), 3).is_empty(), "paused");
+        p.toggle(&d, FrameIndex(0));
+        assert_eq!(p.upcoming(FrameIndex(1), 3), frames(&[2, 3, 4]));
+        // Wraps when looping, and never comes back round to the frame shown.
+        assert_eq!(p.upcoming(FrameIndex(4), 3), frames(&[5, 0, 1]));
+        assert_eq!(p.upcoming(FrameIndex(2), 99), frames(&[3, 4, 5, 0, 1]));
+        p.set_looping(false);
+        assert_eq!(p.upcoming(FrameIndex(4), 3), frames(&[5]));
+        // Inside a tag, only the tag's frames.
+        p.toggle(&d, FrameIndex(0));
+        p.set_looping(true);
+        d.tags.push(document::FrameTag {
+            name: "walk".into(),
+            range: FrameRange::new(FrameIndex(1), FrameIndex(3)),
+        });
+        p.toggle(&d, FrameIndex(1));
+        assert_eq!(p.upcoming(FrameIndex(2), 3), frames(&[1]));
     }
 
     #[test]
