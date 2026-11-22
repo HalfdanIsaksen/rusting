@@ -184,6 +184,9 @@ pub struct CanvasRenderer {
     /// Repeats, for the grain.
     grain_sampler: wgpu::Sampler,
     strokes: StrokeCache,
+    /// Whether renders leave unused meshes in the cache (see
+    /// [`Self::keep_unused_meshes`]).
+    keep_unused: bool,
     /// Colours and sizes of the workspace, outline, shadow and checkerboard.
     pub style: CanvasStyle,
 }
@@ -395,6 +398,7 @@ impl CanvasRenderer {
             brush_layout,
             grain_sampler,
             strokes: StrokeCache::new(),
+            keep_unused: false,
             style: CanvasStyle::default(),
         }
     }
@@ -424,6 +428,14 @@ impl CanvasRenderer {
     /// The stroke mesh cache, for uploading meshes and invalidating strokes.
     pub fn stroke_cache_mut(&mut self) -> &mut StrokeCache {
         &mut self.strokes
+    }
+
+    /// While `keep` is true, renders do not evict meshes that went unused
+    /// for [`DEFAULT_MAX_UNUSED_RENDERS`]. Playback sets it: a loop longer
+    /// than that would otherwise drop and rebuild every drawing each time
+    /// round.
+    pub fn keep_unused_meshes(&mut self, keep: bool) {
+        self.keep_unused = keep;
     }
 
     /// Makes sure every stroke and fill in `list` has a cached mesh (calling
@@ -702,7 +714,9 @@ impl CanvasRenderer {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
-        self.strokes.evict_unused(DEFAULT_MAX_UNUSED_RENDERS);
+        if !self.keep_unused {
+            self.strokes.evict_unused(DEFAULT_MAX_UNUSED_RENDERS);
+        }
     }
 
     /// Starts a pass into the MSAA target (cleared to `clear`, depth cleared)

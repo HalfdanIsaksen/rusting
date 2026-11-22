@@ -53,3 +53,15 @@ missing_docs = "warn"
 
 [workspace.lints.clippy]
 unwrap_used = "warn"
+
+# Debug builds (`cargo run`) optimize the crates that build brush stamps and
+# meshes, so playback keeps up with the frame rate. The rest stays unoptimized
+# for quick compiles and debugging.
+[profile.dev.package.drawing]
+opt-level = 3
+
+[profile.dev.package.renderer]
+opt-level = 3
+
+[profile.dev.package.glam]
+opt-level = 3
