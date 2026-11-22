@@ -84,7 +84,7 @@ fn fill_closed_square_then_undo_redo_and_recolour() {
 }
 
 #[test]
-fn small_gap_needs_gap_closing_and_explains_failure() {
+fn small_gap_needs_gap_closing_or_the_fill_leaks() {
     let mut s = Session::new();
     s.state.brush.width = 4.0;
     // Square with a ~5 unit gap in the top edge.
@@ -99,30 +99,34 @@ fn small_gap_needs_gap_closing_and_explains_failure() {
             (145.5, 100.0),
         ],
     );
-    let undo_steps = s.history.undo_len();
+    // Without gap closing, the fill runs out through the gap and fills the
+    // background up to the canvas edge.
     s.tools.fill_gap = GapClosing::None;
     click_fill(&mut s, Vec2::new(150.0, 150.0));
+    assert_eq!(fills(&s), 1);
+    assert!(drawing(&s).unwrap().fills()[0].contains(Vec2::new(10.0, 10.0)));
+    s.undo();
     assert_eq!(fills(&s), 0);
-    assert_eq!(s.history.undo_len(), undo_steps, "nothing recorded");
-    let status = s.status().unwrap();
-    assert!(
-        status.is_error && status.text.contains("not closed"),
-        "{}",
-        status.text
-    );
 
     s.tools.fill_gap = GapClosing::Small;
     click_fill(&mut s, Vec2::new(150.0, 150.0));
     assert_eq!(fills(&s), 1);
+    let fill = &drawing(&s).unwrap().fills()[0];
+    assert!(fill.contains(Vec2::new(150.0, 150.0)));
+    assert!(!fill.contains(Vec2::new(10.0, 10.0)));
 }
 
 #[test]
-fn fill_on_empty_frame_does_nothing() {
+fn fill_on_empty_frame_fills_the_whole_canvas() {
     let mut s = Session::new();
     click_fill(&mut s, Vec2::new(10.0, 10.0));
+    assert_eq!(fills(&s), 1);
+    let size = s.document.canvas;
+    let fill = &drawing(&s).unwrap().fills()[0];
+    assert!(fill.contains(Vec2::new(1.0, 1.0)));
+    assert!(fill.contains(Vec2::new(size.width as f32 - 1.0, size.height as f32 - 1.0)));
+    s.undo();
     assert_eq!(fills(&s), 0);
-    assert!(!s.history.can_undo());
-    assert!(s.status().unwrap().is_error);
 }
 
 #[test]
