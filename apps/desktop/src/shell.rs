@@ -257,10 +257,12 @@ fn handle_tool_input(
     let can_start = response.hovered() && !space && !panning;
     for step in steps {
         match step {
-            PointerStep::Press(p) if can_start && !session.tools.is_active() => {
+            PointerStep::Press(p, pressure) if can_start && !session.tools.is_active() => {
+                session.tools.set_pressure(pressure);
                 session.pointer_down_with(to_canvas(p), viewport.zoom as f32, shift);
             }
-            PointerStep::Move(p) if session.tools.is_active() => {
+            PointerStep::Move(p, pressure) if session.tools.is_active() => {
+                session.tools.set_pressure(pressure);
                 session.pointer_move(to_canvas(p));
             }
             PointerStep::Release if session.tools.is_active() => session.pointer_up(),
@@ -275,27 +277,41 @@ fn handle_tool_input(
     }
 }
 
-/// A primary-button pointer event, in the order it happened.
+/// A primary-button pointer event, in the order it happened, with the pen
+/// pressure at that moment (`None` for a mouse).
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum PointerStep {
-    Press(egui::Pos2),
-    Move(egui::Pos2),
+    Press(egui::Pos2, Option<f32>),
+    Move(egui::Pos2, Option<f32>),
     Release,
 }
 
 /// The frame's pointer moves and primary presses and releases, in order.
+///
+/// A pen arrives as touch events, each followed by the pointer events egui
+/// emulates for it (on Windows by egui-winit, on macOS by `pen.rs`). A
+/// touch's force is the pen pressure of the pointer events after it, until
+/// the touch ends; pointer events outside a touch come from a mouse.
 fn pointer_steps(events: &[egui::Event]) -> Vec<PointerStep> {
+    let mut pressure = None;
     events
         .iter()
         .filter_map(|event| match *event {
-            egui::Event::PointerMoved(p) => Some(PointerStep::Move(p)),
+            egui::Event::Touch { phase, force, .. } => {
+                pressure = match phase {
+                    egui::TouchPhase::Start | egui::TouchPhase::Move => force,
+                    egui::TouchPhase::End | egui::TouchPhase::Cancel => None,
+                };
+                None
+            }
+            egui::Event::PointerMoved(p) => Some(PointerStep::Move(p, pressure)),
             egui::Event::PointerButton {
                 pos,
                 button: egui::PointerButton::Primary,
                 pressed,
                 ..
             } => Some(if pressed {
-                PointerStep::Press(pos)
+                PointerStep::Press(pos, pressure)
             } else {
                 PointerStep::Release
             }),
@@ -840,9 +856,9 @@ mod tests {
         assert_eq!(
             pointer_steps(&events),
             vec![
-                PointerStep::Move(a),
-                PointerStep::Press(a),
-                PointerStep::Move(b),
+                PointerStep::Move(a, None),
+                PointerStep::Press(a, None),
+                PointerStep::Move(b, None),
                 PointerStep::Release,
             ]
         );
@@ -890,6 +906,57 @@ mod tests {
                 assert!((a.lerp(b, t) - *p).length() < 1e-2, "{p} off the drag");
             }
         }
+    }
+
+    fn pen(phase: egui::TouchPhase, pos: egui::Pos2, force: f32) -> egui::Event {
+        egui::Event::Touch {
+            device_id: egui::TouchDeviceId(7),
+            id: egui::TouchId(0),
+            phase,
+            pos,
+            force: Some(force),
+        }
+    }
+
+    /// A pen arrives as a touch followed by the emulated pointer events
+    /// (egui-winit on Windows, `pen.rs` on macOS): its force becomes the
+    /// pressure of each brush point, and a mouse after it draws at full
+    /// pressure again.
+    #[test]
+    fn pen_touches_set_brush_pressure() {
+        use egui::TouchPhase::{End, Move, Start};
+        let mut h = Harness::new();
+        h.shell.session.tools.merge_same_colour = false;
+        let (a, b, c) = (
+            egui::pos2(600.0, 300.0),
+            egui::pos2(650.0, 300.0),
+            egui::pos2(700.0, 300.0),
+        );
+        h.frame(vec![
+            pen(Start, a, 0.25),
+            egui::Event::PointerMoved(a),
+            press(a, true),
+            pen(Move, b, 0.5),
+            egui::Event::PointerMoved(b),
+        ]);
+        h.frame(vec![
+            pen(Move, c, 0.75),
+            egui::Event::PointerMoved(c),
+            pen(End, c, 0.0),
+            press(c, false),
+        ]);
+        let pressures: Vec<f32> = h.strokes()[0].points.iter().map(|p| p.pressure).collect();
+        assert_eq!(pressures, vec![0.25, 0.5, 0.75]);
+
+        let (d, e) = (egui::pos2(600.0, 400.0), egui::pos2(700.0, 400.0));
+        h.frame(vec![
+            egui::Event::PointerMoved(d),
+            press(d, true),
+            egui::Event::PointerMoved(e),
+            press(e, false),
+        ]);
+        let strokes = h.strokes();
+        assert!(strokes[1].points.iter().all(|p| p.pressure == 1.0));
     }
 
     #[test]

@@ -65,6 +65,10 @@ pub const DEFAULT_TEXT_SIZE: f32 = 48.0;
 /// Default brush smoothing, in percent.
 pub const DEFAULT_BRUSH_SMOOTHING: f32 = 50.0;
 
+/// The lightest pen pressure a brush point gets, so a feather-light touch
+/// still leaves a thin line instead of nothing.
+pub const MIN_PEN_PRESSURE: f32 = 0.05;
+
 /// How far outside a stroke a click still selects it, in screen points.
 const SELECT_TOLERANCE_SCREEN: f32 = 4.0;
 
@@ -412,6 +416,11 @@ pub struct ToolController {
     /// Brush smoothing in percent (`0.0..=100.0`). Higher irons out more of
     /// the hand and tablet wobble.
     pub brush_smoothing: f32,
+    /// Pen pressure sets the brush width (and a textured brush's opacity, by
+    /// its pressure → opacity setting). Off: every point has full pressure.
+    pub pen_pressure: bool,
+    /// Pressure of the next brush point: the pen's, or `1.0` for a mouse.
+    pressure: f32,
     /// Where new brush strokes go in the frame's paint order (ADR-010).
     pub brush_order: PaintOrder,
     /// Where new bucket fills go in the frame's paint order (ADR-010).
@@ -461,6 +470,8 @@ impl Default for ToolController {
     fn default() -> Self {
         Self {
             brush_smoothing: DEFAULT_BRUSH_SMOOTHING,
+            pen_pressure: true,
+            pressure: 1.0,
             brush_order: PaintOrder::default(),
             fill_order: PaintOrder::default(),
             eraser_radius: 12.0,
@@ -486,6 +497,30 @@ impl Default for ToolController {
 }
 
 impl ToolController {
+    /// Sets the pressure of the next brush points: `Some` with the pen's
+    /// pressure in `0.0..=1.0`, `None` for a mouse (full pressure). A
+    /// non-finite pressure counts as full pressure, and a pen never goes
+    /// below [`MIN_PEN_PRESSURE`].
+    pub fn set_pressure(&mut self, pressure: Option<f32>) {
+        self.pressure = match pressure {
+            Some(p) if p.is_finite() => p.clamp(MIN_PEN_PRESSURE, 1.0),
+            _ => 1.0,
+        };
+    }
+
+    /// The brush point at `pos`, with the current pressure (full pressure
+    /// while pen pressure is off).
+    fn brush_point(&self, pos: Vec2) -> StrokePoint {
+        StrokePoint {
+            pos,
+            pressure: if self.pen_pressure {
+                self.pressure
+            } else {
+                1.0
+            },
+        }
+    }
+
     /// Drops the gesture in progress without changing the document.
     pub fn cancel(&mut self) {
         self.gesture = None;
@@ -901,7 +936,7 @@ impl Session {
                 let mut builder = StrokeBuilder::begin(style)
                     .with_min_distance(min_distance)
                     .with_smoothing(smoothing);
-                builder.add_point(StrokePoint::new(pos));
+                builder.add_point(self.tools.brush_point(pos));
                 Gesture::Brush {
                     layer,
                     frame,
@@ -958,6 +993,7 @@ impl Session {
     pub fn pointer_move(&mut self, pos: Vec2) {
         let radius = self.tools.eraser_radius;
         let (shift, alt) = (self.tools.shift, self.tools.alt);
+        let point = self.tools.brush_point(pos);
         match &mut self.tools.gesture {
             Some(Gesture::Transform {
                 mode,
@@ -1021,7 +1057,7 @@ impl Session {
             }
             Some(Gesture::Shape { last, .. }) => *last = pos,
             Some(Gesture::Brush { builder, last, .. }) => {
-                builder.add_point(StrokePoint::new(pos));
+                builder.add_point(point);
                 *last = pos;
             }
             Some(Gesture::Erase {
@@ -2138,6 +2174,42 @@ mod tests {
         assert_eq!(strokes_at(&s, 0), 0);
         s.redo();
         assert_eq!(strokes_at(&s, 0), 1);
+    }
+
+    fn stroke_pressures(s: &Session) -> Vec<f32> {
+        let layer = s.state.active_layer.unwrap();
+        let drawing = s.document.drawing_at(layer, FrameIndex(0)).unwrap();
+        let drawing = s.document.drawing(drawing).unwrap().as_vector().unwrap();
+        let stroke = drawing.strokes().last().unwrap();
+        stroke.points.iter().map(|p| p.pressure).collect()
+    }
+
+    fn draw_with_pressure(s: &mut Session, pressures: &[Option<f32>]) {
+        s.tools.set_pressure(pressures[0]);
+        assert!(s.pointer_down(Vec2::new(10.0, 10.0), 1.0));
+        for (i, &p) in pressures.iter().enumerate().skip(1) {
+            s.tools.set_pressure(p);
+            s.pointer_move(Vec2::new(10.0 + 20.0 * i as f32, 10.0));
+        }
+        s.pointer_up();
+    }
+
+    #[test]
+    fn brush_points_take_the_pen_pressure() {
+        let mut s = Session::new();
+        s.tools.brush_smoothing = 0.0;
+        s.tools.merge_same_colour = false;
+        draw_with_pressure(&mut s, &[Some(0.2), Some(0.6), Some(1.0), Some(0.0)]);
+        assert_eq!(stroke_pressures(&s), vec![0.2, 0.6, 1.0, MIN_PEN_PRESSURE]);
+
+        // A mouse (no pressure) and nonsense values draw at full pressure.
+        draw_with_pressure(&mut s, &[None, Some(f32::NAN), Some(7.0)]);
+        assert_eq!(stroke_pressures(&s), vec![1.0, 1.0, 1.0]);
+
+        // Pen pressure off: the pen draws like a mouse.
+        s.tools.pen_pressure = false;
+        draw_with_pressure(&mut s, &[Some(0.2), Some(0.4)]);
+        assert_eq!(stroke_pressures(&s), vec![1.0, 1.0]);
     }
 
     #[test]

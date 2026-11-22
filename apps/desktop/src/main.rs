@@ -13,6 +13,7 @@ mod icon;
 mod import;
 mod layout_file;
 mod open_files;
+mod pen;
 mod shell;
 
 use document::animation_core::Rgba;
@@ -101,6 +102,8 @@ struct App {
     graphics: Option<Graphics>,
     egui_ctx: egui::Context,
     egui_state: Option<egui_winit::State>,
+    /// Tablet pen pressure on macOS (ADR-025); set up with the window.
+    pen: Option<pen::PenInput>,
     shell: Shell,
     /// Plays audio layers along with playback and scrubbing.
     audio: audio::AudioPlayer,
@@ -136,6 +139,7 @@ impl App {
                 ctx
             },
             egui_state: None,
+            pen: None,
             shell: Shell::new(session),
             audio: audio::AudioPlayer::new(),
             next_repaint: None,
@@ -176,6 +180,7 @@ impl App {
             window.theme(),
             Some(max_texture_side),
         ));
+        self.pen = Some(pen::PenInput::new());
         window.request_redraw();
         self.window = Some(window);
         self.graphics = Some(Graphics {
@@ -838,6 +843,16 @@ impl ApplicationHandler for App {
         let Some(window) = self.window.clone() else {
             return;
         };
+        // A tablet pen on macOS: its pressure goes to egui as a touch just
+        // before the mouse event it belongs to.
+        if let (Some(pen), Some(state)) = (&mut self.pen, &mut self.egui_state)
+            && let Some(touch) = pen.touch_for(
+                &event,
+                egui_winit::pixels_per_point(&self.egui_ctx, &window),
+            )
+        {
+            state.egui_input_mut().events.push(touch);
+        }
         // egui-winit asks for a repaint on `RedrawRequested` itself, which
         // would redraw forever; that event is ours alone.
         if !matches!(event, WindowEvent::RedrawRequested)
