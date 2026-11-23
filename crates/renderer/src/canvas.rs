@@ -15,7 +15,7 @@ use crate::stroke_cache::{
 };
 use crate::viewport::Viewport;
 use animation_core::glam::{Affine2, Mat4, Quat, Vec2};
-use animation_core::{AssetId, LayerId, Rgba};
+use animation_core::{AssetId, LayerId, Rgba, StrokeId};
 use document::RenderList;
 use document::scene::{BlendMode, Transform2D};
 use drawing::{Fill, Gradient, Image, PaintItem, Stroke};
@@ -107,6 +107,19 @@ pub struct BrushDraw {
     /// How strongly the grain thins the line, `0.0..=1.0` (0 when the brush
     /// has no grain).
     pub grain_strength: f32,
+    /// Where this stroke's grain starts, as a fraction `0.0..1.0` of the
+    /// grain picture (from [`grain_seed`]). Each stroke gets its own, so a
+    /// stroke drawn over another fills the paper dips the first one left.
+    pub grain_seed: f32,
+}
+
+/// A stroke's grain offset in `0.0..1.0`, from its stable ID, so the editor,
+/// the preview and every export place its grain the same way.
+pub(crate) fn grain_seed(stroke: StrokeId) -> f32 {
+    let bits = stroke.as_uuid().as_u128();
+    let mixed = (bits ^ (bits >> 64)) as u64;
+    // The top 24 bits fit an f32 exactly.
+    (mixed >> 40) as f32 / (1u64 << 24) as f32
 }
 
 /// Everything drawn on the canvas for one render.
@@ -865,7 +878,7 @@ impl CanvasRenderer {
             // earlier ones; a stroke's own overlapping triangles don't.
             u.float(stroke_depth(i, count));
             match draw.brush {
-                Some(b) => u.floats(&[b.grain_scale, b.grain_strength, 0.0]),
+                Some(b) => u.floats(&[b.grain_scale, b.grain_strength, b.grain_seed]),
                 None => u.floats(&[1.0, 0.0, 0.0]),
             }
             let data = u.finish(STROKE_DRAW_SIZE);
@@ -1197,6 +1210,20 @@ impl Std140 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grain_seed_is_stable_and_differs_between_strokes() {
+        let ids: Vec<StrokeId> = (0..32).map(|_| StrokeId::new()).collect();
+        let seeds: Vec<f32> = ids.iter().map(|&id| grain_seed(id)).collect();
+        for (&id, &seed) in ids.iter().zip(&seeds) {
+            assert!((0.0..1.0).contains(&seed));
+            assert_eq!(grain_seed(id), seed);
+        }
+        let mut distinct = seeds.clone();
+        distinct.sort_by(f32::total_cmp);
+        distinct.dedup();
+        assert!(distinct.len() > 28, "seeds should spread out: {seeds:?}");
+    }
 
     #[test]
     fn normal_runs_merge_and_other_modes_split_by_layer() {
