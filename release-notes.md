@@ -10,6 +10,7 @@ Format:
 -->
 
 ### New
+- **Update check**: at launch Rusting tells you when a newer version is out, with a download link or the `brew upgrade` command, and Help → Check for Updates… checks on demand.
 
 ### Improved
 

@@ -48,6 +48,9 @@ pub enum Request {
     /// brush picture and hand it to [`Session::finish_brush_capture`]
     /// (ADR-024).
     CaptureBrushPicture,
+    /// Ask GitHub for the latest release now and say whether it is newer
+    /// (Help → Check for Updates…, ADR-026).
+    CheckForUpdates,
 }
 
 /// What File → Export writes.

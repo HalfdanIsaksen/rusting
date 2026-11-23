@@ -33,6 +33,7 @@ rodio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 zip = { version = "9.7.0", default-features = false, features = ["deflate"] }
+ureq = "3.5.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Dock icon (bare binary, no .app bundle): versions already used by rfd and egui-winit.

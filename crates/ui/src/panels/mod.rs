@@ -14,11 +14,13 @@ mod status;
 mod timeline;
 mod tool_options;
 pub mod toolbar;
+pub mod update;
 
 use crate::session::Session;
 
 pub use menu::canvas_menu;
 pub use preview::window as preview_window;
+pub use update::{BREW_UPGRADE, UpdateChoice, UpdateNotice, update_dialog};
 
 /// Draws the whole editor for one frame, or the start menu while it is up.
 /// `canvas` fills the canvas pane, wherever the user docked it; the host draws

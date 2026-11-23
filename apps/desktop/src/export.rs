@@ -295,6 +295,11 @@ impl ExportPanel {
         self.job.is_some()
     }
 
+    /// Whether the options dialog or the progress window is showing.
+    pub fn is_open(&self) -> bool {
+        self.dialog.is_some() || self.job.is_some()
+    }
+
     /// Opens the options dialog for `kind`.
     pub fn open(&mut self, kind: ExportKind, session: &Session) {
         if self.job.is_some() {
