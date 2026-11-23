@@ -758,6 +758,8 @@ fn handle_request(shell: &mut Shell, request: ui::Request, event_loop: &ActiveEv
                 .save_file()
             {
                 session.save_to(&path);
+            } else {
+                session.cancel_save_as();
             }
         }
         ui::Request::Quit => event_loop.exit(),

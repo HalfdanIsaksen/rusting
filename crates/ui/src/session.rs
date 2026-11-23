@@ -257,6 +257,9 @@ pub struct Session {
     status: Option<Status>,
     dialog: Option<Dialog>,
     pub(crate) requests: Vec<Request>,
+    /// What to do once the save started from the "unsaved changes" dialog
+    /// succeeds (see [`Self::save_then`]).
+    after_save: Option<DiscardAction>,
     start_menu: Option<StartMenu>,
     playback_watch: PlaybackWatch,
 }
@@ -300,6 +303,7 @@ impl Session {
             status: None,
             dialog: None,
             requests: Vec::new(),
+            after_save: None,
             start_menu: None,
             playback_watch: PlaybackWatch::default(),
         }
@@ -924,8 +928,34 @@ impl Session {
         Ok(())
     }
 
+    /// Saves, then runs `action` if the save worked. Without a path this
+    /// asks for one first; `action` runs once [`Self::save_to`] succeeds,
+    /// and is dropped if the save fails or [`Self::cancel_save_as`] is
+    /// called.
+    pub fn save_then(&mut self, action: DiscardAction) {
+        self.after_save = None;
+        match self.path.clone() {
+            Some(path) => {
+                if self.save_to(&path) {
+                    self.perform(action);
+                }
+            }
+            None => {
+                self.after_save = Some(action);
+                self.requests.push(Request::SaveAsDialog);
+            }
+        }
+    }
+
+    /// The host calls this when the user dismisses the save dialog, so an
+    /// action waiting on that save (see [`Self::save_then`]) is dropped.
+    pub fn cancel_save_as(&mut self) {
+        self.after_save = None;
+    }
+
     /// Saves to the current path, or asks for one.
     pub fn save(&mut self) {
+        self.after_save = None;
         match self.path.clone() {
             Some(path) => {
                 self.save_to(&path);
@@ -936,6 +966,7 @@ impl Session {
 
     /// Asks for a path and saves there.
     pub fn save_as(&mut self) {
+        self.after_save = None;
         self.requests.push(Request::SaveAsDialog);
     }
 
@@ -951,10 +982,14 @@ impl Session {
                 self.history.mark_saved();
                 self.set_status(format!("Saved {}", path.display()));
                 self.path = Some(path);
+                if let Some(action) = self.after_save.take() {
+                    self.perform(action);
+                }
                 true
             }
             Err(err) => {
                 tracing::warn!(%err, path = %path.display(), "save failed");
+                self.after_save = None;
                 self.dialog = Some(Dialog::Error {
                     title: "Could not save file".into(),
                     message: format!("{}\n\n{err}", path.display()),
@@ -1504,5 +1539,47 @@ mod tests {
         let mut s = Session::new();
         s.save();
         assert_eq!(s.take_requests(), [Request::SaveAsDialog]);
+    }
+
+    #[test]
+    fn save_then_quit_saves_first() {
+        // With a path: saves there, then quits.
+        let path = temp_path("save-then-quit.rusting");
+        let mut s = Session::new();
+        assert!(s.save_to(&path));
+        s.execute(Box::new(AddLayer::new("X"))).unwrap();
+        s.save_then(DiscardAction::Quit);
+        assert!(!s.is_dirty());
+        assert_eq!(s.take_requests(), [Request::Quit]);
+
+        // Without a path: asks for one, quits only once it is saved.
+        let mut s = Session::new();
+        s.execute(Box::new(AddLayer::new("X"))).unwrap();
+        s.save_then(DiscardAction::Quit);
+        assert_eq!(s.take_requests(), [Request::SaveAsDialog]);
+        assert!(s.save_to(&temp_path("save-as-then-quit.rusting")));
+        assert!(!s.is_dirty());
+        assert_eq!(s.take_requests(), [Request::Quit]);
+    }
+
+    #[test]
+    fn cancelled_save_as_does_not_quit_later() {
+        let mut s = Session::new();
+        s.execute(Box::new(AddLayer::new("X"))).unwrap();
+        s.save_then(DiscardAction::Quit);
+        assert_eq!(s.take_requests(), [Request::SaveAsDialog]);
+        s.cancel_save_as();
+        assert!(s.save_to(&temp_path("cancelled-save-as.rusting")));
+        assert!(s.take_requests().is_empty());
+    }
+
+    #[test]
+    fn failed_save_does_not_quit() {
+        let mut s = Session::new();
+        s.path = Some(temp_path("missing-dir/nested/fail.rusting"));
+        s.execute(Box::new(AddLayer::new("X"))).unwrap();
+        s.save_then(DiscardAction::Quit);
+        assert!(matches!(s.dialog(), Some(Dialog::Error { .. })));
+        assert!(s.take_requests().is_empty());
     }
 }
