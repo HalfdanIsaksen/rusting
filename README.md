@@ -56,7 +56,7 @@ Set `RUST_LOG=debug` for more log output.
 | Document | What it covers |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Crate dependency graph, data model, coordinate spaces, frame flow |
-| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-025) |
+| [docs/decisions/](docs/decisions/) | Architecture decision records (ADR-001 to ADR-026) |
 | [docs/roadmap.md](docs/roadmap.md) | Development phases and their acceptance criteria |
 | [docs/smoke-test.md](docs/smoke-test.md) | Manual end-to-end test checklist |
 | [docs/releasing.md](docs/releasing.md) | How to tag a release and update the Homebrew tap |
@@ -151,6 +151,12 @@ The tool strip runs down the side of the canvas:
 
 ### Help menu
 - Lists the keyboard shortcuts.
+- **Check for Updates…** asks GitHub for the latest release and says whether you have it.
+
+### Updates
+- At launch, Rusting checks GitHub for a newer release, at most once a day. If there is one, a dialog shows the new version and what it adds, with **Download** (opens the release page), **Later** and **Skip This Version**. When Rusting was installed with Homebrew, it shows `brew upgrade rusting` with a Copy button instead.
+- Being offline, or GitHub not answering, never shows an error at launch.
+- Turn it off with the dialog's **Check for updates when Rusting starts** checkbox (Help → Check for Updates… still works), or with `RUSTING_NO_UPDATE_CHECK=1`. The request sends nothing but the app version.
 
 ### Files and export
 - Save and open versioned `.rusting` project files.

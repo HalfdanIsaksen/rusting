@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 const FILE_NAME: &str = "panel-layout.json";
 
 /// The per-user configuration folder, if the environment names one.
-fn config_dir() -> Option<PathBuf> {
+pub fn config_dir() -> Option<PathBuf> {
     let var = |name| {
         std::env::var_os(name)
             .filter(|v| !v.is_empty())

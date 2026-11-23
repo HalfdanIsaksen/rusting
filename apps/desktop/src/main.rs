@@ -15,6 +15,7 @@ mod layout_file;
 mod open_files;
 mod pen;
 mod shell;
+mod update_check;
 
 use document::animation_core::Rgba;
 use document::animation_core::Vec2;
@@ -115,12 +116,15 @@ struct App {
     fatal: Option<String>,
     /// Where the panel layout is saved between launches (ADR-021).
     layout_path: Option<PathBuf>,
+    /// Looks for a newer release and shows the update dialog (ADR-026).
+    updates: update_check::UpdateChecker,
 }
 
 impl App {
     /// The app showing the project at `open` if given and readable, or else
-    /// the start menu for a new document.
-    fn new(open: Option<&Path>) -> Self {
+    /// the start menu for a new document. `proxy` wakes the event loop when
+    /// the update check gets its answer.
+    fn new(open: Option<&Path>, proxy: winit::event_loop::EventLoopProxy<()>) -> Self {
         let mut session = ui::Session::new();
         session.set_brush_presets(brushes::presets());
         let layout_path = layout_file::path();
@@ -130,6 +134,10 @@ impl App {
         if !open.is_some_and(|path| session.open_path(path)) {
             session.show_start_menu(ui::StartMenu::new(Default::default(), false));
         }
+        let mut updates = update_check::UpdateChecker::new(move || {
+            let _ = proxy.send_event(());
+        });
+        updates.on_launch();
         Self {
             window: None,
             graphics: None,
@@ -146,6 +154,7 @@ impl App {
             title: String::new(),
             fatal: None,
             layout_path,
+            updates,
         }
     }
 
@@ -229,9 +238,12 @@ impl App {
             ));
         }
         let preview_texture = graphics.preview.as_ref().map(|p| p.texture);
-        let output = self
-            .egui_ctx
-            .run_ui(raw_input, |ui| shell.ui(ui, texture, preview_texture));
+        let updates = &mut self.updates;
+        let output = self.egui_ctx.run_ui(raw_input, |ui| {
+            shell.ui(ui, texture, preview_texture);
+            let blocked = shell.session.dialog().is_some() || shell.export.is_open();
+            updates.ui(ui.ctx(), &mut shell.session, blocked);
+        });
         egui_state.handle_platform_output(window, output.platform_output);
         let title = shell.session.title();
         if title != self.title {
@@ -368,7 +380,11 @@ impl App {
         // 4. Native dialogs and quitting, requested by the UI.
         let window = window.clone();
         for request in self.shell.session.take_requests() {
-            handle_request(&mut self.shell, request, event_loop);
+            if request == ui::Request::CheckForUpdates {
+                self.updates.check_now(&mut self.shell.session);
+            } else {
+                handle_request(&mut self.shell, request, event_loop);
+            }
             window.request_redraw();
         }
 
@@ -797,8 +813,11 @@ fn handle_request(shell: &mut Shell, request: ui::Request, event_loop: &ActiveEv
                 }
             }
         }
-        // Export and brush captures need the GPU; the main loop runs them.
-        ui::Request::Export(_) | ui::Request::CaptureBrushPicture => {}
+        // Export and brush captures need the GPU, and the update check its
+        // state; the main loop runs them.
+        ui::Request::Export(_)
+        | ui::Request::CaptureBrushPicture
+        | ui::Request::CheckForUpdates => {}
     }
 }
 
@@ -866,8 +885,12 @@ impl ApplicationHandler for App {
         self.open_requested_files();
     }
 
+    /// Files to open (see [`open_files`]) or the update check's answer.
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, (): ()) {
         self.open_requested_files();
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -944,7 +967,7 @@ fn main() -> std::process::ExitCode {
     open_files::install(event_loop.create_proxy());
     // `rusting path/to/file.rusting` opens that project.
     let open = std::env::args_os().nth(1).map(PathBuf::from);
-    let mut app = App::new(open.as_deref());
+    let mut app = App::new(open.as_deref(), event_loop.create_proxy());
     if let Err(err) = event_loop.run_app(&mut app) {
         tracing::error!(%err, "event loop error");
         return std::process::ExitCode::FAILURE;

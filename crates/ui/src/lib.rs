@@ -37,7 +37,9 @@ pub use objects::{InstanceAt, TweenAt, TweenTargets};
 pub use onion::{OnionDrawing, OnionSkin};
 pub use paint_order::PaintOrder;
 pub use panels::library::{AssetDrag, ObjectDrag};
-pub use panels::{canvas_menu, preview_window, show};
+pub use panels::{
+    BREW_UPGRADE, UpdateChoice, UpdateNotice, canvas_menu, preview_window, show, update_dialog,
+};
 pub use playback::{Playback, PlaybackEvent};
 pub use preview::Preview;
 pub use session::{DiscardAction, ExportKind, Request, Session, StartMenu, ViewSettings};

@@ -1,7 +1,7 @@
 //! The menu bar: File, Edit, Canvas, View and Help.
 
 use super::shortcuts;
-use crate::session::{DiscardAction, ExportKind, Session};
+use crate::session::{DiscardAction, ExportKind, Request, Session};
 use egui::{Atom, Button, Checkbox, KeyboardShortcut, RichText};
 
 fn item<'a>(ui: &egui::Ui, text: &'a str, shortcut: &KeyboardShortcut) -> Button<'a> {
@@ -251,6 +251,10 @@ pub fn bar(ui: &mut egui::Ui, session: &mut Session) {
         });
 
         ui.menu_button("Help", |ui| {
+            if ui.button("Check for Updates…").clicked() {
+                session.requests.push(Request::CheckForUpdates);
+            }
+            ui.separator();
             ui.label("Shortcuts");
             ui.separator();
             for (keys, what) in [
